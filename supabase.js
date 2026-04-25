@@ -1,0 +1,546 @@
+import { createLogger } from "./logger.js";
+import { describeEnvVar } from "./config.js";
+import {
+  clearStaleEvents,
+  getAllEvents,
+  getEventById as getMemoryEventById,
+  saveEvent as saveMemoryEvent,
+  stats as memoryStats,
+} from "./store.js";
+
+const log = createLogger("storage");
+const EQUIVALENT_EVENT_WINDOW_MS = 24 * 60 * 60 * 1000;
+const memoryAIUsageLog = [];
+
+let clientPromise = null;
+let clientDisabled = false;
+
+function getSupabaseConfigStatus() {
+  const url = describeEnvVar("SUPABASE_URL");
+  const key = describeEnvVar("SUPABASE_SERVICE_ROLE_KEY");
+
+  return {
+    url,
+    key,
+    present: url.present && key.present,
+    usable: url.usable && key.usable,
+  };
+}
+
+function validateSupabaseUrl(rawUrl) {
+  try {
+    const parsed = new URL(rawUrl);
+    if (parsed.protocol !== "https:") return { ok: false, reason: "must use https" };
+    if (!parsed.hostname.includes("supabase.co")) {
+      return { ok: false, reason: "hostname must include supabase.co" };
+    }
+    return { ok: true, reason: "valid" };
+  } catch {
+    return { ok: false, reason: "invalid url" };
+  }
+}
+
+function normalizeEvent(row) {
+  if (!row) return null;
+
+  return {
+    ...row,
+    articleIds: row.articleIds ?? row.article_ids ?? [],
+    aiStatus: row.aiStatus ?? row.ai_status ?? "fallback",
+    aiUpdatedAt: row.aiUpdatedAt ?? row.ai_updated_at ?? null,
+    clusterSignature: row.clusterSignature ?? row.cluster_signature ?? null,
+    importanceScore: row.importanceScore ?? row.importance_score ?? 0,
+  };
+}
+
+function normalizeArticleIds(articleIds) {
+  return [...new Set((articleIds ?? []).filter(Boolean))].sort();
+}
+
+function makeArticleSignature(event) {
+  const ids = normalizeArticleIds(event.articleIds ?? event.article_ids);
+  return ids.length > 0 ? ids.join("|") : null;
+}
+
+function normalizeTitle(value) {
+  return String(value ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, " ");
+}
+
+function normalizeLocationLabel(event) {
+  return String(event.location?.label ?? "")
+    .trim()
+    .toLowerCase();
+}
+
+function areEventsEquivalent(a, b) {
+  const sigA = makeArticleSignature(a);
+  const sigB = makeArticleSignature(b);
+
+  if (sigA && sigB) {
+    return sigA === sigB;
+  }
+
+  const titleMatches = normalizeTitle(a.title) === normalizeTitle(b.title);
+  const locationMatches = normalizeLocationLabel(a) === normalizeLocationLabel(b);
+  const timeDelta = Math.abs(new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+
+  return titleMatches && locationMatches && timeDelta <= EQUIVALENT_EVENT_WINDOW_MS;
+}
+
+function mergeEvent(existing, incoming) {
+  const mergedTimestamp = [existing.timestamp, incoming.timestamp]
+    .filter(Boolean)
+    .sort()
+    .at(-1) ?? incoming.timestamp;
+
+  return {
+    ...existing,
+    ...incoming,
+    id: existing.id,
+    timestamp: mergedTimestamp,
+    articleIds: normalizeArticleIds(incoming.articleIds ?? incoming.article_ids),
+  };
+}
+
+function buildSupabaseRow(event, id = event.id) {
+  return {
+    id,
+    title: event.title,
+    location: event.location,
+    timestamp: event.timestamp,
+    summary: event.summary,
+    developments: event.developments,
+    tone: event.tone,
+    confidence: event.confidence,
+    scenarios: event.scenarios,
+    sources: event.sources,
+    keywords: event.keywords,
+    article_ids: normalizeArticleIds(event.articleIds ?? event.article_ids),
+    ai_status: event.aiStatus ?? "fallback",
+    ai_updated_at: event.aiUpdatedAt ?? null,
+    cluster_signature: event.clusterSignature ?? null,
+    importance_score: event.importanceScore ?? 0,
+  };
+}
+
+function utcDayStartIso(now = Date.now()) {
+  const date = new Date(now);
+  date.setUTCHours(0, 0, 0, 0);
+  return date.toISOString();
+}
+
+function getMemoryAIUsageSnapshot() {
+  const start = Date.parse(utcDayStartIso());
+  const today = memoryAIUsageLog.filter((entry) => Date.parse(entry.created_at) >= start);
+
+  return {
+    mode: "memory",
+    totalCalls: today.length,
+    automationCalls: today.filter((entry) => entry.source === "automation").length,
+  };
+}
+
+function findEquivalentMemoryEvent(event) {
+  return getAllEvents().find((candidate) => areEventsEquivalent(candidate, event)) ?? null;
+}
+
+async function findEquivalentSupabaseEvent(db, event) {
+  const cutoff = new Date(Date.now() - EQUIVALENT_EVENT_WINDOW_MS).toISOString();
+
+  const { data, error } = await db
+    .from("events")
+    .select("*")
+    .gte("timestamp", cutoff)
+    .order("timestamp", { ascending: false })
+    .limit(200);
+
+  if (error) {
+    throw error;
+  }
+
+  return (data ?? []).map(normalizeEvent).find((candidate) => areEventsEquivalent(candidate, event)) ?? null;
+}
+
+async function getClient() {
+  if (clientDisabled) return null;
+  if (clientPromise) return clientPromise;
+
+  const url = process.env.SUPABASE_URL;
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  const status = getSupabaseConfigStatus();
+
+  if (!url || !key || !status.usable) return null;
+
+  const urlValidation = validateSupabaseUrl(url);
+  if (!urlValidation.ok) {
+    clientDisabled = true;
+    log.warn(`Supabase disabled — SUPABASE_URL ${urlValidation.reason}`);
+    return null;
+  }
+
+  clientPromise = import("@supabase/supabase-js")
+    .then(({ createClient }) => createClient(url, key, {
+      auth: { persistSession: false, autoRefreshToken: false },
+      global: { headers: { "x-application-name": "grigori-watcher" } },
+    }))
+    .catch((err) => {
+      clientDisabled = true;
+      log.warn(`Supabase client unavailable — falling back to in-memory storage (${err.message})`);
+      return null;
+    });
+
+  return clientPromise;
+}
+
+function filterMemoryEvents(events, { tone, confidence, region } = {}) {
+  let filtered = [...events];
+
+  if (tone) {
+    filtered = filtered.filter((event) => event.tone === tone);
+  }
+
+  if (confidence) {
+    filtered = filtered.filter((event) => event.confidence === confidence);
+  }
+
+  if (region) {
+    const needle = region.toLowerCase();
+    filtered = filtered.filter((event) =>
+      event.location?.label?.toLowerCase().includes(needle)
+    );
+  }
+
+  return filtered;
+}
+
+function getMemoryStatsSnapshot() {
+  const currentEvents = getAllEvents();
+  const currentStoreStats = memoryStats();
+
+  return {
+    mode: "memory",
+    eventCount: currentEvents.length,
+    oldestEvent: currentEvents.at(-1)?.timestamp ?? null,
+    newestEvent: currentEvents[0]?.timestamp ?? null,
+    articles: currentStoreStats.articles,
+    unclustered: currentStoreStats.unclustered,
+  };
+}
+
+export async function insertEvent(event) {
+  const equivalentMemoryEvent = findEquivalentMemoryEvent(event);
+  const memoryEvent = equivalentMemoryEvent
+    ? mergeEvent(equivalentMemoryEvent, event)
+    : { ...event, articleIds: normalizeArticleIds(event.articleIds) };
+
+  saveMemoryEvent(memoryEvent);
+
+  const db = await getClient();
+  if (!db) {
+    return {
+      persisted: false,
+      mode: "memory",
+      action: equivalentMemoryEvent ? "updated" : "inserted",
+      id: memoryEvent.id,
+    };
+  }
+
+  try {
+    const equivalentSupabaseEvent = await findEquivalentSupabaseEvent(db, event);
+    const row = buildSupabaseRow(
+      equivalentSupabaseEvent ? mergeEvent(equivalentSupabaseEvent, event) : event,
+      equivalentSupabaseEvent?.id ?? event.id
+    );
+
+    const { error } = await db.from("events").upsert(row);
+    if (error) {
+      log.warn(`Supabase upsert failed for event ${event.id}: ${error.message}`);
+      return { persisted: false, mode: "memory", error: error.message };
+    }
+
+    return {
+      persisted: true,
+      mode: "supabase",
+      action: equivalentSupabaseEvent ? "updated" : "inserted",
+      id: row.id,
+    };
+  } catch (err) {
+    log.warn(`Supabase upsert failed for event ${event.id}: ${err.message}`);
+    return { persisted: false, mode: "memory", error: err.message };
+  }
+}
+
+export async function getEvents({ limit = 50, offset = 0, tone, confidence, region } = {}) {
+  const db = await getClient();
+
+  if (!db) {
+    const filtered = filterMemoryEvents(getAllEvents(), { tone, confidence, region });
+    return {
+      events: filtered.slice(offset, offset + limit),
+      total: filtered.length,
+      mode: "memory",
+    };
+  }
+
+  try {
+    let query = db
+      .from("events")
+      .select("*", { count: "exact" })
+      .order("timestamp", { ascending: false })
+      .range(offset, offset + limit - 1);
+
+    if (tone) query = query.eq("tone", tone);
+    if (confidence) query = query.eq("confidence", confidence);
+    if (region) query = query.ilike("location->>label", `%${region}%`);
+
+    const { data, error, count } = await query;
+
+    if (error) {
+      log.warn(`Supabase query failed — serving in-memory events instead (${error.message})`);
+      throw error;
+    }
+
+    return {
+      events: (data ?? []).map(normalizeEvent),
+      total: count ?? 0,
+      mode: "supabase",
+    };
+  } catch (err) {
+    log.warn(`Supabase query failed — serving in-memory events instead (${err.message})`);
+    const filtered = filterMemoryEvents(getAllEvents(), { tone, confidence, region });
+    return {
+      events: filtered.slice(offset, offset + limit),
+      total: filtered.length,
+      mode: "memory",
+    };
+  }
+}
+
+export async function getEventById(id) {
+  const db = await getClient();
+
+  if (!db) {
+    return getMemoryEventById(id);
+  }
+
+  try {
+    const { data, error } = await db
+      .from("events")
+      .select("*")
+      .eq("id", id)
+      .maybeSingle();
+
+    if (error) {
+      log.warn(`Supabase getEventById failed — checking in-memory store (${error.message})`);
+      return getMemoryEventById(id);
+    }
+
+    return normalizeEvent(data);
+  } catch (err) {
+    log.warn(`Supabase getEventById failed — checking in-memory store (${err.message})`);
+    return getMemoryEventById(id);
+  }
+}
+
+export async function deleteOldEvents(hours = 24) {
+  const removedInMemory = clearStaleEvents(hours * 3600_000);
+  const db = await getClient();
+
+  if (!db) {
+    return removedInMemory;
+  }
+
+  try {
+    const cutoff = new Date(Date.now() - hours * 3600_000).toISOString();
+    const { error, count } = await db
+      .from("events")
+      .delete({ count: "exact" })
+      .lt("timestamp", cutoff);
+
+    if (error) {
+      log.warn(`Supabase purge failed — retained in-memory cleanup (${error.message})`);
+      return removedInMemory;
+    }
+
+    return Math.max(removedInMemory, count ?? 0);
+  } catch (err) {
+    log.warn(`Supabase purge failed — retained in-memory cleanup (${err.message})`);
+    return removedInMemory;
+  }
+}
+
+export async function getStats() {
+  const db = await getClient();
+
+  if (!db) {
+    return getMemoryStatsSnapshot();
+  }
+
+  try {
+    const [countRes, oldestRes, newestRes] = await Promise.all([
+      db.from("events").select("id", { count: "exact", head: true }),
+      db.from("events").select("timestamp").order("timestamp", { ascending: true }).limit(1).maybeSingle(),
+      db.from("events").select("timestamp").order("timestamp", { ascending: false }).limit(1).maybeSingle(),
+    ]);
+
+    if (countRes.error) {
+      log.warn(`Supabase stats failed — falling back to memory (${countRes.error.message})`);
+      return getMemoryStatsSnapshot();
+    }
+
+    return {
+      mode: "supabase",
+      eventCount: countRes.count ?? 0,
+      oldestEvent: oldestRes.data?.timestamp ?? null,
+      newestEvent: newestRes.data?.timestamp ?? null,
+      articles: memoryStats().articles,
+      unclustered: memoryStats().unclustered,
+    };
+  } catch (err) {
+    log.warn(`Supabase stats failed — falling back to memory (${err.message})`);
+    return getMemoryStatsSnapshot();
+  }
+}
+
+export async function getRecentEvents(hours = 24) {
+  const cutoff = new Date(Date.now() - hours * 3600_000).toISOString();
+  const db = await getClient();
+
+  if (!db) {
+    return getAllEvents().filter((event) => event.timestamp >= cutoff);
+  }
+
+  try {
+    const { data, error } = await db
+      .from("events")
+      .select("*")
+      .gte("timestamp", cutoff)
+      .order("timestamp", { ascending: false })
+      .limit(200);
+
+    if (error) {
+      throw error;
+    }
+
+    return (data ?? []).map(normalizeEvent);
+  } catch (err) {
+    log.warn(`Supabase recent events lookup failed — using memory fallback (${err.message})`);
+    return getAllEvents().filter((event) => event.timestamp >= cutoff);
+  }
+}
+
+export async function recordAIUsage({ source = "automation", clusterSignature = null, inputTokens = 0 } = {}) {
+  const entry = {
+    source,
+    cluster_signature: clusterSignature,
+    input_tokens: inputTokens,
+    created_at: new Date().toISOString(),
+  };
+
+  memoryAIUsageLog.push(entry);
+
+  const db = await getClient();
+  if (!db) {
+    return { persisted: false, mode: "memory" };
+  }
+
+  try {
+    const { error } = await db.from("ai_usage_logs").insert(entry);
+    if (error) {
+      log.warn(`Supabase AI usage insert failed: ${error.message}`);
+      return { persisted: false, mode: "memory", error: error.message };
+    }
+    return { persisted: true, mode: "supabase" };
+  } catch (err) {
+    log.warn(`Supabase AI usage insert failed: ${err.message}`);
+    return { persisted: false, mode: "memory", error: err.message };
+  }
+}
+
+export async function getAIUsageStats() {
+  const db = await getClient();
+  const start = utcDayStartIso();
+
+  if (!db) {
+    return getMemoryAIUsageSnapshot();
+  }
+
+  try {
+    const { data, error } = await db
+      .from("ai_usage_logs")
+      .select("source, input_tokens, created_at")
+      .gte("created_at", start);
+
+    if (error) {
+      throw error;
+    }
+
+    const rows = data ?? [];
+    return {
+      mode: "supabase",
+      totalCalls: rows.length,
+      automationCalls: rows.filter((entry) => entry.source === "automation").length,
+    };
+  } catch (err) {
+    log.warn(`Supabase AI usage lookup failed — using memory fallback (${err.message})`);
+    return getMemoryAIUsageSnapshot();
+  }
+}
+
+export async function healthCheck() {
+  const url = process.env.SUPABASE_URL;
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  const status = getSupabaseConfigStatus();
+
+  if (!url || !key) {
+    return {
+      ok: true,
+      mode: "memory",
+      detail: "SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY not set",
+    };
+  }
+
+  if (!status.usable) {
+    return {
+      ok: true,
+      mode: "memory",
+      detail: "Supabase credentials are placeholders or incomplete",
+    };
+  }
+
+  const urlValidation = validateSupabaseUrl(url);
+  if (!urlValidation.ok) {
+    return {
+      ok: true,
+      mode: "memory",
+      detail: `SUPABASE_URL ${urlValidation.reason}`,
+    };
+  }
+
+  const db = await getClient();
+  if (!db) {
+    return {
+      ok: true,
+      mode: "memory",
+      detail: "Supabase client unavailable",
+    };
+  }
+
+  try {
+    const { error } = await db.from("events").select("id", { head: true }).limit(1);
+    return {
+      ok: !error,
+      mode: error ? "memory" : "supabase",
+      detail: error?.message ?? "Connected",
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      mode: "memory",
+      detail: err.message,
+    };
+  }
+}

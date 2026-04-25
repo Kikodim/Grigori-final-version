@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "functions": {
+    "api/v1/pipeline/run.js": { "maxDuration": 60 },
+    "api/v1/**/*.js": { "maxDuration": 10 }
+  },
+  "crons": [
+    {
+      "path":     "/api/v1/pipeline/run",
+      "schedule": "0 * * * *"
+    }
+  ],
+  "headers": [
+    {
+      "source": "/api/(.*)",
+      "headers": [
+        { "key": "X-Content-Type-Options", "value": "nosniff"     },
+        { "key": "X-Frame-Options",         "value": "DENY"        },
+        { "key": "Referrer-Policy",         "value": "no-referrer" },
+        { "key": "Cache-Control",           "value": "no-store"    },
+        { "key": "Cross-Origin-Resource-Policy", "value": "same-origin" }
+      ]
+    }
+  ]
+}

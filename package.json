@@ -1,0 +1,25 @@
+{
+  "name": "grigori-the-watcher",
+  "version": "3.0.1",
+  "description": "Grigori – The Watcher local backend",
+  "main": "bootstrap.js",
+  "type": "module",
+  "engines": {
+    "node": ">=18.17.0"
+  },
+  "scripts": {
+    "predeploy:check": "node scripts/predeploy-check.js",
+    "start": "node bootstrap.js",
+    "dev": "node --watch bootstrap.js",
+    "test:health": "curl -s http://localhost:3001/api/v1/health",
+    "test:events": "curl -s http://localhost:3001/api/v1/events"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.43.4",
+    "axios": "^1.7.9",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "node-cron": "^3.0.3"
+  }
+}
