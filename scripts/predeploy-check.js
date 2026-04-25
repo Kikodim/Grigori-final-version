@@ -17,6 +17,7 @@ const requiredFiles = [
   "src/main.jsx",
   "api/v1/health.js",
   "api/v1/admin/refresh.js",
+  "api/v1/briefing.js",
   "api/v1/events/index.js",
   "api/v1/events/[id].js",
   "api/v1/events/stats.js",

@@ -695,7 +695,9 @@ function ProbBar({ val }) {
 function EventPanel({ event, onClose }) {
   const [activeScenario, setActiveScenario] = useState(0);
   if (!event) return null;
-  const sc = event.scenarios[activeScenario];
+  const scenarios = event.scenarios.length > 0
+    ? event.scenarios
+    : [{ name: "Monitoring", probability: 100, description: "Awaiting scenario enrichment from the backend." }];
 
   return (
     <div style={{
@@ -737,7 +739,7 @@ function EventPanel({ event, onClose }) {
       <div style={{ padding: "18px 24px", borderBottom: "1px solid #0f2040" }}>
         <div style={{ color: "#334155", fontSize: 10, fontFamily: "monospace", letterSpacing: "0.12em", textTransform: "uppercase", marginBottom: 10 }}>KEY DEVELOPMENTS</div>
         <ul style={{ margin: 0, padding: 0, listStyle: "none", display: "flex", flexDirection: "column", gap: 7 }}>
-          {event.developments.map((d, i) => (
+          {(event.developments.length > 0 ? event.developments : ["No structured developments available yet."]).map((d, i) => (
             <li key={i} style={{ display: "flex", gap: 10, alignItems: "flex-start" }}>
               <span style={{ color: "#38bdf8", fontFamily: "monospace", fontSize: 11, marginTop: 1, flexShrink: 0 }}>▸</span>
               <span style={{ color: "#94a3b8", fontSize: 12, lineHeight: 1.55 }}>{d}</span>
@@ -750,7 +752,7 @@ function EventPanel({ event, onClose }) {
       <div style={{ padding: "18px 24px", borderBottom: "1px solid #0f2040" }}>
         <div style={{ color: "#334155", fontSize: 10, fontFamily: "monospace", letterSpacing: "0.12em", textTransform: "uppercase", marginBottom: 12 }}>SCENARIO ENGINE</div>
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-          {event.scenarios.map((sc, i) => (
+          {scenarios.map((sc, i) => (
             <div key={i} onClick={() => setActiveScenario(i)} style={{
               background: activeScenario === i ? "#0f2040" : "#060e1e",
               border: `1px solid ${activeScenario === i ? "#1e4a7f" : "#0f2040"}`,
@@ -793,7 +795,26 @@ function EventPanel({ event, onClose }) {
   );
 }
 
-function NewsFeed({ events, selectedId, onSelect }) {
+function FeedState({ message }) {
+  return (
+    <div style={{
+      flex: 1,
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      padding: 24,
+      color: "#64748b",
+      fontSize: 12,
+      fontFamily: "monospace",
+      letterSpacing: "0.06em",
+      textAlign: "center",
+    }}>
+      {message}
+    </div>
+  );
+}
+
+function NewsFeed({ events, selectedId, onSelect, loadState, counts }) {
   return (
     <div style={{
       position: "absolute", left: 0, top: 0, bottom: 0, width: 300,
@@ -805,8 +826,14 @@ function NewsFeed({ events, selectedId, onSelect }) {
       <div style={{ padding: "20px 20px 14px", borderBottom: "1px solid #0f2040" }}>
         <div style={{ color: "#334155", fontSize: 9, fontFamily: "monospace", letterSpacing: "0.18em", textTransform: "uppercase", marginBottom: 4 }}>ACTIVE CONFLICTS</div>
         <div style={{ color: "#38bdf8", fontSize: 11, fontFamily: "monospace" }}>{events.length} EVENTS TRACKED</div>
+        <div style={{ color: "#1e3a5f", fontSize: 10, fontFamily: "monospace", marginTop: 6 }}>
+          RED {counts.red} · ORANGE {counts.orange} · YELLOW {counts.yellow}
+        </div>
       </div>
-      <div style={{ flex: 1, overflowY: "auto" }}>
+      {loadState.status === "loading" ? <FeedState message="Loading live events..." /> : null}
+      {loadState.status === "error" ? <FeedState message={loadState.message} /> : null}
+      {loadState.status === "empty" ? <FeedState message={loadState.message} /> : null}
+      {loadState.status === "ready" ? <div style={{ flex: 1, overflowY: "auto" }}>
         {events.map((ev) => (
           <div key={ev.id} onClick={() => onSelect(ev.id)} style={{
             padding: "14px 20px",
@@ -828,12 +855,12 @@ function NewsFeed({ events, selectedId, onSelect }) {
             <div style={{ color: "#1e3a5f", fontSize: 10, fontFamily: "monospace", marginTop: 3 }}>{fmtDate(ev.timestamp)}</div>
           </div>
         ))}
-      </div>
+      </div> : null}
     </div>
   );
 }
 
-function TopBar({ onAdminRefresh, refreshState }) {
+function TopBar({ onAdminRefresh, refreshState, counts, loadState }) {
   const [time, setTime] = useState(new Date());
   useEffect(() => {
     const t = setInterval(() => setTime(new Date()), 1000);
@@ -892,12 +919,15 @@ function TopBar({ onAdminRefresh, refreshState }) {
         </div>
         <div style={{ color: "#1e3a5f", fontSize: 13 }}>|</div>
         <div style={{ display: "flex", gap: 12 }}>
-          {[["RED", 2, "#ef4444"], ["ORANGE", 2, "#f97316"], ["YELLOW", 3, "#eab308"]].map(([label, count, color]) => (
+          {[["RED", counts.red, "#ef4444"], ["ORANGE", counts.orange, "#f97316"], ["YELLOW", counts.yellow, "#eab308"]].map(([label, count, color]) => (
             <div key={label} style={{ display: "flex", alignItems: "center", gap: 5 }}>
               <span style={{ width: 6, height: 6, borderRadius: "50%", background: color, display: "inline-block" }} />
               <span style={{ color: "#334155", fontSize: 9, fontFamily: "monospace", letterSpacing: "0.1em" }}>{label}: {count}</span>
             </div>
           ))}
+        </div>
+        <div style={{ color: "#475569", fontSize: 10, fontFamily: "monospace" }}>
+          {loadState.status === "ready" ? "LIVE DATA" : loadState.message}
         </div>
       </div>
     </div>
@@ -906,32 +936,51 @@ function TopBar({ onAdminRefresh, refreshState }) {
 
 // ─── APP ──────────────────────────────────────────────────────────────────────
 export default function App() {
-  const [events, setEvents] = useState(EVENTS);
+  const [events, setEvents] = useState([]);
   const [selectedId, setSelectedId] = useState(null);
   const [focusCoords, setFocusCoords] = useState({ lat: null, lng: null });
   const [refreshState, setRefreshState] = useState({ status: "idle", message: "" });
+  const [loadState, setLoadState] = useState({ status: "loading", message: "Loading events..." });
 
   const loadEvents = useCallback(async () => {
+    setLoadState({ status: "loading", message: "Loading events..." });
     const res = await fetch(resolveBackendUrl(BACKEND_EVENTS_PATH), {
       signal: AbortSignal.timeout(8000),
     });
-    if (!res.ok) return;
+    if (!res.ok) {
+      throw new Error(`Failed to load events (${res.status})`);
+    }
 
     const data = await res.json();
-    if (Array.isArray(data.events) && data.events.length > 0) {
-      setEvents(data.events.map(mapBackendEvent));
-    }
+    const mappedEvents = Array.isArray(data.events)
+      ? data.events.map(mapBackendEvent)
+      : [];
+
+    setEvents(mappedEvents);
+    setSelectedId((current) => (
+      mappedEvents.some((event) => event.id === current) ? current : null
+    ));
+    setLoadState(
+      mappedEvents.length > 0
+        ? { status: "ready", message: "" }
+        : { status: "empty", message: "No events available yet." }
+    );
   }, []);
 
   useEffect(() => {
-    let cancelled = false;
-
     loadEvents().catch(() => {
-      // Keep static fallback data when the backend is unavailable.
+      setEvents([]);
+      setSelectedId(null);
+      setLoadState({ status: "error", message: "Unable to load live events." });
     });
-    const interval = setInterval(loadEvents, 60_000);
+    const interval = setInterval(() => {
+      loadEvents().catch(() => {
+        setEvents([]);
+        setSelectedId(null);
+        setLoadState({ status: "error", message: "Unable to load live events." });
+      });
+    }, 60_000);
     return () => {
-      cancelled = true;
       clearInterval(interval);
     };
   }, [loadEvents]);
@@ -963,6 +1012,12 @@ export default function App() {
   }, [loadEvents]);
 
   const selectedEvent = events.find((e) => e.id === selectedId) || null;
+  const counts = events.reduce((acc, event) => {
+    if (event.intensity === "red") acc.red += 1;
+    else if (event.intensity === "orange") acc.orange += 1;
+    else acc.yellow += 1;
+    return acc;
+  }, { red: 0, orange: 0, yellow: 0 });
 
   const handleSelect = useCallback((id) => {
     const ev = events.find((e) => e.id === id);
@@ -1050,8 +1105,14 @@ export default function App() {
           ))}
         </div>
 
-        <TopBar onAdminRefresh={handleAdminRefresh} refreshState={refreshState} />
-        <NewsFeed events={events} selectedId={selectedId} onSelect={handleSelect} />
+        <TopBar onAdminRefresh={handleAdminRefresh} refreshState={refreshState} counts={counts} loadState={loadState} />
+        <NewsFeed
+          events={events}
+          selectedId={selectedId}
+          onSelect={handleSelect}
+          loadState={loadState}
+          counts={counts}
+        />
         {selectedEvent && <EventPanel event={selectedEvent} onClose={handleClose} />}
       </div>
     </>

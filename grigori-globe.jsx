@@ -1,5 +1,17 @@
 import { useEffect, useRef, useState, useCallback, useMemo } from "react";
 import * as THREE from "three";
+import {
+  aggregateMarketImpact,
+  buildBriefing,
+  deriveImportance,
+  deriveRiskLevel,
+  eventMatchesWatchlist,
+  explainConfidence,
+  filterEventsByTimeWindow,
+  getEventSourceSignals,
+  getMarketImpactTags,
+  getOneLineSummary,
+} from "./event-insights.js";
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // DATA
@@ -307,7 +319,7 @@ function enrichEvents(events) {
 }
 
 // ── Enriched event list — computed once at module load ────────────────────────
-const SCORED_EVENTS = enrichEvents(EVENTS);
+const SCORED_EVENTS = enrichEvents(EVENTS).map(decorateEventForUi);
 
 // Top-5 sorted by priority score (desc), for the War Room panel
 const TOP_EVENTS = [...SCORED_EVENTS].sort((a, b) => b.priorityScore - a.priorityScore).slice(0, 5);
@@ -977,6 +989,26 @@ function normalizeBackendEvent(event) {
     affectedRegions: [{ lat: location.lat ?? 0, lng: location.lng ?? 0 }],
     tradeRoutes: [],
     timestamp: event.timestamp ?? new Date().toISOString(),
+    importanceScore: Number(event.importanceScore ?? event.importance_score ?? 0),
+    sources: event.sources ?? [],
+    articleIds: event.articleIds ?? event.article_ids ?? [],
+    keywords: event.keywords ?? [],
+    aiStatus: event.aiStatus ?? event.ai_status ?? "fallback",
+  };
+}
+
+function decorateEventForUi(event) {
+  const sourceSignals = getEventSourceSignals(event);
+  const importanceScore = Number(event.importanceScore ?? event.priorityScore ?? deriveImportance(event));
+
+  return {
+    ...event,
+    importanceScore,
+    sourceSignals,
+    riskLevel: deriveRiskLevel({ ...event, importanceScore }),
+    marketImpactTags: getMarketImpactTags(event),
+    confidenceExplanation: explainConfidence(event),
+    briefSummary: getOneLineSummary(event),
   };
 }
 
@@ -987,7 +1019,7 @@ async function fetchBackendEvents() {
 
   const data = await res.json();
   const normalized = Array.isArray(data.events)
-    ? data.events.map(normalizeBackendEvent)
+    ? data.events.map((event) => decorateEventForUi(normalizeBackendEvent(event)))
     : [];
 
   return normalized.length > 0 ? enrichEvents(normalized) : [];
@@ -1026,7 +1058,7 @@ async function fetchLiveEvents() {
     };
   });
 
-  return [...SCORED_EVENTS, ...enriched];
+  return [...SCORED_EVENTS, ...enriched].map(decorateEventForUi);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1044,6 +1076,7 @@ const REGION_OPTIONS = [
 ];
 
 const SECTOR_OPTIONS = ["Energy", "Defense", "Tech", "Shipping", "Food", "Finance"];
+const WATCHLIST_STORAGE_KEY = "grigori-watchlist";
 
 const RISK_OPTIONS = [
   { id: "all",      label: "All Levels" },
@@ -1080,13 +1113,11 @@ function filterEvents(events, prefs) {
     if (riskConf) filtered = filtered.filter(ev => (ev.priorityScore || 0) >= riskConf.minScore);
   }
 
-  // If filter is too aggressive, return at least top 3
-  if (filtered.length === 0) return events.slice(0, 3);
   return filtered;
 }
 
 // ── Personalization filter panel UI ───────────────────────────────────────────
-function PersonalizationPanel({ prefs, onChange, onClose }) {
+function PersonalizationPanel({ prefs, onChange, onClose, watchlist, selectedEvent, onToggleRegion, onToggleTopic }) {
   return (
     <div style={{
       position: "absolute", top: 56, left: 272, width: 280, zIndex: 45,
@@ -1164,8 +1195,167 @@ function PersonalizationPanel({ prefs, onChange, onClose }) {
             ))}
           </div>
         </div>
+
+        <WatchlistPanel
+          watchlist={watchlist}
+          selectedEvent={selectedEvent}
+          onToggleRegion={onToggleRegion}
+          onToggleTopic={onToggleTopic}
+        />
       </div>
     </div>
+  );
+}
+
+function WatchlistPanel({ watchlist, selectedEvent, onToggleRegion, onToggleTopic }) {
+  const regionLabel = selectedEvent?.location?.label ?? "No region selected";
+  const topicOptions = (selectedEvent?.keywords ?? []).slice(0, 5);
+
+  return (
+    <div style={{ marginTop: 16, paddingTop: 14, borderTop: "1px solid rgba(0,180,255,0.1)" }}>
+      <div style={{ color: "rgba(0,200,255,0.4)", fontSize: 9, fontFamily: mono,
+        letterSpacing: "0.15em", textTransform: "uppercase", marginBottom: 8 }}>WATCHLIST</div>
+      <div style={{ color: "rgba(160,210,255,0.75)", fontSize: 11, fontFamily: display, marginBottom: 8 }}>
+        Star regions or topics to highlight matching events.
+      </div>
+      <button onClick={() => selectedEvent && onToggleRegion(regionLabel)} disabled={!selectedEvent} style={{
+        padding: "6px 10px", borderRadius: 4, cursor: selectedEvent ? "pointer" : "not-allowed",
+        background: watchlist.regions.includes(regionLabel) ? "rgba(255,204,0,0.14)" : "rgba(0,20,50,0.5)",
+        border: `1px solid ${watchlist.regions.includes(regionLabel) ? "rgba(255,204,0,0.45)" : "rgba(0,100,180,0.2)"}`,
+        color: watchlist.regions.includes(regionLabel) ? "#ffcc44" : "rgba(150,200,240,0.55)",
+        fontSize: 10, fontFamily: mono, letterSpacing: "0.06em", minHeight: 30, width: "100%", textAlign: "left",
+      }}>
+        ★ Region: {regionLabel}
+      </button>
+      {topicOptions.length > 0 ? (
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 8 }}>
+          {topicOptions.map((topic) => {
+            const active = watchlist.topics.includes(topic);
+            return (
+              <button key={topic} onClick={() => onToggleTopic(topic)} style={{
+                padding: "4px 9px", borderRadius: 4, cursor: "pointer",
+                background: active ? "rgba(255,204,0,0.14)" : "rgba(0,20,50,0.5)",
+                border: `1px solid ${active ? "rgba(255,204,0,0.45)" : "rgba(0,100,180,0.2)"}`,
+                color: active ? "#ffcc44" : "rgba(150,200,240,0.55)",
+                fontSize: 10, fontFamily: mono, letterSpacing: "0.06em", minHeight: 30,
+              }}>
+                ★ {topic}
+              </button>
+            );
+          })}
+        </div>
+      ) : null}
+      {(watchlist.regions.length > 0 || watchlist.topics.length > 0) ? (
+        <div style={{ marginTop: 10, display: "flex", flexWrap: "wrap", gap: 6 }}>
+          {watchlist.regions.map((region) => (
+            <TrafficPill key={region} level="amber">{region}</TrafficPill>
+          ))}
+          {watchlist.topics.map((topic) => (
+            <TrafficPill key={topic} level="neutral">{topic}</TrafficPill>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function BriefingPanel({ briefing, onSelect }) {
+  return (
+    <FloatingPanel title="Today's Briefing" subtitle="Top 5 by importance and freshness" top={56} left={560} width={320}>
+      {briefing.items.length === 0 ? (
+        <div style={{ color: "rgba(130,185,230,0.62)", fontSize: 11, fontFamily: mono }}>No briefing items available yet.</div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          {briefing.items.map((item, index) => (
+            <button key={item.id} onClick={() => onSelect(item.id)} style={{
+              background: "rgba(0,24,54,0.42)",
+              border: "1px solid rgba(0,180,255,0.12)",
+              borderRadius: 7,
+              padding: "10px 11px",
+              textAlign: "left",
+              cursor: "pointer",
+            }}>
+              <div style={{ display: "flex", justifyContent: "space-between", gap: 8, marginBottom: 6 }}>
+                <span style={{ color: "rgba(0,200,255,0.38)", fontSize: 9, fontFamily: mono }}>#{index + 1}</span>
+                <TrafficPill level={item.riskLevel === "Critical" ? "red" : item.riskLevel === "High" ? "amber" : "neutral"}>
+                  {item.riskLevel}
+                </TrafficPill>
+              </div>
+              <div style={{ color: "#d6ebff", fontSize: 12, fontFamily: display, fontWeight: 700, lineHeight: 1.3, marginBottom: 5 }}>
+                {item.title}
+              </div>
+              <div style={{ color: "rgba(150,205,245,0.68)", fontSize: 11, lineHeight: 1.5, marginBottom: 7 }}>
+                {item.summary}
+              </div>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
+                {item.marketImpactTags.map((tag) => (
+                  <TrafficPill key={tag} level={/Oil Up|Shipping Risk|Equities Risk-off/i.test(tag) ? "red" : /Defense|Tech/i.test(tag) ? "amber" : "neutral"}>
+                    {tag}
+                  </TrafficPill>
+                ))}
+              </div>
+            </button>
+          ))}
+        </div>
+      )}
+    </FloatingPanel>
+  );
+}
+
+function MarketImpactDashboard({ aggregate }) {
+  const items = [aggregate.oil, aggregate.shipping, aggregate.defense, aggregate.tech, aggregate.equities];
+  return (
+    <FloatingPanel title="Market Impact" subtitle="Scenario-weighted dashboard" top={56} right={16} width={240}>
+      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        {items.map((item) => (
+          <div key={item.label} style={{ background: "rgba(0,24,54,0.42)", border: "1px solid rgba(0,180,255,0.08)", borderRadius: 7, padding: "9px 10px" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 5 }}>
+              <span style={{ color: "#d6ebff", fontSize: 12, fontFamily: display, fontWeight: 700 }}>{item.label}</span>
+              <TrafficPill level={item.level}>{item.trend}</TrafficPill>
+            </div>
+            <div style={{ color: "rgba(150,205,245,0.62)", fontSize: 10, fontFamily: mono }}>
+              score {item.score.toFixed(2)}
+            </div>
+          </div>
+        ))}
+      </div>
+    </FloatingPanel>
+  );
+}
+
+function TimelinePanel({ modeHours, onModeChange, sliderPercent, onSliderChange, cursorLabel, visibleCount }) {
+  const options = [
+    { label: "24h", value: 24 },
+    { label: "7d", value: 24 * 7 },
+    { label: "30d", value: 24 * 30 },
+  ];
+
+  return (
+    <FloatingPanel title="Timeline" subtitle={`${visibleCount} events visible`} top={56} left={272} width={272}>
+      <div style={{ display: "flex", gap: 6, marginBottom: 12 }}>
+        {options.map((option) => (
+          <button key={option.value} onClick={() => onModeChange(option.value)} style={{
+            flex: 1,
+            padding: "6px 8px",
+            borderRadius: 4,
+            cursor: "pointer",
+            background: modeHours === option.value ? "rgba(0,180,255,0.18)" : "rgba(0,20,50,0.5)",
+            border: `1px solid ${modeHours === option.value ? "rgba(0,180,255,0.5)" : "rgba(0,100,180,0.2)"}`,
+            color: modeHours === option.value ? "#88ddff" : "rgba(150,200,240,0.55)",
+            fontSize: 10,
+            fontFamily: mono,
+            letterSpacing: "0.08em",
+          }}>
+            {option.label}
+          </button>
+        ))}
+      </div>
+      <input type="range" min="0" max="100" value={sliderPercent} onChange={(e) => onSliderChange(Number(e.target.value))} style={{ width: "100%" }} />
+      <div style={{ display: "flex", justifyContent: "space-between", marginTop: 8 }}>
+        <span style={{ color: "rgba(150,205,245,0.5)", fontSize: 10, fontFamily: mono }}>Range start</span>
+        <span style={{ color: "rgba(200,230,255,0.78)", fontSize: 10, fontFamily: mono }}>{cursorLabel}</span>
+      </div>
+    </FloatingPanel>
   );
 }
 
@@ -1266,6 +1456,63 @@ function Badge({ children, color }) {
       textTransform: "uppercase", fontFamily: mono, whiteSpace: "nowrap" }}>
       {children}
     </span>
+  );
+}
+
+function TrafficPill({ level, children }) {
+  const palette = {
+    red: { color: "#ff6677", bg: "rgba(255,80,110,0.14)", border: "rgba(255,80,110,0.38)" },
+    amber: { color: "#ffbf47", bg: "rgba(255,191,71,0.12)", border: "rgba(255,191,71,0.34)" },
+    green: { color: "#58e38f", bg: "rgba(88,227,143,0.12)", border: "rgba(88,227,143,0.34)" },
+    neutral: { color: "#7fb8dd", bg: "rgba(80,140,190,0.12)", border: "rgba(80,140,190,0.28)" },
+  };
+  const cfg = palette[level] ?? palette.neutral;
+  return (
+    <span style={{
+      background: cfg.bg,
+      color: cfg.color,
+      border: `1px solid ${cfg.border}`,
+      borderRadius: 999,
+      padding: "2px 8px",
+      fontSize: 9,
+      fontFamily: mono,
+      letterSpacing: "0.09em",
+      textTransform: "uppercase",
+      whiteSpace: "nowrap",
+    }}>
+      {children}
+    </span>
+  );
+}
+
+function FloatingPanel({ title, subtitle, children, top, left, right, width = 300 }) {
+  return (
+    <div style={{
+      position: "absolute",
+      top,
+      left,
+      right,
+      width,
+      zIndex: 44,
+      background: "linear-gradient(168deg, rgba(3,8,22,0.97) 0%, rgba(4,10,26,0.98) 100%)",
+      border: "1px solid rgba(0,180,255,0.18)",
+      borderRadius: 8,
+      boxShadow: "0 8px 32px rgba(0,0,0,0.6)",
+      overflow: "hidden",
+      backdropFilter: "blur(14px)",
+    }}>
+      <div style={{ padding: "11px 14px 9px", borderBottom: "1px solid rgba(0,180,255,0.08)" }}>
+        <div style={{ color: "rgba(0,200,255,0.36)", fontSize: 9, fontFamily: mono, letterSpacing: "0.16em", textTransform: "uppercase" }}>{title}</div>
+        {subtitle ? (
+          <div style={{ color: "rgba(200,230,255,0.86)", fontFamily: display, fontSize: 13, fontWeight: 700, marginTop: 3 }}>
+            {subtitle}
+          </div>
+        ) : null}
+      </div>
+      <div style={{ padding: "12px 14px" }}>
+        {children}
+      </div>
+    </div>
   );
 }
 
@@ -1515,6 +1762,7 @@ function WarRoomPanel({ topEvents, onSelect, selectedEventId, onClose }) {
 
 function EventDetailContent({ event, activeScenario, onScenarioChange }) {
   const cfg = INTENSITY[event.intensity];
+  const sourceLine = event.sourceSignals?.uniqueSources?.slice(0, 3).join(", ") || "No named sources";
   return (
     <>
       {/* Header badges */}
@@ -1532,6 +1780,10 @@ function EventDetailContent({ event, activeScenario, onScenarioChange }) {
         <div style={{ display: "flex", gap: 7, flexWrap: "wrap", alignItems: "center" }}>
           <Badge color={TONE_COLOR[event.tone]}>{event.tone}</Badge>
           <Badge color={CONF_COLOR[event.confidence]}>CONF: {event.confidence}</Badge>
+          <Badge color="#7dd3fc">RISK: {event.riskLevel}</Badge>
+          <Badge color={event.sourceSignals?.trustLabel === "High" ? "#58e38f" : event.sourceSignals?.trustLabel === "Medium" ? "#ffbf47" : "#7fb8dd"}>
+            TRUST: {event.sourceSignals?.trustLabel ?? "Low"}
+          </Badge>
           <span style={{ color: "rgba(0,180,255,0.38)", fontSize: 9, fontFamily: mono }}>
             {event.lat.toFixed(2)}°, {event.lng.toFixed(2)}°
           </span>
@@ -1548,6 +1800,24 @@ function EventDetailContent({ event, activeScenario, onScenarioChange }) {
           <p style={{ color: "rgba(180,220,255,0.72)", fontSize: 12, lineHeight: 1.72, margin: 0 }}>
             {event.summary}
           </p>
+          <div style={{ marginTop: 10, color: "rgba(130,185,230,0.7)", fontSize: 10, fontFamily: mono, lineHeight: 1.6 }}>
+            {event.confidenceExplanation}
+          </div>
+          <div style={{ marginTop: 10, display: "flex", flexWrap: "wrap", gap: 6 }}>
+            <TrafficPill level="neutral">Sources: {sourceLine}</TrafficPill>
+            <TrafficPill level={event.sourceSignals?.trustLabel === "High" ? "green" : event.sourceSignals?.trustLabel === "Medium" ? "amber" : "neutral"}>
+              Signals: {event.sourceSignals?.sourceCount ?? 0} / {event.sourceSignals?.corroboratedCount ?? 0} corroborated
+            </TrafficPill>
+          </div>
+          {event.marketImpactTags?.length > 0 ? (
+            <div style={{ marginTop: 10, display: "flex", flexWrap: "wrap", gap: 6 }}>
+              {event.marketImpactTags.map((tag) => (
+                <TrafficPill key={tag} level={/Oil Up|Shipping Risk|Equities Risk-off/i.test(tag) ? "red" : /Defense|Tech/i.test(tag) ? "amber" : "neutral"}>
+                  {tag}
+                </TrafficPill>
+              ))}
+            </div>
+          ) : null}
         </div>
 
         {/* Developments */}
@@ -2208,6 +2478,11 @@ function DesktopSidebar({ events, selectedEvent, onSelect }) {
         </div>
       </div>
       <div style={{ flex: 1, overflowY: "auto" }}>
+        {events.length === 0 ? (
+          <div style={{ padding: "18px 15px", color: "rgba(150,200,240,0.55)", fontSize: 10, fontFamily: mono, lineHeight: 1.6 }}>
+            No events match the current timeline and focus filters.
+          </div>
+        ) : null}
         {events.map(ev => {
           const cfg  = INTENSITY[ev.intensity];
           const pcfg = PRIORITY_CONFIG[ev.priorityLevel] || PRIORITY_CONFIG.LOW;
@@ -2230,10 +2505,14 @@ function DesktopSidebar({ events, selectedEvent, onSelect }) {
                   letterSpacing: "0.1em", textTransform: "uppercase" }}>
                   {ev.intensity} · {ev.tone}
                 </span>
+                {ev.watchlistMatch?.matched ? <TrafficPill level="amber">Watchlist</TrafficPill> : null}
               </div>
               <div style={{ color: sel ? "#c8e8ff" : "rgba(155,205,250,0.72)", fontSize: 12,
                 fontFamily: display, fontWeight: 700, lineHeight: 1.35, marginBottom: 2 }}>
                 {ev.title}
+              </div>
+              <div style={{ color: "rgba(125,185,235,0.55)", fontSize: 10, lineHeight: 1.45, marginBottom: 4 }}>
+                {ev.briefSummary}
               </div>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                 <div style={{ color: "rgba(0,160,220,0.38)", fontSize: 9, fontFamily: mono }}>
@@ -2245,6 +2524,10 @@ function DesktopSidebar({ events, selectedEvent, onSelect }) {
                     border: `1px solid ${pcfg.border}`, borderRadius: 3,
                     padding: "1px 5px" }}>{ev.priorityScore}</span>
                 )}
+              </div>
+              <div style={{ marginTop: 6, display: "flex", justifyContent: "space-between", gap: 6, color: "rgba(150,200,240,0.5)", fontSize: 9, fontFamily: mono }}>
+                <span>CONF {ev.confidence}</span>
+                <span>{ev.sourceSignals?.sourceCount ?? 0} src / {ev.sourceSignals?.corroboratedCount ?? 0} corr</span>
               </div>
             </div>
           );
@@ -2275,8 +2558,22 @@ export default function GlobeApp() {
   const [marketData,      setMarketData]      = useState(null);
   const [showPersonalize, setShowPersonalize] = useState(false);
   const [prefs,           setPrefs]           = useState({ region: "all", sectors: [], riskLevel: "all" });
-  const [liveTopEvents,   setLiveTopEvents]   = useState(TOP_EVENTS);
   const [refreshState,    setRefreshState]    = useState({ status: "idle", message: "" });
+  const [briefing,        setBriefing]        = useState(buildBriefing(SCORED_EVENTS));
+  const [timelineHours,   setTimelineHours]   = useState(24 * 7);
+  const [timelineSlider,  setTimelineSlider]  = useState(100);
+  const [watchlist,       setWatchlist]       = useState(() => {
+    if (typeof window === "undefined") return { regions: [], topics: [] };
+    try {
+      const parsed = JSON.parse(window.localStorage.getItem(WATCHLIST_STORAGE_KEY) ?? "{}");
+      return {
+        regions: Array.isArray(parsed.regions) ? parsed.regions : [],
+        topics: Array.isArray(parsed.topics) ? parsed.topics : [],
+      };
+    } catch {
+      return { regions: [], topics: [] };
+    }
+  });
 
   const isMobile = useIsMobile();
 
@@ -2289,8 +2586,17 @@ export default function GlobeApp() {
     try {
       const evs = await fetchLiveEvents();
       setLiveEvents(evs);
-      const top5 = [...evs].sort((a, b) => (b.priorityScore || 0) - (a.priorityScore || 0)).slice(0, 5);
-      setLiveTopEvents(top5);
+      try {
+        const briefingRes = await fetch(resolveBackendUrl("/api/v1/briefing"), { signal: AbortSignal.timeout(8000) });
+        if (briefingRes.ok) {
+          const briefingData = await briefingRes.json();
+          setBriefing(briefingData.briefing ?? buildBriefing(evs));
+        } else {
+          setBriefing(buildBriefing(evs));
+        }
+      } catch {
+        setBriefing(buildBriefing(evs));
+      }
     } catch {}
   }, []);
 
@@ -2300,6 +2606,11 @@ export default function GlobeApp() {
     const interval = setInterval(refreshData, 15 * 60 * 1000);
     return () => { clearInterval(interval); };
   }, [refreshData]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem(WATCHLIST_STORAGE_KEY, JSON.stringify(watchlist));
+  }, [watchlist]);
 
   const handleAdminRefresh = useCallback(async () => {
     const secret = window.prompt("Enter ADMIN_SECRET to refresh the pipeline.");
@@ -2327,8 +2638,63 @@ export default function GlobeApp() {
     }
   }, [refreshData]);
 
+  const timelineEvents = useMemo(
+    () => filterEventsByTimeWindow(liveEvents, timelineHours, timelineSlider),
+    [liveEvents, timelineHours, timelineSlider]
+  );
+
   // ── Filtered event list — recalculated when prefs or live data changes ────────
-  const filteredEvents = useMemo(() => filterEvents(liveEvents, prefs), [liveEvents, prefs]);
+  const filteredEvents = useMemo(
+    () => filterEvents(timelineEvents, prefs).map((event) => ({
+      ...event,
+      watchlistMatch: eventMatchesWatchlist(event, watchlist),
+    })),
+    [timelineEvents, prefs, watchlist]
+  );
+
+  const liveTopEvents = useMemo(
+    () => [...filteredEvents].sort((a, b) => (b.priorityScore || 0) - (a.priorityScore || 0)).slice(0, 5),
+    [filteredEvents]
+  );
+
+  const marketImpact = useMemo(
+    () => aggregateMarketImpact(filteredEvents),
+    [filteredEvents]
+  );
+
+  const timelineCursorLabel = useMemo(() => {
+    if (liveEvents.length === 0) return "No live events";
+    const newest = Math.max(...liveEvents.map((event) => new Date(event.timestamp ?? Date.now()).getTime()));
+    const windowStart = newest - timelineHours * 3600_000;
+    const cutoff = windowStart + (timelineSlider / 100) * (newest - windowStart);
+    return new Date(cutoff).toISOString().slice(0, 16).replace("T", " ");
+  }, [liveEvents, timelineHours, timelineSlider]);
+
+  const toggleWatchlistValue = useCallback((type, value) => {
+    setWatchlist((current) => {
+      const bucket = current[type];
+      const nextBucket = bucket.includes(value)
+        ? bucket.filter((item) => item !== value)
+        : [...bucket, value];
+      return { ...current, [type]: nextBucket };
+    });
+  }, []);
+
+  const handleBriefingSelect = useCallback((eventId) => {
+    const event = liveEvents.find((item) => item.id === eventId);
+    if (!event) return;
+    setTimelineSlider(100);
+    sceneRef.current.focusCameraOnEvent?.(event);
+    setSelectedEvent(event);
+    setActiveScenario(0);
+  }, [liveEvents]);
+
+  useEffect(() => {
+    if (selectedEvent && !filteredEvents.some((event) => event.id === selectedEvent.id)) {
+      setSelectedEvent(null);
+      setActiveScenario(0);
+    }
+  }, [filteredEvents, selectedEvent]);
 
   // ── Toggle a live layer ──────────────────────────────────────────────────────
   const handleLayerToggle = useCallback(key => {
@@ -2390,12 +2756,8 @@ export default function GlobeApp() {
     // Hotspots
     const hotspotLayer = new THREE.Group();
     scene.add(hotspotLayer);
-    const clickableObjects = [];
-    SCORED_EVENTS.forEach(ev => {
-      const hs = makeHotspot(ev);
-      hotspotLayer.add(hs);
-      hs.traverse(obj => { if (obj.userData.clickable) clickableObjects.push(obj); });
-    });
+    let clickableObjects = [];
+    let interactiveEvents = [];
 
     // Impact layer (rebuilt on selection)
     let impactLayer = new THREE.Group();
@@ -2465,7 +2827,7 @@ export default function GlobeApp() {
     // ── Live Intelligence Layers ─────────────────────────────────────────────
     const satLayer     = buildSatelliteLayer();
     const maritimeLayer= buildMaritimeLayer();
-    const conflictLayer= buildConflictLayer(SCORED_EVENTS);
+    let conflictLayer  = buildConflictLayer(filteredEvents);
     const connLayer    = buildConnectionLayer();
 
     satLayer.visible      = true;
@@ -2474,6 +2836,38 @@ export default function GlobeApp() {
     connLayer.visible     = false;
 
     scene.add(satLayer, maritimeLayer, conflictLayer, connLayer);
+
+    function syncVisibleEvents(events) {
+      interactiveEvents = events;
+      clickableObjects = [];
+
+      while (hotspotLayer.children.length > 0) {
+        const child = hotspotLayer.children[0];
+        hotspotLayer.remove(child);
+        child.traverse((obj) => {
+          obj.geometry?.dispose?.();
+          obj.material?.dispose?.();
+        });
+      }
+
+      interactiveEvents.forEach((ev) => {
+        const hs = makeHotspot(ev);
+        hotspotLayer.add(hs);
+        hs.traverse((obj) => {
+          if (obj.userData.clickable) clickableObjects.push(obj);
+        });
+      });
+
+      scene.remove(conflictLayer);
+      conflictLayer.traverse((obj) => {
+        obj.geometry?.dispose?.();
+        obj.material?.dispose?.();
+      });
+      conflictLayer = buildConflictLayer(interactiveEvents);
+      conflictLayer.visible = activeLayers.conflict;
+      scene.add(conflictLayer);
+      sceneRef.current.liveLayers.conflict = conflictLayer;
+    }
 
     // ── Camera state ─────────────────────────────────────────────────────────
     const cam = {
@@ -2532,7 +2926,7 @@ export default function GlobeApp() {
       raycaster.setFromCamera(getNDC(e.clientX, e.clientY), camera);
       const hits = raycaster.intersectObjects(clickableObjects, false);
       if (hits.length > 0) {
-        const ev2 = SCORED_EVENTS.find(ev => ev.id === hits[0].object.userData.eventId);
+        const ev2 = interactiveEvents.find(ev => ev.id === hits[0].object.userData.eventId);
         setTooltip({ text: ev2?.title ?? null, x: e.clientX, y: e.clientY });
         container.style.cursor = "pointer";
       } else {
@@ -2549,7 +2943,7 @@ export default function GlobeApp() {
       raycaster.setFromCamera(getNDC(e.clientX, e.clientY), camera);
       const hits = raycaster.intersectObjects(clickableObjects, false);
       if (hits.length > 0) {
-        const ev2 = SCORED_EVENTS.find(ev => ev.id === hits[0].object.userData.eventId);
+        const ev2 = interactiveEvents.find(ev => ev.id === hits[0].object.userData.eventId);
         if (ev2) { setSelectedEvent(ev2); setActiveScenario(0); focusCameraOnEvent(ev2); }
       }
     };
@@ -2592,7 +2986,7 @@ export default function GlobeApp() {
           raycaster.setFromCamera(getNDC(t.clientX, t.clientY), camera);
           const hits = raycaster.intersectObjects(clickableObjects, false);
           if (hits.length > 0) {
-            const ev2 = SCORED_EVENTS.find(ev => ev.id === hits[0].object.userData.eventId);
+            const ev2 = interactiveEvents.find(ev => ev.id === hits[0].object.userData.eventId);
             if (ev2) { setSelectedEvent(ev2); setActiveScenario(0); focusCameraOnEvent(ev2); }
           }
         }
@@ -2618,6 +3012,7 @@ export default function GlobeApp() {
     sceneRef.current = {
       cam, scene, focusCameraOnEvent,
       liveLayers: { satellites: satLayer, maritime: maritimeLayer, conflict: conflictLayer, connections: connLayer },
+      syncVisibleEvents,
       rebuildImpact: (event, scenarioIdx) => {
         scene.remove(impactLayer);
         impactLayer.traverse(o => { o.geometry?.dispose(); o.material?.dispose(); });
@@ -2626,6 +3021,8 @@ export default function GlobeApp() {
         sceneRef.current.impactLayer = impactLayer;
       },
     };
+
+    syncVisibleEvents(filteredEvents);
 
     // ── Animation loop ────────────────────────────────────────────────────────
     let rafId;
@@ -2744,6 +3141,10 @@ export default function GlobeApp() {
     sceneRef.current.rebuildImpact?.(selectedEvent, activeScenario);
   }, [selectedEvent, activeScenario]);
 
+  useEffect(() => {
+    sceneRef.current.syncVisibleEvents?.(filteredEvents);
+  }, [filteredEvents]);
+
   // Focus camera from sidebar click
   const focusEvent = useCallback(ev => {
     sceneRef.current.focusCameraOnEvent?.(ev);
@@ -2752,10 +3153,10 @@ export default function GlobeApp() {
   }, []);
 
   const counts = useMemo(() => ({
-    high:   EVENTS.filter(e => e.intensity === "high").length,
-    medium: EVENTS.filter(e => e.intensity === "medium").length,
-    low:    EVENTS.filter(e => e.intensity === "low").length,
-  }), []);
+    high:   filteredEvents.filter(e => e.intensity === "high").length,
+    medium: filteredEvents.filter(e => e.intensity === "medium").length,
+    low:    filteredEvents.filter(e => e.intensity === "low").length,
+  }), [filteredEvents]);
 
   return (
     <>
@@ -2785,6 +3186,21 @@ export default function GlobeApp() {
           showPersonalize={showPersonalize}
           onAdminRefresh={handleAdminRefresh}
           refreshState={refreshState} />
+
+        {!isMobile && (
+          <>
+            <TimelinePanel
+              modeHours={timelineHours}
+              onModeChange={setTimelineHours}
+              sliderPercent={timelineSlider}
+              onSliderChange={setTimelineSlider}
+              cursorLabel={timelineCursorLabel}
+              visibleCount={filteredEvents.length}
+            />
+            <BriefingPanel briefing={briefing} onSelect={handleBriefingSelect} />
+            <MarketImpactDashboard aggregate={marketImpact} />
+          </>
+        )}
 
         {/* GLOBE ROW — fills all remaining space between topbar and (on mobile) bottom sheet */}
         <div style={{
@@ -2834,6 +3250,10 @@ export default function GlobeApp() {
             prefs={prefs}
             onChange={setPrefs}
             onClose={() => setShowPersonalize(false)}
+            watchlist={watchlist}
+            selectedEvent={selectedEvent}
+            onToggleRegion={(value) => toggleWatchlistValue("regions", value)}
+            onToggleTopic={(value) => toggleWatchlistValue("topics", value)}
           />
         )}
 

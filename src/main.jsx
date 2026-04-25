@@ -51,7 +51,7 @@ function Shell() {
           </button>
         ))}
       </div>
-      <ActiveView />
+      <ActiveView key={view} />
     </div>
   );
 }

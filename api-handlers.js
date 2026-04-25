@@ -1,5 +1,6 @@
 import { getAIStatus } from "./ai.js";
 import { describeEnvVar, getConfig, getIntegrationConfigStatus } from "./config.js";
+import { buildBriefing } from "./event-insights.js";
 import { createLogger } from "./logger.js";
 import { runPipeline } from "./pipeline.js";
 import {
@@ -127,6 +128,19 @@ export async function handleEventById(req, res) {
 export async function handleEventStats(_req, res) {
   const stats = await getStats();
   return res.status(200).json({ ok: true, stats, ai: await getAIStatus() });
+}
+
+export async function handleBriefing(req, res) {
+  if (!applyRateLimit(req, res)) return;
+
+  const result = await getEvents({ limit: 100, offset: 0 });
+  const briefing = buildBriefing(result.events ?? []);
+
+  return res.status(200).json({
+    ok: true,
+    mode: result.mode,
+    briefing,
+  });
 }
 
 export async function handleAIStatus(_req, res) {

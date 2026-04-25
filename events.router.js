@@ -1,6 +1,7 @@
 import { Router } from "express";
 import {
   handleAIStatus,
+  handleBriefing,
   handleEventById,
   handleEvents,
   handleEventStats,
@@ -10,6 +11,7 @@ import {
 
 export const eventsRouter = Router();
 eventsRouter.get("/health", handleHealth);
+eventsRouter.get("/briefing", handleBriefing);
 eventsRouter.get("/events", handleEvents);
 eventsRouter.get("/events/stats", handleEventStats);
 eventsRouter.get("/events/:id", handleEventById);
