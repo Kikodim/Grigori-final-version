@@ -9,6 +9,9 @@
   },
   "scripts": {
     "predeploy:check": "node scripts/predeploy-check.js",
+    "build": "vite build",
+    "frontend:dev": "vite",
+    "preview": "vite preview",
     "start": "node bootstrap.js",
     "dev": "node --watch bootstrap.js",
     "test:health": "curl -s http://localhost:3001/api/v1/health",
@@ -20,6 +23,13 @@
     "cors": "^2.8.5",
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
-    "node-cron": "^3.0.3"
+    "node-cron": "^3.0.3",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "three": "^0.180.0"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^5.1.0",
+    "vite": "^7.1.11"
   }
 }

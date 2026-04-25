@@ -1,6 +1,9 @@
 import cors from "cors";
 import express from "express";
+import fs from "fs";
 import cron from "node-cron";
+import path from "path";
+import { fileURLToPath } from "url";
 import { getConfig } from "./config.js";
 import { eventsRouter } from "./events.router.js";
 import { createLogger } from "./logger.js";
@@ -8,6 +11,9 @@ import { runPipeline } from "./pipeline.js";
 
 const log = createLogger("server");
 const config = getConfig();
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const distDir = path.join(__dirname, "dist");
+const hasFrontendBuild = fs.existsSync(path.join(distDir, "index.html"));
 
 const app = express();
 
@@ -15,12 +21,20 @@ app.use(cors());
 app.use(express.json());
 app.use("/api/v1", eventsRouter);
 
+if (hasFrontendBuild) {
+  app.use(express.static(distDir));
+}
+
 app.get("/health", (_req, res) => {
   res.redirect(307, "/api/v1/health");
 });
 
 app.get("/", (_req, res) => {
-  res.json({
+  if (hasFrontendBuild) {
+    return res.sendFile(path.join(distDir, "index.html"));
+  }
+
+  return res.json({
     ok: true,
     service: "grigori-the-watcher",
     endpoints: [
@@ -31,6 +45,12 @@ app.get("/", (_req, res) => {
     ],
   });
 });
+
+if (hasFrontendBuild) {
+  app.get(/^\/(?!api\/).*/, (_req, res) => {
+    res.sendFile(path.join(distDir, "index.html"));
+  });
+}
 
 app.use((req, res) => {
   res.status(404).json({ ok: false, error: `Not found: ${req.method} ${req.path}` });

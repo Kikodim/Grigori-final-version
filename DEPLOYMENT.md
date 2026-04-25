@@ -8,6 +8,7 @@ From the repo root:
 npm install
 cp .env.local.example .env.local
 npm run predeploy:check
+npm run build
 npm run dev
 ```
 
@@ -64,6 +65,7 @@ git push -u origin main
 7. Vercel will use the serverless handlers under `/api/v1/...` automatically.
 8. Add environment variables before the first production deploy.
 9. On Vercel Hobby, the built-in cron should stay daily. More frequent automated ingestion should be handled later with Vercel Pro, GitHub Actions, an external cron service, or manual protected refresh calls.
+10. Vercel should detect the `build` script and publish the Vite frontend at `/` while keeping `/api/v1/*` as serverless routes.
 
 ## 4. Vercel Environment Variables
 

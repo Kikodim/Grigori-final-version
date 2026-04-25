@@ -3,6 +3,7 @@
 Grigori is a geopolitical intelligence platform with:
 - local development through a root Express server
 - Vercel production deployment through serverless `/api/v1/...` handlers
+- a Vite-built frontend served at `/`
 - Gemini for AI enrichment
 - multi-source ingestion
 - Supabase persistence when configured
@@ -14,6 +15,13 @@ Local development uses [server.js](/Users/kirildimitrov/grigori/server.js) throu
 ```bash
 npm run dev
 ```
+
+The frontend build uses:
+- [index.html](/Users/kirildimitrov/grigori/index.html)
+- [src/main.jsx](/Users/kirildimitrov/grigori/src/main.jsx)
+- [vite.config.js](/Users/kirildimitrov/grigori/vite.config.js)
+
+The root route `/` serves the Grigori UI after `npm run build` or on Vercel production builds.
 
 Vercel uses the serverless route handlers in:
 - [api/v1/health.js](/Users/kirildimitrov/grigori/api/v1/health.js)
@@ -53,6 +61,13 @@ cp .env.local.example .env.local
 
 ```bash
 npm run dev
+```
+
+If you want the built frontend served locally at `/`, run:
+
+```bash
+npm run build
+npm start
 ```
 
 ## Local Test Commands
