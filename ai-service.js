@@ -34,6 +34,7 @@ import {
   buildBriefPrompt,
   buildBriefMePrompt,
 } from "./prompts.js";
+import { buildRuleBasedBriefing } from "./rule-based-briefing.js";
 import { log } from "../utils/logger.js";
 
 // ─── Singleton state ──────────────────────────────────────────────────────────
@@ -237,12 +238,5 @@ function parseBriefMeResponse(text) {
 }
 
 function buildFallback(preEvent) {
-  return {
-    title:        preEvent.title,
-    summary:      "AI processing temporarily unavailable.",
-    developments: [],
-    tone:         "Stable",
-    confidence:   preEvent.confidence,
-    scenarios:    [],
-  };
+  return buildRuleBasedBriefing(preEvent, []);
 }

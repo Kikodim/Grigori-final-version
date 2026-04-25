@@ -977,7 +977,7 @@ function normalizeBackendEvent(event) {
     scenarios: scenarios.length > 0 ? scenarios : [{
       name: "Monitoring",
       probability: 100,
-      description: "Awaiting richer scenario output from the backend pipeline.",
+      description: "Rule-based watch scenario assembled from source signals.",
       impact: {
         oil: "Neutral",
         markets: "Stable",

@@ -3,6 +3,7 @@ import { ingest } from "./ingest.js";
 import { cluster } from "./cluster.js";
 import { cacheHas, cachePrune, getAIStatus, makeClusterKey, processCluster } from "./ai.js";
 import { getAllArticles } from "./store.js";
+import { buildRuleBasedBriefing } from "./rule-based-briefing.js";
 import { deleteOldEvents, getRecentEvents, insertEvent } from "./supabase.js";
 import { createLogger } from "./logger.js";
 
@@ -216,13 +217,9 @@ export async function runPipeline({ source = "manual", noAi = false } = {}) {
     }
 
     if (!aiTargets.has(preEvent._clusterId)) {
+      const fallbackBriefing = buildRuleBasedBriefing(preEvent, articles);
       results.set(preEvent._clusterId, {
-        title: preEvent.title,
-        summary: "AI processing temporarily unavailable.",
-        developments: [],
-        tone: "Stable",
-        confidence: preEvent.confidence,
-        scenarios: [],
+        ...fallbackBriefing,
         aiStatus: automatedAiEnabled && !noAi && isAutomatedRun && automationRemaining <= 0
           ? "budget_exhausted"
           : "fallback",
@@ -238,7 +235,7 @@ export async function runPipeline({ source = "manual", noAi = false } = {}) {
     actualAiCalls++;
     results.set(preEvent._clusterId, {
       ...result,
-      aiStatus: result.summary === "AI processing temporarily unavailable." ? "fallback" : "enriched",
+      aiStatus: result.generationMethod === "rule-based" ? "fallback" : "enriched",
       aiUpdatedAt: new Date().toISOString(),
       importanceScore,
     });

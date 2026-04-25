@@ -15,6 +15,7 @@
 import { createHash } from "crypto";
 import { describeEnvVar } from "./config.js";
 import { createLogger } from "./logger.js";
+import { buildRuleBasedBriefing } from "./rule-based-briefing.js";
 import { getAIUsageStats, recordAIUsage } from "./supabase.js";
 
 const log = createLogger("ai");
@@ -421,7 +422,7 @@ export async function processCluster(pe, articles, { source = "automation" } = {
   const cached = _cacheGet(key);
   if (cached) { log.info(`Cache HIT ${key}`); return cached; }
 
-  const fb = { title: pe.title, summary: "AI processing temporarily unavailable.", developments: [], tone: "Stable", confidence: pe.confidence, scenarios: [] };
+  const fb = buildRuleBasedBriefing(pe, articles);
   const prompt = _buildPrompt(pe, articles);
 
   let response;
@@ -464,6 +465,7 @@ export async function processCluster(pe, articles, { source = "automation" } = {
   }
 
   const result = _validate(parsed.value, fb);
+  result.generationMethod = "ai";
   await recordAIUsage({
     source,
     clusterSignature: pe._clusterSignature ?? makeClusterKey(pe),
