@@ -21,6 +21,7 @@ Vercel uses the serverless route handlers in:
 - [api/v1/events/[id].js](/Users/kirildimitrov/grigori/api/v1/events/[id].js)
 - [api/v1/events/stats.js](/Users/kirildimitrov/grigori/api/v1/events/stats.js)
 - [api/v1/pipeline/run.js](/Users/kirildimitrov/grigori/api/v1/pipeline/run.js)
+- [api/v1/admin/refresh.js](/Users/kirildimitrov/grigori/api/v1/admin/refresh.js)
 - [api/v1/ai/status.js](/Users/kirildimitrov/grigori/api/v1/ai/status.js)
 
 Both paths reuse the same business logic in:
@@ -60,6 +61,7 @@ npm run dev
 npm run test:health
 npm run test:events
 curl -X POST http://localhost:3001/api/v1/pipeline/run -H "Authorization: Bearer <ADMIN_SECRET>"
+curl -X POST http://localhost:3001/api/v1/admin/refresh -H "Authorization: Bearer <ADMIN_SECRET>"
 ```
 
 ## Environment Variables
@@ -93,8 +95,10 @@ Use these exact names locally and in Vercel:
 - `.env` and `.env.local` should remain untracked.
 - `SUPABASE_SERVICE_ROLE_KEY`, `GEMINI_API_KEY`, and `NEWS_API_KEY` are server-side only.
 - `POST /api/v1/pipeline/run` requires `Authorization: Bearer <ADMIN_SECRET>` for manual use.
+- `POST /api/v1/admin/refresh` is a protected alias for manual operator refreshes and uses the same `ADMIN_SECRET` check.
 - In production, `RUN_PIPELINE_ON_STARTUP=false` is the safe default.
 - Frontend API calls should remain relative, for example `/api/v1/events`.
+- The in-app `Admin Refresh` button prompts for `ADMIN_SECRET` at click time and does not persist it.
 
 ## Schema
 

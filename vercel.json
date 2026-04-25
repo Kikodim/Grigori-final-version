@@ -7,7 +7,7 @@
   "crons": [
     {
       "path":     "/api/v1/pipeline/run",
-      "schedule": "0 * * * *"
+      "schedule": "0 0 * * *"
     }
   ],
   "headers": [

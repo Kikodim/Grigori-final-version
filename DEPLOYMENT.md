@@ -17,6 +17,7 @@ In another terminal:
 npm run test:health
 npm run test:events
 curl -X POST http://localhost:3001/api/v1/pipeline/run -H "Authorization: Bearer <ADMIN_SECRET>"
+curl -X POST http://localhost:3001/api/v1/admin/refresh -H "Authorization: Bearer <ADMIN_SECRET>"
 ```
 
 Optional extra checks:
@@ -62,6 +63,7 @@ git push -u origin main
 6. Do not point Vercel at `server.js`.
 7. Vercel will use the serverless handlers under `/api/v1/...` automatically.
 8. Add environment variables before the first production deploy.
+9. On Vercel Hobby, the built-in cron should stay daily. More frequent automated ingestion should be handled later with Vercel Pro, GitHub Actions, an external cron service, or manual protected refresh calls.
 
 ## 4. Vercel Environment Variables
 
@@ -121,6 +123,7 @@ curl https://YOUR_DOMAIN/api/v1/events
 curl https://YOUR_DOMAIN/api/v1/events/stats
 curl https://YOUR_DOMAIN/api/v1/ai/status
 curl -X POST https://YOUR_DOMAIN/api/v1/pipeline/run -H "Authorization: Bearer YOUR_ADMIN_SECRET"
+curl -X POST https://YOUR_DOMAIN/api/v1/admin/refresh -H "Authorization: Bearer YOUR_ADMIN_SECRET"
 ```
 
 ## 6. Hostinger DNS For `grigori.oryth.io`
@@ -159,3 +162,5 @@ git push origin main
 - Production Vercel uses `/api/v1/...` serverless handlers, not `app.listen()`.
 - Do not commit `.env.local`.
 - Do not expose `SUPABASE_SERVICE_ROLE_KEY`, `GEMINI_API_KEY`, or `NEWS_API_KEY` to the frontend.
+- Vercel Hobby cron is set to once daily: `0 0 * * *`.
+- If you need more frequent automated ingestion later, use Vercel Pro, GitHub Actions scheduled workflows, an external cron service, or the protected `/api/v1/admin/refresh` and `/api/v1/pipeline/run` endpoints.

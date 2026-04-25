@@ -27,6 +27,7 @@ app.get("/", (_req, res) => {
       "GET /api/v1/health",
       "GET /api/v1/events",
       "POST /api/v1/pipeline/run",
+      "POST /api/v1/admin/refresh",
     ],
   });
 });
@@ -60,7 +61,7 @@ function shouldRunPipelineOnStartup() {
 
 app.listen(config.port, () => {
   log.info(`Grigori backend listening on http://localhost:${config.port}`);
-  log.info("Endpoints: GET /api/v1/health, GET /api/v1/events, POST /api/v1/pipeline/run");
+  log.info("Endpoints: GET /api/v1/health, GET /api/v1/events, POST /api/v1/pipeline/run, POST /api/v1/admin/refresh");
 
   if (shouldRunPipelineOnStartup()) {
     runScheduledPipeline("startup");

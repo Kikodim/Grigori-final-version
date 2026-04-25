@@ -2076,7 +2076,7 @@ function buildConnectionLayer() {
 // TOP BAR
 // ═══════════════════════════════════════════════════════════════════════════════
 
-function TopBar({ counts, bordersLoaded, activeLayers, onLayerToggle, isMobile, onWarRoom, showWarRoom, marketData, onPersonalize, showPersonalize }) {
+function TopBar({ counts, bordersLoaded, activeLayers, onLayerToggle, isMobile, onWarRoom, showWarRoom, marketData, onPersonalize, showPersonalize, onAdminRefresh, refreshState }) {
   const [time, setTime] = useState(() => new Date().toISOString().slice(11,19));
   useEffect(() => {
     const t = setInterval(() => setTime(new Date().toISOString().slice(11,19)), 1000);
@@ -2145,6 +2145,24 @@ function TopBar({ counts, bordersLoaded, activeLayers, onLayerToggle, isMobile, 
               fontSize: 9, fontFamily: mono, letterSpacing: "0.1em" }}>⊞ FOCUS</span>
           </button>
         )}
+
+        <button onClick={onAdminRefresh} disabled={refreshState?.status === "running"} style={{
+          display: "flex", alignItems: "center", gap: 5, padding: "4px 10px",
+          background: refreshState?.status === "success" ? "rgba(0,140,90,0.18)" : refreshState?.status === "error" ? "rgba(180,30,60,0.18)" : "rgba(0,20,50,0.5)",
+          border: `1px solid ${refreshState?.status === "success" ? "rgba(0,200,140,0.35)" : refreshState?.status === "error" ? "rgba(255,80,120,0.35)" : "rgba(0,100,180,0.3)"}`,
+          borderRadius: 4, cursor: refreshState?.status === "running" ? "wait" : "pointer", minHeight: 30, transition: "all 0.18s ease",
+        }}>
+          <span style={{ color: refreshState?.status === "running" ? "rgba(200,220,255,0.45)" : "rgba(200,220,255,0.7)",
+            fontSize: 9, fontFamily: mono, letterSpacing: "0.1em" }}>
+            {refreshState?.status === "running" ? "… RUNNING" : "↻ REFRESH"}
+          </span>
+        </button>
+
+        {!isMobile && refreshState?.message ? (
+          <span style={{ color: refreshState.status === "error" ? "#ff8da1" : "rgba(120,220,255,0.78)", fontSize: 9, fontFamily: mono }}>
+            {refreshState.message}
+          </span>
+        ) : null}
 
         <button onClick={onWarRoom} style={{
           display: "flex", alignItems: "center", gap: 5, padding: "4px 10px",
@@ -2258,35 +2276,56 @@ export default function GlobeApp() {
   const [showPersonalize, setShowPersonalize] = useState(false);
   const [prefs,           setPrefs]           = useState({ region: "all", sectors: [], riskLevel: "all" });
   const [liveTopEvents,   setLiveTopEvents]   = useState(TOP_EVENTS);
+  const [refreshState,    setRefreshState]    = useState({ status: "idle", message: "" });
 
   const isMobile = useIsMobile();
 
+  const refreshData = useCallback(async () => {
+    try {
+      const md = await fetchMarketData();
+      setMarketData(md);
+    } catch {}
+
+    try {
+      const evs = await fetchLiveEvents();
+      setLiveEvents(evs);
+      const top5 = [...evs].sort((a, b) => (b.priorityScore || 0) - (a.priorityScore || 0)).slice(0, 5);
+      setLiveTopEvents(top5);
+    } catch {}
+  }, []);
+
   // ── Live data fetching — runs once on mount, then every 15 min ───────────────
   useEffect(() => {
-    let cancelled = false;
-
-    async function refreshData() {
-      // Fetch market data (5 min cache inside fetchMarketData)
-      try {
-        const md = await fetchMarketData();
-        if (!cancelled) setMarketData(md);
-      } catch { /* market data is nice-to-have, not critical */ }
-
-      // Fetch live events (15 min cache inside fetchLiveEvents)
-      try {
-        const evs = await fetchLiveEvents();
-        if (!cancelled) {
-          setLiveEvents(evs);
-          const top5 = [...evs].sort((a,b) => (b.priorityScore||0)-(a.priorityScore||0)).slice(0,5);
-          setLiveTopEvents(top5);
-        }
-      } catch { /* fallback to static data — already default state */ }
-    }
-
     refreshData();
     const interval = setInterval(refreshData, 15 * 60 * 1000);
-    return () => { cancelled = true; clearInterval(interval); };
-  }, []);
+    return () => { clearInterval(interval); };
+  }, [refreshData]);
+
+  const handleAdminRefresh = useCallback(async () => {
+    const secret = window.prompt("Enter ADMIN_SECRET to refresh the pipeline.");
+    if (!secret) return;
+
+    setRefreshState({ status: "running", message: "Triggering pipeline..." });
+    try {
+      const res = await fetch(resolveBackendUrl("/api/v1/admin/refresh"), {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${secret}`,
+          "Content-Type": "application/json",
+        },
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data.error ?? `Request failed with ${res.status}`);
+      }
+
+      await refreshData();
+      setRefreshState({ status: "success", message: "Pipeline refresh completed." });
+      window.setTimeout(() => setRefreshState({ status: "idle", message: "" }), 4000);
+    } catch (err) {
+      setRefreshState({ status: "error", message: err.message });
+    }
+  }, [refreshData]);
 
   // ── Filtered event list — recalculated when prefs or live data changes ────────
   const filteredEvents = useMemo(() => filterEvents(liveEvents, prefs), [liveEvents, prefs]);
@@ -2743,7 +2782,9 @@ export default function GlobeApp() {
           showWarRoom={showWarRoom}
           marketData={marketData}
           onPersonalize={() => setShowPersonalize(v => !v)}
-          showPersonalize={showPersonalize} />
+          showPersonalize={showPersonalize}
+          onAdminRefresh={handleAdminRefresh}
+          refreshState={refreshState} />
 
         {/* GLOBE ROW — fills all remaining space between topbar and (on mobile) bottom sheet */}
         <div style={{

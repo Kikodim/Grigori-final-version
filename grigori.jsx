@@ -833,7 +833,7 @@ function NewsFeed({ events, selectedId, onSelect }) {
   );
 }
 
-function TopBar() {
+function TopBar({ onAdminRefresh, refreshState }) {
   const [time, setTime] = useState(new Date());
   useEffect(() => {
     const t = setInterval(() => setTime(new Date()), 1000);
@@ -863,6 +863,29 @@ function TopBar() {
         </div>
       </div>
       <div style={{ display: "flex", alignItems: "center", gap: 20 }}>
+        <button
+          onClick={onAdminRefresh}
+          disabled={refreshState?.status === "running"}
+          style={{
+            background: refreshState?.status === "success" ? "#14532d" : refreshState?.status === "error" ? "#4c0519" : "#0f2040",
+            color: refreshState?.status === "running" ? "#64748b" : "#e2e8f0",
+            border: "1px solid #1e3a5f",
+            borderRadius: 4,
+            padding: "6px 10px",
+            cursor: refreshState?.status === "running" ? "wait" : "pointer",
+            fontSize: 10,
+            fontFamily: "monospace",
+            letterSpacing: "0.1em",
+            textTransform: "uppercase",
+          }}
+        >
+          {refreshState?.status === "running" ? "Refreshing..." : "Admin Refresh"}
+        </button>
+        {refreshState?.message ? (
+          <span style={{ color: refreshState.status === "error" ? "#fda4af" : "#93c5fd", fontSize: 10, fontFamily: "monospace" }}>
+            {refreshState.message}
+          </span>
+        ) : null}
         <div style={{ color: "#334155", fontSize: 10, fontFamily: "monospace", letterSpacing: "0.1em" }}>
           <span style={{ color: "#475569" }}>UTC </span>
           <span style={{ color: "#64748b" }}>{time.toISOString().slice(11, 19)}</span>
@@ -886,33 +909,58 @@ export default function App() {
   const [events, setEvents] = useState(EVENTS);
   const [selectedId, setSelectedId] = useState(null);
   const [focusCoords, setFocusCoords] = useState({ lat: null, lng: null });
+  const [refreshState, setRefreshState] = useState({ status: "idle", message: "" });
+
+  const loadEvents = useCallback(async () => {
+    const res = await fetch(resolveBackendUrl(BACKEND_EVENTS_PATH), {
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!res.ok) return;
+
+    const data = await res.json();
+    if (Array.isArray(data.events) && data.events.length > 0) {
+      setEvents(data.events.map(mapBackendEvent));
+    }
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
 
-    async function loadEvents() {
-      try {
-        const res = await fetch(resolveBackendUrl(BACKEND_EVENTS_PATH), {
-          signal: AbortSignal.timeout(8000),
-        });
-        if (!res.ok) return;
-
-        const data = await res.json();
-        if (!cancelled && Array.isArray(data.events) && data.events.length > 0) {
-          setEvents(data.events.map(mapBackendEvent));
-        }
-      } catch {
-        // Keep static fallback data when the backend is unavailable.
-      }
-    }
-
-    loadEvents();
+    loadEvents().catch(() => {
+      // Keep static fallback data when the backend is unavailable.
+    });
     const interval = setInterval(loadEvents, 60_000);
     return () => {
       cancelled = true;
       clearInterval(interval);
     };
-  }, []);
+  }, [loadEvents]);
+
+  const handleAdminRefresh = useCallback(async () => {
+    const secret = window.prompt("Enter ADMIN_SECRET to refresh the pipeline.");
+    if (!secret) return;
+
+    setRefreshState({ status: "running", message: "Triggering pipeline..." });
+    try {
+      const res = await fetch(resolveBackendUrl("/api/v1/admin/refresh"), {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${secret}`,
+          "Content-Type": "application/json",
+        },
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data.error ?? `Request failed with ${res.status}`);
+      }
+
+      await loadEvents();
+      setRefreshState({ status: "success", message: "Pipeline refresh completed." });
+      window.setTimeout(() => setRefreshState({ status: "idle", message: "" }), 4000);
+    } catch (err) {
+      setRefreshState({ status: "error", message: err.message });
+    }
+  }, [loadEvents]);
 
   const selectedEvent = events.find((e) => e.id === selectedId) || null;
 
@@ -1002,7 +1050,7 @@ export default function App() {
           ))}
         </div>
 
-        <TopBar />
+        <TopBar onAdminRefresh={handleAdminRefresh} refreshState={refreshState} />
         <NewsFeed events={events} selectedId={selectedId} onSelect={handleSelect} />
         {selectedEvent && <EventPanel event={selectedEvent} onClose={handleClose} />}
       </div>

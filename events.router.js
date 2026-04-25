@@ -15,3 +15,4 @@ eventsRouter.get("/events/stats", handleEventStats);
 eventsRouter.get("/events/:id", handleEventById);
 eventsRouter.get("/ai/status", handleAIStatus);
 eventsRouter.post("/pipeline/run", handlePipelineRun);
+eventsRouter.post("/admin/refresh", handlePipelineRun);
