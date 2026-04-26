@@ -99,6 +99,9 @@ export function getConfig() {
     enableAutomatedAi:      String(process.env.ENABLE_AUTOMATED_AI ?? "true").toLowerCase() !== "false",
     aiDailyLimit:           parseInt(process.env.AI_DAILY_LIMIT       ?? "20",  10),
     aiReservedCalls:        parseInt(process.env.AI_RESERVED_CALLS    ?? "2",   10),
+    aiAutomationBudget:     Number.isFinite(parseInt(process.env.AI_AUTOMATION_BUDGET ?? "", 10))
+      ? parseInt(process.env.AI_AUTOMATION_BUDGET, 10)
+      : null,
     maxAiCallsPerRun:       parseInt(process.env.MAX_AI_CALLS_PER_RUN ?? "1",   10),
     enableFlights:          String(process.env.ENABLE_FLIGHTS ?? "true").toLowerCase() !== "false",
     aviationstackApiKey:    process.env.AVIATIONSTACK_API_KEY ?? "",

@@ -13,6 +13,7 @@ const EQUIVALENT_EVENT_WINDOW_MS = 24 * 60 * 60 * 1000;
 const memoryAIUsageLog = [];
 const memoryLayerCache = new Map();
 const memoryLayerUsageLog = [];
+const memoryRefreshState = new Map();
 const memoryWaitlistEntries = [];
 const memoryUserProfiles = new Map();
 const memoryReports = [];
@@ -170,6 +171,10 @@ function getMemoryLayerUsageSnapshot(layerKey) {
 
 function getMemoryLayerCacheRecord(layerKey) {
   return memoryLayerCache.get(layerKey) ?? null;
+}
+
+function getMemoryRefreshRecord(key) {
+  return memoryRefreshState.get(key) ?? null;
 }
 
 function findEquivalentMemoryEvent(event) {
@@ -692,6 +697,42 @@ export async function saveWaitlistEntry(entry) {
   }
 }
 
+export async function getWaitlistEntries({ limit = 200 } = {}) {
+  const db = await getClient();
+
+  if (!db) {
+    return {
+      mode: "memory",
+      entries: [...memoryWaitlistEntries]
+        .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+        .slice(0, limit),
+    };
+  }
+
+  try {
+    const { data, error } = await db
+      .from("report_waitlist")
+      .select("*")
+      .order("created_at", { ascending: false })
+      .limit(limit);
+
+    if (error) throw error;
+
+    return {
+      mode: "supabase",
+      entries: data ?? [],
+    };
+  } catch (err) {
+    log.warn(`Supabase waitlist lookup failed — using memory fallback (${err.message})`);
+    return {
+      mode: "memory",
+      entries: [...memoryWaitlistEntries]
+        .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+        .slice(0, limit),
+    };
+  }
+}
+
 export async function getUserReports(userId, { limit = 20, query = "" } = {}) {
   const db = await getClient();
   const needle = query.trim().toLowerCase();
@@ -915,5 +956,75 @@ export async function getLayerUsageStats(layerKey) {
   } catch (err) {
     log.warn(`Supabase layer usage lookup failed for ${layerKey} — using memory fallback (${err.message})`);
     return getMemoryLayerUsageSnapshot(layerKey);
+  }
+}
+
+export async function getRefreshState(key) {
+  const memoryRecord = getMemoryRefreshRecord(key);
+  const db = await getClient();
+
+  if (!db) {
+    return { record: memoryRecord, mode: "memory" };
+  }
+
+  try {
+    const { data, error } = await db
+      .from("external_layer_cache")
+      .select("*")
+      .eq("layer_key", `refresh_${key}`)
+      .maybeSingle();
+
+    if (error) {
+      throw error;
+    }
+
+    const record = data ? {
+      key,
+      metadata: data.metadata ?? {},
+      lastRefresh: data.last_refresh ?? null,
+      nextRefresh: data.next_refresh ?? null,
+      updatedAt: data.updated_at ?? null,
+    } : null;
+
+    return { record: record ?? memoryRecord, mode: record ? "supabase" : "memory" };
+  } catch (err) {
+    log.warn(`Supabase refresh state lookup failed for ${key} — using memory fallback (${err.message})`);
+    return { record: memoryRecord, mode: "memory" };
+  }
+}
+
+export async function setRefreshState(key, metadata = {}, nextRefresh = null) {
+  const now = new Date().toISOString();
+  const record = {
+    key,
+    metadata,
+    lastRefresh: now,
+    nextRefresh,
+    updatedAt: now,
+  };
+  memoryRefreshState.set(key, record);
+
+  const db = await getClient();
+  if (!db) {
+    return { persisted: false, mode: "memory", record };
+  }
+
+  try {
+    const row = {
+      layer_key: `refresh_${key}`,
+      payload: [],
+      metadata,
+      last_refresh: now,
+      next_refresh: nextRefresh,
+      updated_at: now,
+    };
+    const { error } = await db.from("external_layer_cache").upsert(row);
+    if (error) {
+      throw error;
+    }
+    return { persisted: true, mode: "supabase", record };
+  } catch (err) {
+    log.warn(`Supabase refresh state upsert failed for ${key}: ${err.message}`);
+    return { persisted: false, mode: "memory", error: err.message, record };
   }
 }

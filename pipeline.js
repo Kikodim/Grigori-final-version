@@ -105,11 +105,159 @@ function makeEventId(preEvent) {
   ].join("-");
 }
 
-export async function runPipeline({ source = "manual", noAi = false } = {}) {
-  const startedAt = Date.now();
-  const elapsed = () => `${((Date.now() - startedAt) / 1000).toFixed(1)}s`;
+function buildSyntheticArticlesForEvent(event, articleStore) {
+  const fromStore = (event.articleIds ?? [])
+    .map((id) => articleStore.get(id))
+    .filter(Boolean);
 
-  log.info("Pipeline starting");
+  if (fromStore.length > 0) return fromStore;
+
+  const developments = Array.isArray(event.developments) ? event.developments.join(" ") : "";
+  return [{
+    id: event.id,
+    title: event.title,
+    source: (event.sources ?? ["Stored Event"])[0] ?? "Stored Event",
+    publishedAt: event.timestamp,
+    content: `${event.summary ?? ""} ${developments}`.trim(),
+    url: `https://grigori.local/event/${event.id}`,
+    keywords: event.keywords ?? [],
+    region: event.location ?? null,
+    sourceQuality: 0.75,
+  }];
+}
+
+function getElapsed(startedAt) {
+  return `${((Date.now() - startedAt) / 1000).toFixed(1)}s`;
+}
+
+async function runAiOnlyRefresh({ source, noAi, startedAt }) {
+  const automatedAiEnabled = !noAi && String(process.env.ENABLE_AUTOMATED_AI ?? "true").toLowerCase() !== "false";
+  const articleStore = new Map(getAllArticles().map((article) => [article.id, article]));
+  const previousEvents = await getRecentEvents(72);
+  const aiStatus = await getAIStatus();
+  const maxAiCallsPerRun = parseInt(process.env.MAX_AI_CALLS_PER_RUN ?? "1", 10);
+  const automationRemaining = Math.max(0, aiStatus.automationBudget - aiStatus.aiCallsToday);
+  const isAutomatedRun = source !== "manual";
+  const allowedCallsThisRun = automatedAiEnabled
+    ? Math.max(0, Math.min(maxAiCallsPerRun, isAutomatedRun ? automationRemaining : maxAiCallsPerRun))
+    : 0;
+
+  const candidates = previousEvents
+    .filter((event) => !["enriched", "cached"].includes(event.aiStatus))
+    .map((event) => {
+      const preEvent = {
+        _clusterId: `stored-${event.id}`,
+        _clusterSignature: event.clusterSignature ?? makeClusterKey({
+          articleIds: event.articleIds ?? [],
+          region: event.location,
+        }),
+        title: event.title,
+        region: event.location,
+        timestamp: event.timestamp,
+        keywords: event.keywords ?? [],
+        confidence: event.confidence,
+        articleIds: event.articleIds ?? [],
+        sources: event.sources ?? [],
+      };
+      const articles = buildSyntheticArticlesForEvent(event, articleStore);
+      const importanceScore = Number(event.importanceScore ?? scoreImportance({
+        sources: event.sources ?? [],
+        keywords: event.keywords ?? [],
+        region: event.location,
+      }, articles));
+      return { event, preEvent, articles, importanceScore };
+    })
+    .filter((candidate) => !isAutomatedRun || candidate.importanceScore >= HIGH_IMPORTANCE_THRESHOLD)
+    .sort((a, b) => {
+      const scoreDelta = b.importanceScore - a.importanceScore;
+      if (scoreDelta !== 0) return scoreDelta;
+      return new Date(b.event.timestamp).getTime() - new Date(a.event.timestamp).getTime();
+    });
+
+  if (candidates.length === 0) {
+    return {
+      ok: true,
+      events: 0,
+      articles: 0,
+      clusters: 0,
+      cached: 0,
+      aiCalls: 0,
+      purged: 0,
+      mode: "ai",
+      refreshMode: "ai",
+      elapsed: getElapsed(startedAt),
+      changed: false,
+      reason: "No eligible fallback events for AI enrichment",
+    };
+  }
+
+  const target = candidates[0];
+  if (allowedCallsThisRun <= 0) {
+    await insertEvent({
+      ...target.event,
+      aiStatus: "budget_exhausted",
+      aiUpdatedAt: target.event.aiUpdatedAt ?? null,
+    });
+    return {
+      ok: true,
+      events: 1,
+      articles: 0,
+      clusters: 1,
+      cached: 0,
+      aiCalls: 0,
+      purged: 0,
+      mode: "ai",
+      refreshMode: "ai",
+      elapsed: getElapsed(startedAt),
+      changed: true,
+      reason: "AI automation budget exhausted",
+      targetEventId: target.event.id,
+      targetTitle: target.event.title,
+    };
+  }
+
+  const result = await processCluster(target.preEvent, target.articles, {
+    source: isAutomatedRun ? "automation" : "manual",
+  });
+
+  await insertEvent({
+    ...target.event,
+    title: result.title,
+    summary: result.summary,
+    developments: result.developments,
+    tone: result.tone,
+    confidence: result.confidence,
+    scenarios: result.scenarios,
+    aiStatus: result.generationMethod === "rule-based" ? "fallback" : "enriched",
+    aiUpdatedAt: new Date().toISOString(),
+    clusterSignature: target.preEvent._clusterSignature,
+    importanceScore: target.importanceScore,
+  });
+
+  return {
+    ok: true,
+    events: 1,
+    articles: 0,
+    clusters: 1,
+    cached: 0,
+    aiCalls: result.generationMethod === "rule-based" ? 0 : 1,
+    purged: 0,
+    mode: "ai",
+    refreshMode: "ai",
+    elapsed: getElapsed(startedAt),
+    changed: true,
+    targetEventId: target.event.id,
+    targetTitle: target.event.title,
+  };
+}
+
+export async function runPipeline({ source = "manual", noAi = false, mode = "full" } = {}) {
+  const startedAt = Date.now();
+  log.info(`Pipeline starting mode=${mode} source=${source}`);
+
+  if (mode === "ai") {
+    return runAiOnlyRefresh({ source, noAi, startedAt });
+  }
 
   let ingestResult;
   try {
@@ -129,12 +277,13 @@ export async function runPipeline({ source = "manual", noAi = false } = {}) {
       aiCalls: 0,
       purged: 0,
       mode: "failed",
-      elapsed: elapsed(),
+      refreshMode: mode,
+      elapsed: getElapsed(startedAt),
     };
   }
 
   const threshold = parseFloat(process.env.CLUSTER_THRESHOLD ?? "0.18");
-  const automatedAiEnabled = !noAi && String(process.env.ENABLE_AUTOMATED_AI ?? "true").toLowerCase() !== "false";
+  const automatedAiEnabled = mode !== "news" && !noAi && String(process.env.ENABLE_AUTOMATED_AI ?? "true").toLowerCase() !== "false";
   const preEvents = cluster({ threshold });
   const articleStore = new Map(getAllArticles().map((article) => [article.id, article]));
   const cachedCount = preEvents.filter((preEvent) => cacheHas(makeClusterKey(preEvent))).length;
@@ -151,8 +300,9 @@ export async function runPipeline({ source = "manual", noAi = false } = {}) {
       cached: cachedCount,
       aiCalls: 0,
       purged,
-      mode: ingestResult.mode,
-      elapsed: elapsed(),
+      mode: mode === "news" ? "news" : ingestResult.mode,
+      refreshMode: mode,
+      elapsed: getElapsed(startedAt),
     };
   }
 
@@ -184,9 +334,10 @@ export async function runPipeline({ source = "manual", noAi = false } = {}) {
   const maxAiCallsPerRun = parseInt(process.env.MAX_AI_CALLS_PER_RUN ?? "1", 10);
   const automationRemaining = Math.max(0, aiStatus.automationBudget - aiStatus.aiCallsToday);
   const isAutomatedRun = source !== "manual";
-  const allowedCallsThisRun = automatedAiEnabled && !noAi
+  const allowedCallsThisRun = automatedAiEnabled
     ? Math.max(0, Math.min(maxAiCallsPerRun, isAutomatedRun ? automationRemaining : maxAiCallsPerRun))
     : 0;
+
   const aiTargets = new Set(
     enrichedCandidates
       .filter((candidate) =>
@@ -220,7 +371,7 @@ export async function runPipeline({ source = "manual", noAi = false } = {}) {
       const fallbackBriefing = buildRuleBasedBriefing(preEvent, articles);
       results.set(preEvent._clusterId, {
         ...fallbackBriefing,
-        aiStatus: automatedAiEnabled && !noAi && isAutomatedRun && automationRemaining <= 0
+        aiStatus: automatedAiEnabled && isAutomatedRun && automationRemaining <= 0
           ? "budget_exhausted"
           : "fallback",
         aiUpdatedAt: existingEvent?.aiUpdatedAt ?? null,
@@ -278,10 +429,11 @@ export async function runPipeline({ source = "manual", noAi = false } = {}) {
     cached: cachedCount,
     aiCalls: actualAiCalls,
     purged,
-    mode: ingestResult.mode,
+    mode: mode === "news" ? "news" : ingestResult.mode,
+    refreshMode: mode,
     automatedAiEnabled,
     noAi,
-    elapsed: elapsed(),
+    elapsed: getElapsed(startedAt),
   };
 
   log.info(`Pipeline done: events=${summary.events} clusters=${summary.clusters} mode=${summary.mode} elapsed=${summary.elapsed}`);

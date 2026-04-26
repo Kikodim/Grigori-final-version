@@ -2,6 +2,15 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { createClient } from "@supabase/supabase-js";
 import { BRAND, PREMIUM_PLANS, REPORT_INPUT_OPTIONS, REPORT_OUTPUT_SECTIONS, REPORT_STATUS_BADGE, REPORTS_WIP_COPY } from "../premium-config.js";
 
+const DISPLAY_FONT = "'Rajdhani', 'Space Grotesk', sans-serif";
+const BODY_FONT = "'Inter', 'Space Grotesk', sans-serif";
+const MONO_FONT = "'Share Tech Mono', 'IBM Plex Mono', monospace";
+const APP_VIEWS = [
+  { key: "globe", label: "Globe" },
+  { key: "classic", label: "Intel Board" },
+  { key: "reports", label: "Personalized Reports" },
+];
+
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || "";
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY || "";
 let browserSupabase = null;
@@ -47,16 +56,16 @@ function ShellCard({ title, eyebrow, children, accent = "rgba(125, 211, 252, 0.2
     <section style={{
       background: "linear-gradient(180deg, rgba(7,14,28,0.96) 0%, rgba(4,10,22,0.98) 100%)",
       border: `1px solid ${accent}`,
-      borderRadius: 22,
+      borderRadius: 20,
       padding: 24,
       boxShadow: "0 24px 70px rgba(0,0,0,0.32)",
     }}>
       {eyebrow ? (
-        <div style={{ color: "#7dd3fc", fontSize: 11, fontFamily: "monospace", letterSpacing: "0.14em", textTransform: "uppercase", marginBottom: 10 }}>
+        <div style={{ color: "#7dd3fc", fontSize: 10, fontFamily: MONO_FONT, letterSpacing: "0.16em", textTransform: "uppercase", marginBottom: 10 }}>
           {eyebrow}
         </div>
       ) : null}
-      <div style={{ color: "#f8fafc", fontSize: 24, fontWeight: 700, lineHeight: 1.2, marginBottom: 14, fontFamily: "'Space Mono', monospace" }}>
+      <div style={{ color: "#f8fafc", fontSize: 24, fontWeight: 700, lineHeight: 1.15, marginBottom: 14, fontFamily: DISPLAY_FONT, letterSpacing: "0.03em" }}>
         {title}
       </div>
       {children}
@@ -80,14 +89,45 @@ function PremiumBadge({ children, tone = "info" }) {
       border: `1px solid ${palette.border}`,
       background: palette.bg,
       color: palette.color,
-      fontFamily: "monospace",
-      fontSize: 11,
-      letterSpacing: "0.1em",
+      fontFamily: MONO_FONT,
+      fontSize: 10,
+      letterSpacing: "0.14em",
       textTransform: "uppercase",
       whiteSpace: "nowrap",
     }}>
       {children}
     </span>
+  );
+}
+
+function HeaderNav({ activeView, onNavigate }) {
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+      {APP_VIEWS.map((item) => {
+        const active = activeView === item.key;
+        return (
+          <button
+            key={item.key}
+            onClick={() => onNavigate?.(item.key)}
+            style={{
+              border: "none",
+              borderBottom: `2px solid ${active ? "rgba(87,216,255,0.95)" : "transparent"}`,
+              background: "transparent",
+              color: active ? "#73ebff" : "rgba(214, 230, 244, 0.72)",
+              padding: "12px 4px 10px",
+              minWidth: item.key === "reports" ? 152 : 84,
+              cursor: "pointer",
+              fontFamily: MONO_FONT,
+              fontSize: 11,
+              letterSpacing: "0.12em",
+              textTransform: "uppercase",
+            }}
+          >
+            {item.label}
+          </button>
+        );
+      })}
+    </div>
   );
 }
 
@@ -140,7 +180,7 @@ function PlanCard({ plan, emphasized = false, actionLabel = "Coming Soon" }) {
 function AuthField({ label, type = "text", value, onChange, placeholder }) {
   return (
     <label style={{ display: "grid", gap: 8 }}>
-      <span style={{ color: "#94a3b8", fontSize: 11, fontFamily: "monospace", letterSpacing: "0.1em", textTransform: "uppercase" }}>{label}</span>
+          <span style={{ color: "#94a3b8", fontSize: 10, fontFamily: MONO_FONT, letterSpacing: "0.14em", textTransform: "uppercase" }}>{label}</span>
       <input
         type={type}
         value={value}
@@ -165,7 +205,7 @@ function InterestForm({ form, setForm, onSubmit, status }) {
       <div style={{ display: "grid", gridTemplateColumns: "1.2fr 1fr", gap: 12 }}>
         <AuthField label="Email" type="email" value={form.email} onChange={(value) => setForm((current) => ({ ...current, email: value }))} placeholder="you@company.com" />
         <label style={{ display: "grid", gap: 8 }}>
-          <span style={{ color: "#94a3b8", fontSize: 11, fontFamily: "monospace", letterSpacing: "0.1em", textTransform: "uppercase" }}>Interest Tier</span>
+      <span style={{ color: "#94a3b8", fontSize: 10, fontFamily: MONO_FONT, letterSpacing: "0.14em", textTransform: "uppercase" }}>Interest Tier</span>
           <select
             value={form.interestTier}
             onChange={(event) => setForm((current) => ({ ...current, interestTier: event.target.value }))}
@@ -178,7 +218,7 @@ function InterestForm({ form, setForm, onSubmit, status }) {
       </div>
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
         <label style={{ display: "grid", gap: 8 }}>
-          <span style={{ color: "#94a3b8", fontSize: 11, fontFamily: "monospace", letterSpacing: "0.1em", textTransform: "uppercase" }}>Priority Region</span>
+          <span style={{ color: "#94a3b8", fontSize: 10, fontFamily: MONO_FONT, letterSpacing: "0.14em", textTransform: "uppercase" }}>Priority Region</span>
           <select
             value={form.requestedRegion}
             onChange={(event) => setForm((current) => ({ ...current, requestedRegion: event.target.value }))}
@@ -190,11 +230,11 @@ function InterestForm({ form, setForm, onSubmit, status }) {
         <AuthField label="Notes" value={form.note} onChange={(value) => setForm((current) => ({ ...current, note: value }))} placeholder="Audience, industry, or region focus" />
       </div>
       <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
-        <button type="submit" style={{ border: "1px solid rgba(125,211,252,0.28)", borderRadius: 999, background: "rgba(56,189,248,0.16)", color: "#f8fafc", padding: "11px 16px", cursor: "pointer", fontFamily: "monospace", letterSpacing: "0.08em", textTransform: "uppercase" }}>
+        <button type="submit" style={{ border: "1px solid rgba(125,211,252,0.28)", borderRadius: 999, background: "rgba(56,189,248,0.16)", color: "#f8fafc", padding: "11px 16px", cursor: "pointer", fontFamily: MONO_FONT, letterSpacing: "0.12em", textTransform: "uppercase" }}>
           Join Waitlist
         </button>
         {status ? (
-          <span style={{ color: status.type === "error" ? "#fda4af" : "#93c5fd", fontSize: 12, fontFamily: "monospace" }}>
+          <span style={{ color: status.type === "error" ? "#fda4af" : "#93c5fd", fontSize: 12, fontFamily: MONO_FONT }}>
             {status.message}
           </span>
         ) : null}
@@ -213,7 +253,7 @@ function ReportBuilderPreview({ form, setForm, onGenerate, status }) {
     fontSize: 14,
   };
   const labelStyle = { display: "grid", gap: 8 };
-  const headerStyle = { color: "#94a3b8", fontSize: 11, fontFamily: "monospace", letterSpacing: "0.1em", textTransform: "uppercase" };
+  const headerStyle = { color: "#94a3b8", fontSize: 10, fontFamily: MONO_FONT, letterSpacing: "0.14em", textTransform: "uppercase" };
 
   return (
     <form onSubmit={onGenerate} style={{ display: "grid", gap: 18 }}>
@@ -250,12 +290,12 @@ function ReportBuilderPreview({ form, setForm, onGenerate, status }) {
         </label>
       </div>
       <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
-        <button type="submit" style={{ border: "1px solid rgba(125,211,252,0.28)", borderRadius: 999, background: "rgba(56,189,248,0.16)", color: "#f8fafc", padding: "11px 16px", cursor: "pointer", fontFamily: "monospace", letterSpacing: "0.08em", textTransform: "uppercase" }}>
+        <button type="submit" style={{ border: "1px solid rgba(125,211,252,0.28)", borderRadius: 999, background: "rgba(56,189,248,0.16)", color: "#f8fafc", padding: "11px 16px", cursor: "pointer", fontFamily: MONO_FONT, letterSpacing: "0.12em", textTransform: "uppercase" }}>
           Preview Report Output
         </button>
         <PremiumBadge tone="warning">{REPORT_STATUS_BADGE}</PremiumBadge>
         {status ? (
-          <span style={{ color: status.type === "error" ? "#fda4af" : "#93c5fd", fontSize: 12, fontFamily: "monospace" }}>
+          <span style={{ color: status.type === "error" ? "#fda4af" : "#93c5fd", fontSize: 12, fontFamily: MONO_FONT }}>
             {status.message}
           </span>
         ) : null}
@@ -283,6 +323,67 @@ function HistoryList({ reports }) {
         </div>
       ))}
     </div>
+  );
+}
+
+function WaitlistAdminPanel({ entries, status, onLoad }) {
+  return (
+    <ShellCard title="Waitlist Admin View" eyebrow="Protected access">
+      <div style={{ color: "#cbd5e1", lineHeight: 1.8, marginBottom: 16 }}>
+        Load waitlist entries with <code>ADMIN_SECRET</code>. This gives you a manual contact queue until mailing list sync is ready.
+      </div>
+      <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", marginBottom: 18 }}>
+        <button
+          onClick={onLoad}
+          style={{
+            border: "1px solid rgba(125,211,252,0.28)",
+            borderRadius: 999,
+            background: "rgba(56,189,248,0.16)",
+            color: "#f8fafc",
+            padding: "11px 16px",
+            cursor: "pointer",
+            fontFamily: "monospace",
+            letterSpacing: "0.08em",
+            textTransform: "uppercase",
+          }}
+        >
+          Load Waitlist
+        </button>
+        {status ? (
+          <span style={{ color: status.type === "error" ? "#fda4af" : "#93c5fd", fontSize: 12, fontFamily: "monospace" }}>
+            {status.message}
+          </span>
+        ) : null}
+      </div>
+
+      {entries.length === 0 ? (
+        <div style={{ color: "#94a3b8", lineHeight: 1.7 }}>
+          No entries loaded yet.
+        </div>
+      ) : (
+        <div style={{ display: "grid", gap: 12, maxHeight: 420, overflowY: "auto", paddingRight: 4 }}>
+          {entries.map((entry, index) => (
+            <div key={`${entry.email}-${entry.created_at}-${index}`} style={{ border: "1px solid rgba(51,65,85,0.9)", background: "rgba(6,12,24,0.9)", borderRadius: 16, padding: 16 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", gap: 12, marginBottom: 8, flexWrap: "wrap" }}>
+                <div style={{ color: "#f8fafc", fontWeight: 700 }}>{entry.email}</div>
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                  <PremiumBadge>{entry.interest_tier}</PremiumBadge>
+                  <PremiumBadge tone="success">{entry.requested_region}</PremiumBadge>
+                </div>
+              </div>
+              <div style={{ color: "#94a3b8", fontSize: 13, lineHeight: 1.6 }}>
+                {new Date(entry.created_at).toLocaleString("en-GB", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" })}
+              </div>
+              {entry.note ? (
+                <div style={{ color: "#cbd5e1", lineHeight: 1.7, marginTop: 10 }}>
+                  {entry.note}
+                </div>
+              ) : null}
+            </div>
+          ))}
+        </div>
+      )}
+    </ShellCard>
   );
 }
 
@@ -351,7 +452,7 @@ function AuthPanel({ configured, session, authMode, setAuthMode, authForm, setAu
   );
 }
 
-export default function ReportsApp() {
+export default function ReportsApp({ activeView = "reports", onNavigate }) {
   const supabase = useMemo(() => getSupabaseBrowserClient(), []);
   const [session, setSession] = useState(null);
   const [authMode, setAuthMode] = useState("login");
@@ -362,6 +463,8 @@ export default function ReportsApp() {
   const [historyState, setHistoryState] = useState({ status: "idle", message: "" });
   const [waitlistForm, setWaitlistForm] = useState({ email: "", interestTier: "confidential", requestedRegion: "Global", note: "" });
   const [waitlistStatus, setWaitlistStatus] = useState(null);
+  const [waitlistEntries, setWaitlistEntries] = useState([]);
+  const [adminWaitlistStatus, setAdminWaitlistStatus] = useState(null);
   const [previewStatus, setPreviewStatus] = useState(null);
   const [reportForm, setReportForm] = useState({
     region: REPORT_INPUT_OPTIONS.regions[0],
@@ -459,6 +562,25 @@ export default function ReportsApp() {
     }
   }, [waitlistForm]);
 
+  const handleLoadWaitlist = useCallback(async () => {
+    const secret = window.prompt("Enter ADMIN_SECRET to load waitlist entries.");
+    if (!secret) return;
+
+    setAdminWaitlistStatus({ type: "info", message: "Loading waitlist..." });
+    try {
+      const data = await authedFetch("/api/v1/reports/waitlist?limit=200", null, {
+        method: "GET",
+        headers: {
+          Authorization: `Bearer ${secret}`,
+        },
+      });
+      setWaitlistEntries(data.entries ?? []);
+      setAdminWaitlistStatus({ type: "success", message: `Loaded ${data.total ?? (data.entries ?? []).length} waitlist entries.` });
+    } catch (error) {
+      setAdminWaitlistStatus({ type: "error", message: error.message || "Unable to load waitlist entries." });
+    }
+  }, []);
+
   const handlePreviewGenerate = useCallback(async (event) => {
     event.preventDefault();
     setPreviewStatus(null);
@@ -487,19 +609,44 @@ export default function ReportsApp() {
       minHeight: "100vh",
       background: "radial-gradient(circle at top, rgba(125, 211, 252, 0.05), transparent 26%), linear-gradient(180deg, #020817 0%, #061120 100%)",
       color: "#e2e8f0",
-      padding: "96px 24px 48px",
+      padding: "112px 24px 48px",
+      fontFamily: BODY_FONT,
     }}>
       <div style={{ maxWidth: 1320, margin: "0 auto", display: "grid", gap: 26 }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 16, flexWrap: "wrap" }}>
+        <div style={{
+          position: "fixed",
+          top: 0,
+          left: 0,
+          right: 0,
+          zIndex: 100,
+          background: "linear-gradient(180deg, rgba(4,9,18,0.95) 0%, rgba(4,10,22,0.88) 100%)",
+          backdropFilter: "blur(18px)",
+          borderBottom: "1px solid rgba(87, 216, 255, 0.12)",
+          padding: "16px 24px 14px",
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          gap: 16,
+          flexWrap: "wrap",
+        }}>
           <div>
-            <div style={{ color: "#f8fafc", fontFamily: "'Space Mono', monospace", fontSize: 30, fontWeight: 700, letterSpacing: "0.16em", textTransform: "uppercase" }}>
+            <div style={{ color: "#f8fafc", fontFamily: DISPLAY_FONT, fontSize: 30, fontWeight: 700, letterSpacing: "0.16em", textTransform: "uppercase", lineHeight: 1 }}>
               Grigori
             </div>
-            <div style={{ color: "rgba(191,219,254,0.72)", fontFamily: "Georgia, serif", fontSize: 14, letterSpacing: "0.08em" }}>
+            <div style={{ color: "rgba(191,219,254,0.78)", fontFamily: BODY_FONT, fontSize: 13, letterSpacing: "0.06em", marginTop: 4 }}>
               by oryth.io
             </div>
+            <div style={{ color: "#70d7f2", fontFamily: MONO_FONT, fontSize: 11, letterSpacing: "0.16em", textTransform: "uppercase", marginTop: 8 }}>
+              Strategic Intelligence Dashboard
+            </div>
           </div>
-          <PremiumBadge>{BRAND.subtitle}</PremiumBadge>
+          <div style={{ display: "grid", gap: 12, justifyItems: "end" }}>
+            <HeaderNav activeView={activeView} onNavigate={onNavigate} />
+            <div style={{ display: "flex", gap: 10, flexWrap: "wrap", justifyContent: "flex-end" }}>
+              <PremiumBadge tone="warning">Work in Progress</PremiumBadge>
+              <PremiumBadge tone="success">Operational</PremiumBadge>
+            </div>
+          </div>
         </div>
 
         <ShellCard title="Intelligence Tailored To Your Priorities" eyebrow={`${BRAND.fullName} · ${BRAND.subtitle}`} accent="rgba(125, 211, 252, 0.32)">
@@ -509,21 +656,21 @@ export default function ReportsApp() {
                 <PremiumBadge tone="warning">{REPORT_STATUS_BADGE}</PremiumBadge>
                 <PremiumBadge>Personalized Reports</PremiumBadge>
               </div>
-              <p style={{ color: "#cbd5e1", lineHeight: 1.8, fontSize: 16, margin: 0 }}>
+              <p style={{ color: "#cbd5e1", lineHeight: 1.8, fontSize: 16, margin: 0, fontFamily: BODY_FONT }}>
                 Receive executive-grade geopolitical and strategic risk reports generated from Grigori’s live intelligence engine.
               </p>
-              <p style={{ color: "#94a3b8", lineHeight: 1.8, fontSize: 15, marginTop: 12 }}>
+              <p style={{ color: "#94a3b8", lineHeight: 1.8, fontSize: 15, marginTop: 12, fontFamily: BODY_FONT }}>
                 {REPORTS_WIP_COPY}
               </p>
             </div>
             <div style={{ display: "grid", gap: 10 }}>
-              <button style={{ border: "1px solid rgba(125,211,252,0.28)", borderRadius: 999, background: "rgba(56,189,248,0.16)", color: "#f8fafc", padding: "11px 16px", cursor: "pointer", fontFamily: "monospace", textTransform: "uppercase", letterSpacing: "0.08em" }}>
+              <button style={{ border: "1px solid rgba(125,211,252,0.28)", borderRadius: 999, background: "rgba(56,189,248,0.16)", color: "#f8fafc", padding: "11px 16px", cursor: "pointer", fontFamily: MONO_FONT, textTransform: "uppercase", letterSpacing: "0.12em" }}>
                 Upgrade to Confidential
               </button>
-              <button style={{ border: "1px solid rgba(196,181,253,0.28)", borderRadius: 999, background: "rgba(76,29,149,0.16)", color: "#f8fafc", padding: "11px 16px", cursor: "pointer", fontFamily: "monospace", textTransform: "uppercase", letterSpacing: "0.08em" }}>
+              <button style={{ border: "1px solid rgba(196,181,253,0.28)", borderRadius: 999, background: "rgba(76,29,149,0.16)", color: "#f8fafc", padding: "11px 16px", cursor: "pointer", fontFamily: MONO_FONT, textTransform: "uppercase", letterSpacing: "0.12em" }}>
                 Upgrade to Top Secret
               </button>
-              <button onClick={() => setAuthMode("login")} style={{ border: "1px solid rgba(71,85,105,0.82)", borderRadius: 999, background: "rgba(15,23,42,0.82)", color: "#f8fafc", padding: "11px 16px", cursor: "pointer", fontFamily: "monospace", textTransform: "uppercase", letterSpacing: "0.08em" }}>
+              <button onClick={() => setAuthMode("login")} style={{ border: "1px solid rgba(71,85,105,0.82)", borderRadius: 999, background: "rgba(15,23,42,0.82)", color: "#f8fafc", padding: "11px 16px", cursor: "pointer", fontFamily: MONO_FONT, textTransform: "uppercase", letterSpacing: "0.12em" }}>
                 Sign In
               </button>
             </div>
@@ -617,6 +764,12 @@ export default function ReportsApp() {
             </div>
           </ShellCard>
         </div>
+
+        <WaitlistAdminPanel
+          entries={waitlistEntries}
+          status={adminWaitlistStatus}
+          onLoad={handleLoadWaitlist}
+        />
       </div>
     </div>
   );

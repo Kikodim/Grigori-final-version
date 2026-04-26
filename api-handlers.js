@@ -9,6 +9,7 @@ import {
   captureWaitlistInterest,
   exportReportPreview,
   generatePreviewReport,
+  getWaitlistAdminEntries,
   getReportHistory,
 } from "./reports.js";
 import {
@@ -20,7 +21,7 @@ import {
   sanitizeRegion,
   sendError,
 } from "./security.js";
-import { getEventById, getEvents, getStats, healthCheck } from "./supabase.js";
+import { getEventById, getEvents, getRefreshState, getStats, healthCheck, setRefreshState } from "./supabase.js";
 
 const log = createLogger("api");
 
@@ -48,7 +49,12 @@ function missingProductionSecret() {
 export async function handleHealth(_req, res) {
   const config = getConfig();
   const integrations = getIntegrationConfigStatus();
-  const layers = await getLayersStatus();
+  const [layers, ai, newsRefresh, aiRefresh] = await Promise.all([
+    getLayersStatus(),
+    getAIStatus(),
+    getRefreshState("news"),
+    getRefreshState("ai"),
+  ]);
   const missing = [
     ["NEWS_API_KEY", integrations.newsApi],
     ["GEMINI_API_KEY", integrations.gemini],
@@ -83,12 +89,21 @@ export async function handleHealth(_req, res) {
       enableAutomatedAi: config.enableAutomatedAi,
       aiDailyLimit: config.aiDailyLimit,
       aiReservedCalls: config.aiReservedCalls,
+      aiAutomationBudget: config.aiAutomationBudget,
       maxAiCallsPerRun: config.maxAiCallsPerRun,
       maxArticlesPerRun: config.maxArticlesPerRun,
       clusterThreshold: config.clusterThreshold,
       nodeEnv: config.nodeEnv,
     },
     layers,
+    automation: {
+      aiCallsToday: ai.aiCallsToday,
+      aiRemainingToday: ai.aiRemainingToday,
+      lastNewsRefreshAt: newsRefresh.record?.lastRefresh ?? null,
+      lastAiRefreshAt: aiRefresh.record?.lastRefresh ?? null,
+      nextEstimatedNewsRefresh: newsRefresh.record?.nextRefresh ?? null,
+      nextEstimatedAiRefresh: aiRefresh.record?.nextRefresh ?? null,
+    },
     timestamp: new Date().toISOString(),
   });
 }
@@ -193,6 +208,11 @@ export async function handleReportsExport(req, res) {
 }
 
 export async function handleReportsWaitlist(req, res) {
+  if ((req.method ?? "GET") === "GET") {
+    const result = await getWaitlistAdminEntries(req, req.query ?? {});
+    return res.status(result.status).json(result.body);
+  }
+
   const result = await captureWaitlistInterest(req.body ?? {}, req);
   return res.status(result.status).json(result.body);
 }
@@ -206,10 +226,36 @@ export async function handlePipelineRun(req, res) {
     return sendError(res, 401, "Unauthorized");
   }
 
-  const noAi = req.query?.noAi === "true" || req.body?.noAi === true;
-  const source = req.headers["x-vercel-cron-secret"] ? "automation" : "manual";
-  const result = await runPipeline({ source, noAi });
+  const requestedMode = String(req.query?.mode ?? req.body?.mode ?? "full").toLowerCase();
+  const mode = requestedMode === "news" || requestedMode === "ai" ? requestedMode : "full";
+  const noAi = mode === "news" || req.query?.noAi === "true" || req.body?.noAi === true;
+  const source = mode === "news" || mode === "ai" || req.headers["x-vercel-cron-secret"] ? "automation" : "manual";
+  const result = await runPipeline({ source, noAi, mode });
+  const nextNewsRefresh = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+  const nextAiRefresh = new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString();
+  if (result.ok) {
+    if (mode === "news" || mode === "full") {
+      await setRefreshState("news", {
+        mode,
+        source,
+        events: result.events,
+        articles: result.articles,
+        aiCalls: result.aiCalls,
+      }, nextNewsRefresh);
+    }
+    if (mode === "ai" || (mode === "full" && !noAi)) {
+      await setRefreshState("ai", {
+        mode,
+        source,
+        events: result.events,
+        aiCalls: result.aiCalls,
+        targetEventId: result.targetEventId ?? null,
+        targetTitle: result.targetTitle ?? null,
+        reason: result.reason ?? null,
+      }, nextAiRefresh);
+    }
+  }
   const status = result.ok ? 202 : 500;
-  log.info(`Pipeline run completed: ok=${result.ok} mode=${result.mode} events=${result.events}`);
+  log.info(`Pipeline run completed: ok=${result.ok} mode=${result.mode} refreshMode=${mode} events=${result.events}`);
   return res.status(status).json({ success: result.ok, result });
 }

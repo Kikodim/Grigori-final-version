@@ -150,6 +150,15 @@ export function buildBriefing(events) {
       freshnessScore: computeFreshnessScore(event.timestamp),
       timestamp: event.timestamp,
       location: event.location ?? null,
+      aiStatus: event.aiStatus ?? event.ai_status ?? "fallback",
+      aiStatusLabel:
+        (event.aiStatus ?? event.ai_status) === "enriched"
+          ? "AI enriched"
+          : (event.aiStatus ?? event.ai_status) === "cached"
+            ? "Cached intelligence"
+            : (event.aiStatus ?? event.ai_status) === "budget_exhausted"
+              ? "Rule-based briefing, AI budget exhausted"
+              : "Rule-based briefing",
     })),
   };
 }

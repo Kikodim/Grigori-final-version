@@ -1,9 +1,10 @@
 import crypto from "crypto";
 import { BRAND, getTierConfig, PREMIUM_PLANS, REPORT_OUTPUT_SECTIONS, REPORTS_WIP_COPY } from "./premium-config.js";
-import { getClientIp, getBearerToken } from "./security.js";
+import { getClientIp, getBearerToken, requireAdmin } from "./security.js";
 import {
   getAuthenticatedSupabaseUser,
   getEvents,
+  getWaitlistEntries,
   getUserProfile,
   getUserReports,
   getUserWatchlists,
@@ -234,6 +235,25 @@ export async function captureWaitlistInterest(payload, req) {
       ok: true,
       message: "You’re on the early access list for Personalized Reports.",
       brand: BRAND.fullName,
+    },
+  };
+}
+
+export async function getWaitlistAdminEntries(req, query = {}) {
+  if (!requireAdmin(req)) {
+    return { status: 401, body: { success: false, error: "Unauthorized" } };
+  }
+
+  const limit = Math.min(Math.max(Number(query.limit ?? 200), 1), 500);
+  const result = await getWaitlistEntries({ limit });
+
+  return {
+    status: 200,
+    body: {
+      ok: true,
+      mode: result.mode,
+      total: result.entries.length,
+      entries: result.entries,
     },
   };
 }

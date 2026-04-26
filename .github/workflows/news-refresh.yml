@@ -1,0 +1,28 @@
+name: News Refresh
+
+on:
+  schedule:
+    - cron: "0 * * * *"
+  workflow_dispatch:
+
+jobs:
+  refresh-news:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger news-only refresh
+        env:
+          GRIGORI_ADMIN_SECRET: ${{ secrets.GRIGORI_ADMIN_SECRET }}
+          GRIGORI_REFRESH_URL: https://grigori.oryth.io/api/v1/admin/refresh?mode=news
+        run: |
+          HTTP_BODY=$(mktemp)
+          HTTP_CODE=$(curl -sS -o "$HTTP_BODY" -w "%{http_code}" \
+            -X POST "$GRIGORI_REFRESH_URL" \
+            -H "Authorization: Bearer $GRIGORI_ADMIN_SECRET" \
+            -H "Content-Type: application/json")
+          cat "$HTTP_BODY"
+          echo
+          if [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -ge 300 ]; then
+            echo "News refresh failed with HTTP $HTTP_CODE" >&2
+            exit 1
+          fi
+          echo "News refresh completed with HTTP $HTTP_CODE"

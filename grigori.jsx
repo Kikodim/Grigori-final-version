@@ -8,6 +8,14 @@ import {
 } from "./event-insights.js";
 
 const EVENTS_ENDPOINT = "/api/v1/events?limit=50";
+const DISPLAY_FONT = "'Rajdhani', 'Space Grotesk', sans-serif";
+const BODY_FONT = "'Inter', 'Space Grotesk', sans-serif";
+const MONO_FONT = "'Share Tech Mono', 'IBM Plex Mono', monospace";
+const APP_VIEWS = [
+  { key: "globe", label: "Globe" },
+  { key: "classic", label: "Intel Board" },
+  { key: "reports", label: "Personalized Reports" },
+];
 
 function resolveBackendUrl(path) {
   if (typeof window === "undefined") return path;
@@ -82,14 +90,14 @@ function mapEvent(event) {
 function StatusBadge({ color, children }) {
   return (
     <span style={{
-      background: `${color}18`,
-      border: `1px solid ${color}55`,
+      background: `${color}14`,
+      border: `1px solid ${color}3d`,
       color,
       borderRadius: 999,
-      padding: "4px 10px",
-      fontSize: 11,
-      fontFamily: "monospace",
-      letterSpacing: "0.08em",
+      padding: "5px 11px",
+      fontSize: 10,
+      fontFamily: MONO_FONT,
+      letterSpacing: "0.14em",
       textTransform: "uppercase",
       whiteSpace: "nowrap",
     }}>
@@ -101,16 +109,48 @@ function StatusBadge({ color, children }) {
 function SourcePill({ children }) {
   return (
     <span style={{
-      background: "rgba(30,58,95,0.55)",
-      border: "1px solid rgba(125, 211, 252, 0.18)",
-      color: "#93c5fd",
+      background: "rgba(11,24,43,0.78)",
+      border: "1px solid rgba(87, 216, 255, 0.18)",
+      color: "#9dc8e7",
       borderRadius: 999,
-      padding: "4px 10px",
-      fontSize: 11,
-      fontFamily: "monospace",
+      padding: "5px 10px",
+      fontSize: 10,
+      fontFamily: MONO_FONT,
+      letterSpacing: "0.08em",
     }}>
       {children}
     </span>
+  );
+}
+
+function HeaderNav({ activeView, onNavigate }) {
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+      {APP_VIEWS.map((item) => {
+        const active = activeView === item.key;
+        return (
+          <button
+            key={item.key}
+            onClick={() => onNavigate?.(item.key)}
+            style={{
+              border: "none",
+              borderBottom: `2px solid ${active ? "rgba(87,216,255,0.95)" : "transparent"}`,
+              background: "transparent",
+              color: active ? "#73ebff" : "rgba(214, 230, 244, 0.72)",
+              padding: "12px 4px 10px",
+              minWidth: item.key === "reports" ? 152 : 84,
+              cursor: "pointer",
+              fontFamily: MONO_FONT,
+              fontSize: 11,
+              letterSpacing: "0.12em",
+              textTransform: "uppercase",
+            }}
+          >
+            {item.label}
+          </button>
+        );
+      })}
+    </div>
   );
 }
 
@@ -127,8 +167,8 @@ function EmptyState({ title, body, action }) {
       textAlign: "center",
       padding: 24,
     }}>
-      <div style={{ color: "#e2e8f0", fontSize: 22, fontWeight: 700, fontFamily: "'Space Mono', monospace" }}>{title}</div>
-      <div style={{ maxWidth: 560, lineHeight: 1.6 }}>{body}</div>
+      <div style={{ color: "#edf6ff", fontSize: 24, fontWeight: 700, fontFamily: DISPLAY_FONT, letterSpacing: "0.05em" }}>{title}</div>
+      <div style={{ maxWidth: 560, lineHeight: 1.75, fontFamily: BODY_FONT }}>{body}</div>
       {action}
     </div>
   );
@@ -139,28 +179,28 @@ function IntelCard({ event }) {
 
   return (
     <article style={{
-      background: "linear-gradient(160deg, rgba(6,14,30,0.96) 0%, rgba(10,22,40,0.98) 100%)",
-      border: "1px solid rgba(30,58,95,0.85)",
-      borderRadius: 18,
-      padding: 20,
+      background: "linear-gradient(180deg, rgba(6,13,25,0.96) 0%, rgba(8,16,30,0.98) 100%)",
+      border: "1px solid rgba(83, 148, 182, 0.18)",
+      borderRadius: 20,
+      padding: 22,
       display: "flex",
       flexDirection: "column",
-      gap: 16,
-      boxShadow: "0 18px 40px rgba(2, 8, 23, 0.38)",
+      gap: 18,
+      boxShadow: "0 18px 44px rgba(2, 8, 23, 0.4)",
     }}>
       <div style={{ display: "flex", justifyContent: "space-between", gap: 14, flexWrap: "wrap" }}>
         <div style={{ flex: 1, minWidth: 260 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8, flexWrap: "wrap" }}>
             <span style={{ width: 10, height: 10, borderRadius: "50%", background: toneColor, boxShadow: `0 0 10px ${toneColor}` }} />
-            <span style={{ color: "#7dd3fc", fontSize: 11, fontFamily: "monospace", letterSpacing: "0.12em", textTransform: "uppercase" }}>
+            <span style={{ color: "#68dff6", fontSize: 10, fontFamily: MONO_FONT, letterSpacing: "0.18em", textTransform: "uppercase" }}>
               {event.location.label}
             </span>
             <span style={{ color: "#334155" }}>·</span>
-            <span style={{ color: "#64748b", fontSize: 11, fontFamily: "monospace" }}>
+            <span style={{ color: "#6f8498", fontSize: 10, fontFamily: MONO_FONT }}>
               {new Date(event.timestamp).toLocaleString("en-GB", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit", year: "numeric", timeZone: "UTC" })} UTC
             </span>
           </div>
-          <h2 style={{ color: "#f8fafc", fontSize: 22, lineHeight: 1.25, margin: 0, fontFamily: "'Space Mono', monospace" }}>
+          <h2 style={{ color: "#f8fafc", fontSize: 24, lineHeight: 1.15, margin: 0, fontFamily: DISPLAY_FONT, letterSpacing: "0.03em" }}>
             {event.title}
           </h2>
         </div>
@@ -177,55 +217,55 @@ function IntelCard({ event }) {
         </div>
       </div>
 
-      <div style={{ color: "#cbd5e1", fontSize: 15, lineHeight: 1.7 }}>
+      <div style={{ color: "#c6d5e3", fontSize: 15, lineHeight: 1.8, fontFamily: BODY_FONT }}>
         {event.summary}
       </div>
 
       <div style={{ display: "grid", gridTemplateColumns: "1.3fr 1fr", gap: 18 }}>
-        <section style={{ background: "rgba(2,8,23,0.45)", border: "1px solid rgba(30,58,95,0.45)", borderRadius: 14, padding: 16 }}>
-          <div style={{ color: "#7dd3fc", fontSize: 11, fontFamily: "monospace", letterSpacing: "0.12em", textTransform: "uppercase", marginBottom: 10 }}>
+        <section style={{ background: "rgba(3,10,22,0.72)", border: "1px solid rgba(83, 148, 182, 0.16)", borderRadius: 16, padding: 16 }}>
+          <div style={{ color: "#68dff6", fontSize: 10, fontFamily: MONO_FONT, letterSpacing: "0.16em", textTransform: "uppercase", marginBottom: 10 }}>
             Developments
           </div>
           <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
             {(event.developments.length > 0 ? event.developments : ["Rule-based briefing generated from source signals."]).map((development, index) => (
               <div key={index} style={{ display: "flex", gap: 10 }}>
                 <span style={{ color: "#38bdf8", fontFamily: "monospace", marginTop: 2 }}>▸</span>
-                <span style={{ color: "#cbd5e1", lineHeight: 1.55 }}>{development}</span>
+                <span style={{ color: "#cbd5e1", lineHeight: 1.65, fontFamily: BODY_FONT }}>{development}</span>
               </div>
             ))}
           </div>
         </section>
 
-        <section style={{ background: "rgba(2,8,23,0.45)", border: "1px solid rgba(30,58,95,0.45)", borderRadius: 14, padding: 16 }}>
-          <div style={{ color: "#7dd3fc", fontSize: 11, fontFamily: "monospace", letterSpacing: "0.12em", textTransform: "uppercase", marginBottom: 10 }}>
+        <section style={{ background: "rgba(3,10,22,0.72)", border: "1px solid rgba(83, 148, 182, 0.16)", borderRadius: 16, padding: 16 }}>
+          <div style={{ color: "#68dff6", fontSize: 10, fontFamily: MONO_FONT, letterSpacing: "0.16em", textTransform: "uppercase", marginBottom: 10 }}>
             Confidence & Sources
           </div>
-          <div style={{ color: "#cbd5e1", lineHeight: 1.6, marginBottom: 12 }}>
+          <div style={{ color: "#cbd5e1", lineHeight: 1.7, marginBottom: 12, fontFamily: BODY_FONT }}>
             {event.confidenceExplanation}
           </div>
-          <div style={{ color: "#94a3b8", fontFamily: "monospace", fontSize: 12, marginBottom: 8 }}>
+          <div style={{ color: "#94a3b8", fontFamily: MONO_FONT, fontSize: 11, marginBottom: 8 }}>
             Sources: {event.sourceSignals.uniqueSources.slice(0, 3).join(", ") || "No named sources"}
           </div>
-          <div style={{ color: "#94a3b8", fontFamily: "monospace", fontSize: 12 }}>
+          <div style={{ color: "#94a3b8", fontFamily: MONO_FONT, fontSize: 11 }}>
             Signals: {event.sourceSignals.sourceCount} sources / {event.sourceSignals.corroboratedCount} corroborated
           </div>
         </section>
       </div>
 
-      <section style={{ background: "rgba(2,8,23,0.45)", border: "1px solid rgba(30,58,95,0.45)", borderRadius: 14, padding: 16 }}>
-        <div style={{ color: "#7dd3fc", fontSize: 11, fontFamily: "monospace", letterSpacing: "0.12em", textTransform: "uppercase", marginBottom: 12 }}>
+      <section style={{ background: "rgba(3,10,22,0.72)", border: "1px solid rgba(83, 148, 182, 0.16)", borderRadius: 16, padding: 16 }}>
+        <div style={{ color: "#68dff6", fontSize: 10, fontFamily: MONO_FONT, letterSpacing: "0.16em", textTransform: "uppercase", marginBottom: 12 }}>
           Possible Scenarios
         </div>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 12 }}>
           {event.scenarios.map((scenario, index) => (
-            <div key={`${event.id}-${index}`} style={{ background: "rgba(15,23,42,0.68)", border: "1px solid rgba(51,65,85,0.8)", borderRadius: 12, padding: 14 }}>
+            <div key={`${event.id}-${index}`} style={{ background: "rgba(12,22,38,0.74)", border: "1px solid rgba(83, 148, 182, 0.14)", borderRadius: 14, padding: 14 }}>
               <div style={{ display: "flex", justifyContent: "space-between", gap: 10, marginBottom: 8 }}>
-                <div style={{ color: "#f8fafc", fontWeight: 700 }}>{scenario.name}</div>
+                <div style={{ color: "#f8fafc", fontWeight: 700, fontFamily: DISPLAY_FONT, letterSpacing: "0.04em" }}>{scenario.name}</div>
                 <StatusBadge color={scenario.probability >= 55 ? "#58e38f" : scenario.probability >= 35 ? "#fbbf24" : "#fb7185"}>
                   {scenario.probability}%
                 </StatusBadge>
               </div>
-              <div style={{ color: "#cbd5e1", lineHeight: 1.55, marginBottom: 10 }}>
+              <div style={{ color: "#cbd5e1", lineHeight: 1.65, marginBottom: 10, fontFamily: BODY_FONT }}>
                 {scenario.description}
               </div>
               <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
@@ -241,8 +281,8 @@ function IntelCard({ event }) {
       </section>
 
       <section style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 18 }}>
-        <div style={{ background: "rgba(2,8,23,0.45)", border: "1px solid rgba(30,58,95,0.45)", borderRadius: 14, padding: 16 }}>
-          <div style={{ color: "#7dd3fc", fontSize: 11, fontFamily: "monospace", letterSpacing: "0.12em", textTransform: "uppercase", marginBottom: 10 }}>
+        <div style={{ background: "rgba(3,10,22,0.72)", border: "1px solid rgba(83, 148, 182, 0.16)", borderRadius: 16, padding: 16 }}>
+          <div style={{ color: "#68dff6", fontSize: 10, fontFamily: MONO_FONT, letterSpacing: "0.16em", textTransform: "uppercase", marginBottom: 10 }}>
             Sectors Impacted
           </div>
           <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
@@ -251,8 +291,8 @@ function IntelCard({ event }) {
             ))}
           </div>
         </div>
-        <div style={{ background: "rgba(2,8,23,0.45)", border: "1px solid rgba(30,58,95,0.45)", borderRadius: 14, padding: 16 }}>
-          <div style={{ color: "#7dd3fc", fontSize: 11, fontFamily: "monospace", letterSpacing: "0.12em", textTransform: "uppercase", marginBottom: 10 }}>
+        <div style={{ background: "rgba(3,10,22,0.72)", border: "1px solid rgba(83, 148, 182, 0.16)", borderRadius: 16, padding: 16 }}>
+          <div style={{ color: "#68dff6", fontSize: 10, fontFamily: MONO_FONT, letterSpacing: "0.16em", textTransform: "uppercase", marginBottom: 10 }}>
             Sources
           </div>
           <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
@@ -266,7 +306,7 @@ function IntelCard({ event }) {
   );
 }
 
-export default function ClassicIntelBoard() {
+export default function ClassicIntelBoard({ activeView = "classic", onNavigate }) {
   const [events, setEvents] = useState([]);
   const [loadState, setLoadState] = useState({ status: "loading", message: "Loading Grigori Intelligence Systems..." });
   const [refreshState, setRefreshState] = useState({ status: "idle", message: "" });
@@ -340,7 +380,8 @@ export default function ClassicIntelBoard() {
       minHeight: "100vh",
       background: "radial-gradient(circle at top, rgba(14, 165, 233, 0.08), transparent 28%), linear-gradient(180deg, #020817 0%, #061120 100%)",
       color: "#e2e8f0",
-      padding: "88px 24px 40px",
+      padding: "112px 24px 40px",
+      fontFamily: BODY_FONT,
     }}>
       <div style={{
         position: "fixed",
@@ -348,10 +389,10 @@ export default function ClassicIntelBoard() {
         left: 0,
         right: 0,
         zIndex: 100,
-        background: "rgba(2,8,23,0.88)",
-        backdropFilter: "blur(14px)",
-        borderBottom: "1px solid rgba(30,58,95,0.7)",
-        padding: "18px 24px",
+        background: "linear-gradient(180deg, rgba(4,9,18,0.95) 0%, rgba(4,10,22,0.88) 100%)",
+        backdropFilter: "blur(18px)",
+        borderBottom: "1px solid rgba(87, 216, 255, 0.12)",
+        padding: "16px 24px 14px",
         display: "flex",
         justifyContent: "space-between",
         alignItems: "center",
@@ -359,43 +400,47 @@ export default function ClassicIntelBoard() {
         flexWrap: "wrap",
       }}>
         <div>
-          <div style={{ color: "#38bdf8", fontFamily: "monospace", fontSize: 11, letterSpacing: "0.14em", textTransform: "uppercase" }}>
+          <div style={{ color: "#f8fafc", fontFamily: DISPLAY_FONT, fontSize: 30, fontWeight: 700, letterSpacing: "0.16em", textTransform: "uppercase", lineHeight: 1 }}>
+            Grigori
+          </div>
+          <div style={{ color: "rgba(191,219,254,0.78)", fontFamily: BODY_FONT, fontSize: 13, letterSpacing: "0.06em", marginTop: 4 }}>
+            by oryth.io
+          </div>
+          <div style={{ color: "#70d7f2", fontFamily: MONO_FONT, fontSize: 11, letterSpacing: "0.16em", textTransform: "uppercase", marginTop: 8 }}>
             Strategic Intelligence Dashboard
           </div>
-          <div style={{ color: "#f8fafc", fontFamily: "'Space Mono', monospace", fontSize: 24, fontWeight: 700, marginTop: 4 }}>
-            Grigori <span style={{ color: "#93c5fd", fontSize: 14, fontFamily: "Georgia, serif", fontWeight: 400 }}>by oryth.io</span>
-          </div>
-          <div style={{ color: "#94a3b8", marginTop: 6, fontSize: 13 }}>
-            Intel Board
-          </div>
         </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+        <div style={{ display: "grid", gap: 12, justifyItems: "end" }}>
+          <HeaderNav activeView={activeView} onNavigate={onNavigate} />
+          <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", justifyContent: "flex-end" }}>
           <SourcePill>{counts.total} events</SourcePill>
           <SourcePill>{counts.escalating} escalating</SourcePill>
           <SourcePill>{counts.ruleBased} rule-based</SourcePill>
+          <StatusBadge color="#4ed69f">Operational</StatusBadge>
           <button
             onClick={handleAdminRefresh}
             disabled={refreshState.status === "running"}
             style={{
-              border: "1px solid rgba(56,189,248,0.4)",
+              border: "1px solid rgba(87,216,255,0.24)",
               borderRadius: 999,
-              background: refreshState.status === "success" ? "rgba(16, 185, 129, 0.18)" : "rgba(15,23,42,0.8)",
+              background: refreshState.status === "success" ? "rgba(16, 185, 129, 0.18)" : "rgba(8,16,30,0.82)",
               color: "#e2e8f0",
               padding: "10px 14px",
               cursor: refreshState.status === "running" ? "wait" : "pointer",
-              fontFamily: "monospace",
+              fontFamily: MONO_FONT,
               textTransform: "uppercase",
-              letterSpacing: "0.08em",
-              fontSize: 11,
+              letterSpacing: "0.12em",
+              fontSize: 10,
             }}
           >
             {refreshState.status === "running" ? "Refreshing..." : "Admin Refresh"}
           </button>
+          </div>
         </div>
       </div>
 
       {refreshState.message ? (
-        <div style={{ marginBottom: 18, color: refreshState.status === "error" ? "#fda4af" : "#93c5fd", fontFamily: "monospace", fontSize: 12 }}>
+        <div style={{ marginBottom: 18, color: refreshState.status === "error" ? "#fda4af" : "#93c5fd", fontFamily: MONO_FONT, fontSize: 12 }}>
           {refreshState.message}
         </div>
       ) : null}

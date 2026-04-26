@@ -16,7 +16,7 @@ import { createHash } from "crypto";
 import { describeEnvVar } from "./config.js";
 import { createLogger } from "./logger.js";
 import { buildRuleBasedBriefing } from "./rule-based-briefing.js";
-import { getAIUsageStats, recordAIUsage } from "./supabase.js";
+import { getAIUsageStats, getRefreshState, recordAIUsage } from "./supabase.js";
 
 const log = createLogger("ai");
 
@@ -38,14 +38,18 @@ function _midnight() {
 function getAiLimits() {
   const aiDailyLimit = parseInt(process.env.AI_DAILY_LIMIT ?? "20", 10);
   const reservedManualCalls = parseInt(process.env.AI_RESERVED_CALLS ?? "2", 10);
+  const configuredAutomationBudget = parseInt(process.env.AI_AUTOMATION_BUDGET ?? "", 10);
   const maxAiCallsPerRun = parseInt(process.env.MAX_AI_CALLS_PER_RUN ?? "1", 10);
   const rpmLimit = parseInt(process.env.AI_RPM_LIMIT ?? "5", 10);
   const inputTokenLimitPerMinute = parseInt(process.env.AI_INPUT_TPM_LIMIT ?? "250000", 10);
+  const automationBudget = Number.isFinite(configuredAutomationBudget)
+    ? Math.max(0, Math.min(aiDailyLimit, configuredAutomationBudget))
+    : Math.max(0, aiDailyLimit - reservedManualCalls);
 
   return {
     aiDailyLimit,
     reservedManualCalls,
-    automationBudget: Math.max(0, aiDailyLimit - reservedManualCalls),
+    automationBudget,
     maxAiCallsPerRun,
     rpmLimit,
     inputTokenLimitPerMinute,
@@ -207,6 +211,9 @@ Schema:
   "developments": ["string","string","string"],
   "tone": "Escalating|Stable|De-escalating",
   "confidence": "Low|Medium|High",
+  "confidenceReasoning": "string",
+  "sourceSignalReasoning": "string",
+  "watchIndicators72h": ["string","string","string"],
   "scenarios": [
     {
       "name": "string",
@@ -215,7 +222,8 @@ Schema:
       "impact": {
         "oil": "Up|Down|Neutral",
         "markets": "Risk-on|Risk-off|Neutral",
-        "sectors": ["string"]
+        "sectors": ["string"],
+        "tradeRoutes": "Open|Stressed|Disrupted|Neutral"
       }
     },
     {
@@ -225,17 +233,21 @@ Schema:
       "impact": {
         "oil": "Up|Down|Neutral",
         "markets": "Risk-on|Risk-off|Neutral",
-        "sectors": ["string"]
+        "sectors": ["string"],
+        "tradeRoutes": "Open|Stressed|Disrupted|Neutral"
       }
     }
   ]
 }
 Rules:
-- summary: max 2 sentences
+- summary: 2-4 concise sentences with clear market and strategic context
 - developments: exactly 3 bullets
-- scenarios: exactly 2
+- scenarios: 2 or 3
+- each scenario description should include market impact, sector impact, and trade route implications when relevant
+- include 72h watch indicators grounded in source signals
+- include concise confidence reasoning and source signal reasoning
 - scenario probabilities must sum to 100
-- sectors allowed: Energy, Defense, Tech, Shipping, Food, Finance`;
+- sectors allowed: Energy, Defense, Tech, Shipping, Food, Finance, Trade, Semiconductors`;
 
 function _buildPrompt(pe, articles, { compact = false } = {}) {
   const budget = compact ? 2200 : 4200;
@@ -255,7 +267,7 @@ const V_TONE = new Set(["Escalating","Stable","De-escalating"]);
 const V_CONF = new Set(["Low","Medium","High"]);
 const V_OIL  = new Set(["Up","Neutral","Down"]);
 const V_MKT  = new Set(["Risk-on","Risk-off","Neutral"]);
-const V_SEC  = new Set(["Energy","Defense","Tech","Shipping","Food","Finance"]);
+const V_SEC  = new Set(["Energy","Defense","Tech","Shipping","Food","Finance","Trade","Semiconductors"]);
 
 function stripCodeFences(text) {
   return text.replace(/```json\s*/gi, "").replace(/```/g, "").trim();
@@ -405,7 +417,7 @@ function _validate(raw, fb) {
     developments: Array.isArray(raw.developments) ? raw.developments.filter((d) => typeof d === "string").slice(0, 3) : [],
     tone:         V_TONE.has(raw.tone)  ? raw.tone        : "Stable",
     confidence:   V_CONF.has(raw.confidence) ? raw.confidence : fb.confidence,
-    scenarios:    scenarios.slice(0, 2),
+    scenarios:    scenarios.slice(0, 3),
   };
 }
 
@@ -479,6 +491,10 @@ export async function processCluster(pe, articles, { source = "automation" } = {
 export async function getAIStatus() {
   const limits = getAiLimits();
   const usage = await getAIUsageStats();
+  const [newsRefresh, aiRefresh] = await Promise.all([
+    getRefreshState("news"),
+    getRefreshState("ai"),
+  ]);
   return {
     configured: describeEnvVar("GEMINI_API_KEY").usable,
     aiCallsToday: usage.totalCalls,
@@ -488,6 +504,8 @@ export async function getAIStatus() {
     reservedManualCalls: limits.reservedManualCalls,
     rpmLimit: limits.rpmLimit,
     inputTokenLimitPerMinute: limits.inputTokenLimitPerMinute,
+    lastAiRefreshAt: aiRefresh.record?.lastRefresh ?? null,
+    lastNewsRefreshAt: newsRefresh.record?.lastRefresh ?? null,
     queueDepth: _queue.length,
     processing: _processing,
     ...cacheStats(),

@@ -407,10 +407,24 @@ function makeGlobeTex() {
   ctx.fillRect(0, 0, W, H);
 
   // Continental shelf suggestion
-  ctx.fillStyle = "rgba(20,46,73,0.22)";
+  ctx.fillStyle = "rgba(20,46,73,0.18)";
   [[0.12, 0.30], [0.35, 0.55], [0.60, 0.78]].forEach(([y0, y1]) => {
     ctx.fillRect(0, y0 * H, W, (y1 - y0) * H);
   });
+
+  // Ocean depth bands for a matte satellite feel
+  for (let i = 0; i < 9; i++) {
+    ctx.beginPath();
+    const y = (i / 8) * H;
+    for (let x = 0; x <= W; x += 12) {
+      const wave = Math.sin((x / W) * Math.PI * (2.2 + i * 0.15)) * (8 + i * 1.4);
+      if (x === 0) ctx.moveTo(x, y + wave);
+      else ctx.lineTo(x, y + wave);
+    }
+    ctx.strokeStyle = `rgba(36,74,110,${0.03 + i * 0.003})`;
+    ctx.lineWidth = 1;
+    ctx.stroke();
+  }
 
   // Terrain-style grain for restrained topography
   for (let i = 0; i < 9500; i++) {
@@ -420,9 +434,33 @@ function makeGlobeTex() {
     ctx.fill();
   }
 
+  // Terrain contour fields
+  const drawContourField = (centerX, centerY, radiusX, radiusY, lines, stroke, weight = 0.8) => {
+    for (let i = 0; i < lines; i++) {
+      const t = i / Math.max(lines - 1, 1);
+      ctx.beginPath();
+      for (let a = 0; a <= Math.PI * 2 + 0.001; a += Math.PI / 38) {
+        const mod = 1 + Math.sin(a * 3 + t * 8) * 0.05 + Math.cos(a * 5 + t * 11) * 0.04;
+        const x = centerX + Math.cos(a) * radiusX * (0.35 + t * 0.72) * mod;
+        const y = centerY + Math.sin(a) * radiusY * (0.32 + t * 0.76) * mod;
+        if (a === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      }
+      ctx.strokeStyle = stroke;
+      ctx.lineWidth = weight;
+      ctx.stroke();
+    }
+  };
+
+  drawContourField(W * 0.66, H * 0.32, 130, 58, 10, "rgba(175,182,140,0.08)", 0.9);
+  drawContourField(W * 0.56, H * 0.44, 120, 52, 9, "rgba(154,170,132,0.07)", 0.85);
+  drawContourField(W * 0.28, H * 0.42, 100, 44, 8, "rgba(148,164,128,0.06)", 0.8);
+  drawContourField(W * 0.79, H * 0.47, 92, 42, 8, "rgba(145,166,132,0.06)", 0.8);
+  drawContourField(W * 0.22, H * 0.64, 72, 38, 6, "rgba(146,160,130,0.055)", 0.75);
+
   // Subtle mountain-range streaks
-  ctx.lineWidth = 1.1;
-  for (let i = 0; i < 48; i++) {
+  ctx.lineWidth = 1;
+  for (let i = 0; i < 58; i++) {
     const y = Math.random() * H;
     const amp = 6 + Math.random() * 14;
     const phase = Math.random() * Math.PI * 2;
@@ -432,7 +470,7 @@ function makeGlobeTex() {
       if (x === 0) ctx.moveTo(x, y + offset);
       else ctx.lineTo(x, y + offset);
     }
-    ctx.strokeStyle = `rgba(118,148,128,${0.02 + Math.random() * 0.03})`;
+    ctx.strokeStyle = `rgba(118,148,128,${0.015 + Math.random() * 0.025})`;
     ctx.stroke();
   }
 
@@ -456,6 +494,19 @@ function makeGlobeTex() {
   ctx.lineWidth = 1;
   const pmX = (180 / 360) * W;
   ctx.beginPath(); ctx.moveTo(pmX, 0); ctx.lineTo(pmX, H); ctx.stroke();
+
+  // Polar vignettes to reduce flatness
+  const northGlow = ctx.createRadialGradient(W * 0.52, H * 0.08, 0, W * 0.52, H * 0.08, H * 0.36);
+  northGlow.addColorStop(0, "rgba(132,166,182,0.12)");
+  northGlow.addColorStop(1, "rgba(0,0,0,0)");
+  ctx.fillStyle = northGlow;
+  ctx.fillRect(0, 0, W, H);
+
+  const southGlow = ctx.createRadialGradient(W * 0.42, H * 0.92, 0, W * 0.42, H * 0.92, H * 0.32);
+  southGlow.addColorStop(0, "rgba(102,128,150,0.1)");
+  southGlow.addColorStop(1, "rgba(0,0,0,0)");
+  ctx.fillStyle = southGlow;
+  ctx.fillRect(0, 0, W, H);
 
   return new THREE.CanvasTexture(cv);
 }
@@ -1077,11 +1128,10 @@ function normalizeSatelliteObject(item) {
   };
 }
 
-async function fetchLayerStatus() {
+async function fetchOperationalStatus() {
   const res = await fetch(resolveBackendUrl("/api/v1/health"), { signal: AbortSignal.timeout(8000) });
   if (!res.ok) throw new Error(`health ${res.status}`);
-  const data = await res.json();
-  return data.layers ?? { flights: null, vessels: null, satellites: null };
+  return await res.json();
 }
 
 async function fetchFlightsLive() {
@@ -1163,10 +1213,10 @@ function filterEvents(events, prefs) {
 function PersonalizationPanel({ prefs, onChange, onClose, watchlist, selectedEvent, onToggleRegion, onToggleTopic }) {
   return (
     <div style={{
-      position: "absolute", top: 56, left: 272, width: 280, zIndex: 45,
-      background: "linear-gradient(168deg, rgba(3,8,22,0.97) 0%, rgba(4,10,26,0.98) 100%)",
-      border: "1px solid rgba(0,180,255,0.25)", borderRadius: 8,
-      boxShadow: "0 8px 32px rgba(0,0,0,0.6)",
+      position: "absolute", top: FLOATING_TOP, left: 280, width: 300, zIndex: 45,
+      background: "linear-gradient(180deg, rgba(5,12,24,0.96) 0%, rgba(7,15,29,0.98) 100%)",
+      border: "1px solid rgba(94, 164, 195, 0.16)", borderRadius: 18,
+      boxShadow: "0 24px 55px rgba(0,0,0,0.46)",
       animation: "panelIn 0.28s cubic-bezier(0.23,1,0.32,1)",
       overflow: "hidden",
     }}>
@@ -1304,17 +1354,17 @@ function WatchlistPanel({ watchlist, selectedEvent, onToggleRegion, onToggleTopi
 
 function BriefingPanel({ briefing, onSelect, onClose }) {
   return (
-    <FloatingPanel title="Today's Briefing" subtitle="Top 5 by importance and freshness" top={56} left={560} width={320} onClose={onClose}>
+    <FloatingPanel title="Today's Briefing" subtitle="Top 5 by importance and freshness" top={FLOATING_TOP} left={588} width={330} onClose={onClose}>
       {briefing.items.length === 0 ? (
         <div style={{ color: "rgba(130,185,230,0.62)", fontSize: 11, fontFamily: mono }}>No briefing items available yet.</div>
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
           {briefing.items.map((item, index) => (
             <button key={item.id} onClick={() => onSelect(item.id)} style={{
-              background: "rgba(0,24,54,0.42)",
-              border: "1px solid rgba(0,180,255,0.12)",
-              borderRadius: 7,
-              padding: "10px 11px",
+              background: "rgba(8,20,36,0.76)",
+              border: "1px solid rgba(94, 164, 195, 0.12)",
+              borderRadius: 16,
+              padding: "12px 13px",
               textAlign: "left",
               cursor: "pointer",
             }}>
@@ -1324,12 +1374,19 @@ function BriefingPanel({ briefing, onSelect, onClose }) {
                   {item.riskLevel}
                 </TrafficPill>
               </div>
-              <div style={{ color: "#d6ebff", fontSize: 12, fontFamily: display, fontWeight: 700, lineHeight: 1.3, marginBottom: 5 }}>
+              <div style={{ color: "#d6ebff", fontSize: 14, fontFamily: display, fontWeight: 700, lineHeight: 1.25, marginBottom: 6, letterSpacing: "0.03em" }}>
                 {item.title}
               </div>
-              <div style={{ color: "rgba(150,205,245,0.68)", fontSize: 11, lineHeight: 1.5, marginBottom: 7 }}>
+              <div style={{ color: "rgba(150,205,245,0.68)", fontSize: 12, lineHeight: 1.6, marginBottom: 8, fontFamily: bodyFont }}>
                 {item.summary}
               </div>
+              {item.aiStatusLabel ? (
+                <div style={{ marginBottom: 8 }}>
+                  <TrafficPill level={item.aiStatus === "enriched" ? "green" : item.aiStatus === "cached" ? "neutral" : item.aiStatus === "budget_exhausted" ? "amber" : "neutral"}>
+                    {item.aiStatusLabel}
+                  </TrafficPill>
+                </div>
+              ) : null}
               <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
                 {item.marketImpactTags.map((tag) => (
                   <TrafficPill key={tag} level={/Oil Up|Shipping Risk|Equities Risk-off/i.test(tag) ? "red" : /Defense|Tech/i.test(tag) ? "amber" : "neutral"}>
@@ -1348,12 +1405,12 @@ function BriefingPanel({ briefing, onSelect, onClose }) {
 function MarketImpactDashboard({ aggregate, onClose }) {
   const items = [aggregate.oil, aggregate.shipping, aggregate.defense, aggregate.tech, aggregate.equities];
   return (
-    <FloatingPanel title="Market Impact" subtitle="Scenario-weighted dashboard" top={56} right={16} width={240} onClose={onClose}>
+    <FloatingPanel title="Market Impact" subtitle="Scenario-weighted dashboard" top={FLOATING_TOP} right={16} width={320} onClose={onClose}>
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
         {items.map((item) => (
-          <div key={item.label} style={{ background: "rgba(0,24,54,0.42)", border: "1px solid rgba(0,180,255,0.08)", borderRadius: 7, padding: "9px 10px" }}>
+          <div key={item.label} style={{ background: "rgba(8,20,36,0.76)", border: "1px solid rgba(94, 164, 195, 0.12)", borderRadius: 16, padding: "13px 14px" }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 5 }}>
-              <span style={{ color: "#d6ebff", fontSize: 12, fontFamily: display, fontWeight: 700 }}>{item.label}</span>
+              <span style={{ color: "#d6ebff", fontSize: 14, fontFamily: display, fontWeight: 700, letterSpacing: "0.03em" }}>{item.label}</span>
               <TrafficPill level={item.level}>{item.trend}</TrafficPill>
             </div>
             <div style={{ color: "rgba(150,205,245,0.62)", fontSize: 10, fontFamily: mono }}>
@@ -1361,6 +1418,49 @@ function MarketImpactDashboard({ aggregate, onClose }) {
             </div>
           </div>
         ))}
+      </div>
+    </FloatingPanel>
+  );
+}
+
+function DataConfidencePanel({ stats, onClose }) {
+  return (
+    <FloatingPanel title="Data Confidence" subtitle="Overall signal confidence" top={430} right={16} width={320} onClose={onClose}>
+      <div style={{ display: "grid", gap: 14 }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+          <div style={{
+            width: 92,
+            height: 92,
+            borderRadius: "50%",
+            border: "4px solid rgba(78,214,159,0.24)",
+            boxShadow: "inset 0 0 0 1px rgba(94,164,195,0.16)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            background: "radial-gradient(circle at 35% 30%, rgba(87,216,255,0.08), rgba(6,14,26,0.9))",
+          }}>
+            <div style={{ textAlign: "center" }}>
+              <div style={{ color: "#eef7ff", fontFamily: display, fontSize: 28, fontWeight: 700, lineHeight: 1 }}>{stats.overall}%</div>
+              <div style={{ color: "#4ed69f", fontFamily: mono, fontSize: 10, letterSpacing: "0.14em", textTransform: "uppercase", marginTop: 4 }}>Good</div>
+            </div>
+          </div>
+          <div style={{ flex: 1, display: "grid", gap: 12 }}>
+            {stats.bands.map((band) => (
+              <div key={band.label}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+                  <span style={{ color: "rgba(209,227,241,0.86)", fontFamily: mono, fontSize: 10, letterSpacing: "0.14em", textTransform: "uppercase" }}>{band.label}</span>
+                  <span style={{ color: "#8ea8bf", fontFamily: mono, fontSize: 10 }}>{band.value}%</span>
+                </div>
+                <div style={{ height: 3, borderRadius: 999, background: "rgba(255,255,255,0.06)", overflow: "hidden" }}>
+                  <div style={{ width: `${band.value}%`, height: "100%", background: band.color, boxShadow: `0 0 16px ${band.color}` }} />
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+        <div style={{ color: "rgba(148,175,198,0.72)", fontSize: 10, fontFamily: mono, letterSpacing: "0.1em" }}>
+          Updated: {stats.updatedAt}
+        </div>
       </div>
     </FloatingPanel>
   );
@@ -1374,20 +1474,20 @@ function TimelinePanel({ modeHours, onModeChange, sliderPercent, onSliderChange,
   ];
 
   return (
-    <FloatingPanel title="Timeline" subtitle={`${visibleCount} events visible`} top={56} left={272} width={272} onClose={onClose}>
-      <div style={{ display: "flex", gap: 6, marginBottom: 12 }}>
+    <FloatingPanel title="Timeline" subtitle={`${visibleCount} events visible`} top={FLOATING_TOP} left={280} width={288} onClose={onClose}>
+      <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
         {options.map((option) => (
           <button key={option.value} onClick={() => onModeChange(option.value)} style={{
             flex: 1,
-            padding: "6px 8px",
-            borderRadius: 4,
+            padding: "8px 10px",
+            borderRadius: 12,
             cursor: "pointer",
-            background: modeHours === option.value ? "rgba(0,180,255,0.18)" : "rgba(0,20,50,0.5)",
-            border: `1px solid ${modeHours === option.value ? "rgba(0,180,255,0.5)" : "rgba(0,100,180,0.2)"}`,
-            color: modeHours === option.value ? "#88ddff" : "rgba(150,200,240,0.55)",
+            background: modeHours === option.value ? "rgba(56, 189, 248, 0.14)" : "rgba(8,20,36,0.66)",
+            border: `1px solid ${modeHours === option.value ? "rgba(87,216,255,0.36)" : "rgba(83, 148, 182, 0.16)"}`,
+            color: modeHours === option.value ? "#88ddff" : "rgba(150,200,240,0.62)",
             fontSize: 10,
             fontFamily: mono,
-            letterSpacing: "0.08em",
+            letterSpacing: "0.12em",
           }}>
             {option.label}
           </button>
@@ -1428,18 +1528,18 @@ function LayerStatusMeta({ status, remainingLabel = "remaining" }) {
 function ObjectRowButton({ item, subtitle, onClick }) {
   return (
     <button onClick={onClick} style={{
-      background: "rgba(0,24,54,0.42)",
-      border: "1px solid rgba(0,180,255,0.12)",
-      borderRadius: 7,
-      padding: "10px 11px",
+      background: "rgba(8,20,36,0.76)",
+      border: "1px solid rgba(94, 164, 195, 0.12)",
+      borderRadius: 14,
+      padding: "12px 13px",
       textAlign: "left",
       cursor: "pointer",
       width: "100%",
     }}>
-      <div style={{ color: "#d6ebff", fontSize: 12, fontFamily: display, fontWeight: 700, lineHeight: 1.3 }}>
+      <div style={{ color: "#d6ebff", fontSize: 13, fontFamily: display, fontWeight: 700, lineHeight: 1.3 }}>
         {item.title}
       </div>
-      <div style={{ color: "rgba(150,205,245,0.62)", fontSize: 10, lineHeight: 1.5, marginTop: 4 }}>
+      <div style={{ color: "rgba(150,205,245,0.62)", fontSize: 10, lineHeight: 1.55, marginTop: 6, fontFamily: bodyFont }}>
         {subtitle}
       </div>
     </button>
@@ -1448,7 +1548,7 @@ function ObjectRowButton({ item, subtitle, onClick }) {
 
 function FlightsPanel({ flights, status, onSelect, onClose }) {
   return (
-    <FloatingPanel title="Flights" subtitle={`${flights.length} tracked aircraft`} top={56} right={264} width={280} onClose={onClose}>
+    <FloatingPanel title="Flights" subtitle={`${flights.length} tracked aircraft`} top={FLOATING_TOP} right={348} width={300} onClose={onClose}>
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
         {flights.length === 0 ? (
           <div style={{ color: "rgba(130,185,230,0.62)", fontSize: 11, fontFamily: mono }}>No cached flights available yet.</div>
@@ -1474,7 +1574,7 @@ function VesselsPanel({ vessels, status, search, onSearchChange, onSelect, onClo
   });
 
   return (
-    <FloatingPanel title="Vessels" subtitle={`${filtered.length} tracked vessels`} top={56} right={264} width={280} onClose={onClose}>
+    <FloatingPanel title="Vessels" subtitle={`${filtered.length} tracked vessels`} top={FLOATING_TOP} right={348} width={300} onClose={onClose}>
       <input
         value={search}
         onChange={(e) => onSearchChange(e.target.value)}
@@ -1508,7 +1608,7 @@ function VesselsPanel({ vessels, status, search, onSearchChange, onSelect, onClo
 
 function SatellitesPanel({ satellites, status, onSelect, onClose }) {
   return (
-    <FloatingPanel title="Satellites" subtitle={`${satellites.length} orbital objects`} top={56} right={264} width={280} onClose={onClose}>
+    <FloatingPanel title="Satellites" subtitle={`${satellites.length} orbital objects`} top={FLOATING_TOP} right={348} width={300} onClose={onClose}>
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
         {satellites.length === 0 ? (
           <div style={{ color: "rgba(130,185,230,0.62)", fontSize: 11, fontFamily: mono }}>No satellite cache available yet.</div>
@@ -1579,8 +1679,16 @@ function MarketTicker({ marketData }) {
 // UI CONSTANTS & HELPERS
 // ═══════════════════════════════════════════════════════════════════════════════
 
-const mono    = "'IBM Plex Mono', monospace";
-const display = "'Rajdhani', sans-serif";
+const mono = "'Share Tech Mono', 'IBM Plex Mono', monospace";
+const display = "'Rajdhani', 'Space Grotesk', sans-serif";
+const bodyFont = "'Inter', 'Space Grotesk', sans-serif";
+const TOP_BAR_HEIGHT = 58;
+const FLOATING_TOP = 68;
+const APP_VIEWS = [
+  { key: "globe", label: "Globe" },
+  { key: "classic", label: "Intel Board" },
+  { key: "reports", label: "Personalized Reports", badge: "WIP" },
+];
 
 const useIsMobile = () => {
   const [mob, setMob] = useState(() => window.innerWidth < 768);
@@ -1597,9 +1705,9 @@ const useIsMobile = () => {
 function SectorPill({ name }) {
   const c = SECTOR_COLOR[name] || "#8899aa";
   return (
-    <span style={{ background: `${c}18`, color: c, border: `1px solid ${c}44`,
-      borderRadius: 3, padding: "2px 7px", fontSize: 9, fontFamily: mono,
-      letterSpacing: "0.09em", textTransform: "uppercase", whiteSpace: "nowrap" }}>
+    <span style={{ background: `${c}12`, color: c, border: `1px solid ${c}33`,
+      borderRadius: 999, padding: "4px 9px", fontSize: 9, fontFamily: mono,
+      letterSpacing: "0.12em", textTransform: "uppercase", whiteSpace: "nowrap" }}>
       {name}
     </span>
   );
@@ -1618,8 +1726,8 @@ function ImpactRow({ label, value, color }) {
 
 function Badge({ children, color }) {
   return (
-    <span style={{ background: `${color}14`, color, border: `1px solid ${color}44`,
-      borderRadius: 3, padding: "2px 8px", fontSize: 9, letterSpacing: "0.11em",
+    <span style={{ background: `${color}12`, color, border: `1px solid ${color}38`,
+      borderRadius: 999, padding: "4px 9px", fontSize: 9, letterSpacing: "0.13em",
       textTransform: "uppercase", fontFamily: mono, whiteSpace: "nowrap" }}>
       {children}
     </span>
@@ -1640,10 +1748,10 @@ function TrafficPill({ level, children }) {
       color: cfg.color,
       border: `1px solid ${cfg.border}`,
       borderRadius: 999,
-      padding: "2px 8px",
+      padding: "4px 9px",
       fontSize: 9,
       fontFamily: mono,
-      letterSpacing: "0.09em",
+      letterSpacing: "0.12em",
       textTransform: "uppercase",
       whiteSpace: "nowrap",
     }}>
@@ -1661,36 +1769,36 @@ function FloatingPanel({ title, subtitle, children, top, left, right, width = 30
       right,
       width,
       zIndex: 44,
-      background: "linear-gradient(168deg, rgba(3,8,22,0.97) 0%, rgba(4,10,26,0.98) 100%)",
-      border: "1px solid rgba(0,180,255,0.18)",
-      borderRadius: 8,
-      boxShadow: "0 8px 32px rgba(0,0,0,0.6)",
+      background: "linear-gradient(180deg, rgba(5,12,24,0.96) 0%, rgba(7,15,29,0.98) 100%)",
+      border: "1px solid rgba(94, 164, 195, 0.16)",
+      borderRadius: 18,
+      boxShadow: "0 24px 55px rgba(0,0,0,0.46)",
       overflow: "hidden",
-      backdropFilter: "blur(14px)",
+      backdropFilter: "blur(16px)",
     }}>
-      <div style={{ padding: "11px 14px 9px", borderBottom: "1px solid rgba(0,180,255,0.08)", display: "flex", justifyContent: "space-between", gap: 8 }}>
+      <div style={{ padding: "14px 16px 12px", borderBottom: "1px solid rgba(94, 164, 195, 0.12)", display: "flex", justifyContent: "space-between", gap: 8 }}>
         <div>
-          <div style={{ color: "rgba(0,200,255,0.36)", fontSize: 9, fontFamily: mono, letterSpacing: "0.16em", textTransform: "uppercase" }}>{title}</div>
+          <div style={{ color: "rgba(103, 220, 255, 0.48)", fontSize: 10, fontFamily: mono, letterSpacing: "0.18em", textTransform: "uppercase" }}>{title}</div>
           {subtitle ? (
-            <div style={{ color: "rgba(200,230,255,0.86)", fontFamily: display, fontSize: 13, fontWeight: 700, marginTop: 3 }}>
+            <div style={{ color: "rgba(233,244,255,0.9)", fontFamily: display, fontSize: 15, fontWeight: 700, marginTop: 4, letterSpacing: "0.03em" }}>
               {subtitle}
             </div>
           ) : null}
         </div>
         {onClose ? (
           <button onClick={onClose} style={{
-            background: "none",
-            border: "1px solid rgba(0,180,255,0.16)",
-            color: "rgba(140,210,255,0.68)",
-            borderRadius: 4,
-            width: 24,
-            height: 24,
+            background: "rgba(10, 21, 37, 0.82)",
+            border: "1px solid rgba(94, 164, 195, 0.18)",
+            color: "rgba(189,226,248,0.74)",
+            borderRadius: 999,
+            width: 28,
+            height: 28,
             cursor: "pointer",
             flexShrink: 0,
           }}>✕</button>
         ) : null}
       </div>
-      <div style={{ padding: "12px 14px" }}>
+      <div style={{ padding: "14px 16px" }}>
         {children}
       </div>
     </div>
@@ -1847,11 +1955,11 @@ function ScoreBreakdownPanel({ event }) {
 function WarRoomPanel({ topEvents, onSelect, selectedEventId, onClose }) {
   return (
     <div style={{
-      position: "absolute", top: 56, right: 16, width: 300, zIndex: 45,
-      background: "linear-gradient(168deg, rgba(3,8,22,0.97) 0%, rgba(4,10,26,0.98) 100%)",
+      position: "absolute", top: FLOATING_TOP, right: 16, width: 320, zIndex: 45,
+      background: "linear-gradient(180deg, rgba(5,12,24,0.96) 0%, rgba(7,15,29,0.98) 100%)",
       border: "1px solid rgba(255,34,51,0.3)",
-      borderRadius: 8,
-      boxShadow: "0 0 40px rgba(255,34,51,0.08), 0 8px 32px rgba(0,0,0,0.6)",
+      borderRadius: 18,
+      boxShadow: "0 0 40px rgba(255,34,51,0.08), 0 24px 55px rgba(0,0,0,0.46)",
       animation: "panelIn 0.28s cubic-bezier(0.23,1,0.32,1)",
       overflow: "hidden",
     }}>
@@ -2049,8 +2157,8 @@ function DesktopEventPanel({ event, activeScenario, onScenarioChange, onClose })
   return (
     <div style={{
       position: "fixed", right: 0, top: 0, bottom: 0, width: 420, zIndex: 60,
-      background: "linear-gradient(168deg, #030b1c 0%, #050f24 100%)",
-      borderLeft: "1px solid rgba(0,180,255,0.2)",
+      background: "linear-gradient(180deg, rgba(5,12,24,0.98) 0%, rgba(7,15,29,0.98) 100%)",
+      borderLeft: "1px solid rgba(94, 164, 195, 0.16)",
       display: "flex", flexDirection: "column",
       animation: "panelIn 0.32s cubic-bezier(0.23,1,0.32,1)",
     }}>
@@ -2058,9 +2166,9 @@ function DesktopEventPanel({ event, activeScenario, onScenarioChange, onClose })
       <div style={{ display: "flex", justifyContent: "flex-end", padding: "10px 14px 0",
         flexShrink: 0 }}>
         <button onClick={onClose} aria-label="Close panel" style={{
-          background: "none", border: "1px solid rgba(0,180,255,0.22)",
-          color: "rgba(0,180,255,0.55)", cursor: "pointer", width: 32, height: 32,
-          borderRadius: 5, display: "flex", alignItems: "center",
+          background: "rgba(10, 21, 37, 0.82)", border: "1px solid rgba(94, 164, 195, 0.18)",
+          color: "rgba(189,226,248,0.74)", cursor: "pointer", width: 32, height: 32,
+          borderRadius: 999, display: "flex", alignItems: "center",
           justifyContent: "center", fontSize: 14, transition: "all 0.15s ease",
         }}>✕</button>
       </div>
@@ -2144,45 +2252,45 @@ function SelectedObjectCard({ selected, onClose, onZoom, onClearSelection, mobil
     : {
         position: "fixed",
         right: 0,
-        top: 48,
+        top: TOP_BAR_HEIGHT,
         bottom: 0,
         width: 340,
         zIndex: 60,
-        borderLeft: "1px solid rgba(0,180,255,0.2)",
+        borderLeft: "1px solid rgba(94, 164, 195, 0.16)",
       };
 
   return (
     <div style={{
       ...shellStyle,
-      background: "linear-gradient(168deg, #030b1c 0%, #050f24 100%)",
+      background: "linear-gradient(180deg, rgba(5,12,24,0.98) 0%, rgba(7,15,29,0.98) 100%)",
       display: "flex",
       flexDirection: "column",
-      padding: 16,
+      padding: 18,
       gap: 12,
-      boxShadow: "0 8px 32px rgba(0,0,0,0.5)",
+      boxShadow: "0 24px 55px rgba(0,0,0,0.46)",
     }}>
       <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
         <div>
-          <div style={{ color: "rgba(0,200,255,0.42)", fontSize: 9, fontFamily: mono, letterSpacing: "0.14em", textTransform: "uppercase" }}>
+          <div style={{ color: "rgba(103, 220, 255, 0.48)", fontSize: 10, fontFamily: mono, letterSpacing: "0.16em", textTransform: "uppercase" }}>
             Selected {type}
           </div>
-          <div style={{ color: "#d6ebff", fontFamily: display, fontWeight: 700, fontSize: 18 }}>
+          <div style={{ color: "#d6ebff", fontFamily: display, fontWeight: 700, fontSize: 20, letterSpacing: "0.03em" }}>
             {data.title ?? data.name}
           </div>
         </div>
-        <button onClick={onClose} style={{ background: "none", border: "1px solid rgba(0,180,255,0.22)", color: "rgba(0,180,255,0.55)", borderRadius: 5, width: 30, height: 30, flexShrink: 0 }}>✕</button>
+        <button onClick={onClose} style={{ background: "rgba(10, 21, 37, 0.82)", border: "1px solid rgba(94, 164, 195, 0.18)", color: "rgba(189,226,248,0.74)", borderRadius: 999, width: 30, height: 30, flexShrink: 0 }}>✕</button>
       </div>
       <div style={{ display: "grid", gap: 8 }}>
         {rows.map(([label, value]) => (
           <div key={label} style={{ display: "grid", gridTemplateColumns: "84px 1fr", gap: 8 }}>
-            <span style={{ color: "rgba(0,200,255,0.36)", fontSize: 10, fontFamily: mono, letterSpacing: "0.08em", textTransform: "uppercase" }}>{label}</span>
-            <span style={{ color: "rgba(214,235,255,0.88)", fontSize: 12, lineHeight: 1.45 }}>{String(value ?? "n/a")}</span>
+            <span style={{ color: "rgba(103, 220, 255, 0.42)", fontSize: 10, fontFamily: mono, letterSpacing: "0.12em", textTransform: "uppercase" }}>{label}</span>
+            <span style={{ color: "rgba(214,235,255,0.88)", fontSize: 12, lineHeight: 1.55, fontFamily: bodyFont }}>{String(value ?? "n/a")}</span>
           </div>
         ))}
       </div>
       <div style={{ display: "flex", gap: 8 }}>
-        <button onClick={onZoom} style={{ flex: 1, padding: "8px 10px", borderRadius: 6, border: "1px solid rgba(0,180,255,0.22)", background: "rgba(0,36,82,0.55)", color: "#d6ebff" }}>Zoom to object</button>
-        <button onClick={onClearSelection} style={{ flex: 1, padding: "8px 10px", borderRadius: 6, border: "1px solid rgba(255,90,120,0.22)", background: "rgba(60,16,28,0.55)", color: "#ffd6df" }}>Clear selection</button>
+        <button onClick={onZoom} style={{ flex: 1, padding: "10px 12px", borderRadius: 14, border: "1px solid rgba(87,216,255,0.18)", background: "rgba(10,31,52,0.76)", color: "#d6ebff", fontFamily: mono, letterSpacing: "0.1em", textTransform: "uppercase" }}>Zoom to object</button>
+        <button onClick={onClearSelection} style={{ flex: 1, padding: "10px 12px", borderRadius: 14, border: "1px solid rgba(255,90,120,0.18)", background: "rgba(42,15,23,0.72)", color: "#ffd6df", fontFamily: mono, letterSpacing: "0.1em", textTransform: "uppercase" }}>Clear selection</button>
       </div>
     </div>
   );
@@ -2394,15 +2502,15 @@ const LAYER_DEFS = {
 function LayerToggleChip({ layerKey, def, active, onToggle }) {
   return (
     <button onClick={() => onToggle(layerKey)} style={{
-      display: "flex", alignItems: "center", gap: 5, padding: "5px 10px",
-      background: active ? `${def.color}20` : "rgba(0,20,50,0.5)",
-      border: `1px solid ${active ? def.color + "66" : "rgba(0,120,200,0.2)"}`,
-      borderRadius: 20, cursor: "pointer", whiteSpace: "nowrap",
+      display: "flex", alignItems: "center", gap: 5, padding: "7px 12px",
+      background: active ? `${def.color}14` : "rgba(10,20,36,0.74)",
+      border: `1px solid ${active ? def.color + "55" : "rgba(94, 164, 195, 0.12)"}`,
+      borderRadius: 12, cursor: "pointer", whiteSpace: "nowrap",
       transition: "all 0.18s ease", minHeight: 30,
     }}>
-      <span style={{ fontSize: 11 }}>{def.icon}</span>
+      <span style={{ fontSize: 11, color: active ? def.color : "rgba(160,190,214,0.7)" }}>{def.icon}</span>
       <span style={{ color: active ? def.color : "rgba(150,200,240,0.55)",
-        fontSize: 9, fontFamily: mono, letterSpacing: "0.1em" }}>{def.label}</span>
+        fontSize: 9, fontFamily: mono, letterSpacing: "0.12em" }}>{def.label}</span>
     </button>
   );
 }
@@ -2647,7 +2755,7 @@ function buildConnectionLayer() {
 // TOP BAR
 // ═══════════════════════════════════════════════════════════════════════════════
 
-function TopBar({ counts, bordersLoaded, activeLayers, onLayerToggle, isMobile, onWarRoom, showWarRoom, marketData, onPersonalize, showPersonalize, onAdminRefresh, refreshState, layerEntries }) {
+function TopBar({ counts, bordersLoaded, activeLayers, onLayerToggle, isMobile, onWarRoom, showWarRoom, marketData, onPersonalize, showPersonalize, onAdminRefresh, refreshState, layerEntries, activeView = "globe", onNavigate, systemStatus }) {
   const [time, setTime] = useState(() => new Date().toISOString().slice(11,19));
   useEffect(() => {
     const t = setInterval(() => setTime(new Date().toISOString().slice(11,19)), 1000);
@@ -2656,109 +2764,158 @@ function TopBar({ counts, bordersLoaded, activeLayers, onLayerToggle, isMobile, 
 
   return (
     <div style={{
-      position: "absolute", top: 0, left: 0, right: 0, height: 48,
-      background: "rgba(2,7,18,0.92)", backdropFilter: "blur(16px)",
-      borderBottom: "1px solid rgba(0,180,255,0.14)",
+      position: "absolute", top: 0, left: 0, right: 0, height: TOP_BAR_HEIGHT,
+      background: "linear-gradient(180deg, rgba(4,9,18,0.96) 0%, rgba(4,10,22,0.88) 100%)", backdropFilter: "blur(18px)",
+      borderBottom: "1px solid rgba(87,216,255,0.12)",
       display: "flex", alignItems: "center", justifyContent: "space-between",
-      padding: "0 16px", zIndex: 40, flexShrink: 0,
-      WebkitBackdropFilter: "blur(16px)",
+      padding: "0 18px", zIndex: 40, flexShrink: 0, gap: 16,
+      WebkitBackdropFilter: "blur(18px)",
     }}>
-      {/* Left: logo + status dots */}
-      <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-        {/* Globe icon */}
-        <svg width="22" height="22" viewBox="0 0 22 22" style={{ flexShrink: 0 }}>
-          <circle cx="11" cy="11" r="9" fill="none" stroke="rgba(0,180,255,0.6)" strokeWidth="1.2"/>
-          <ellipse cx="11" cy="11" rx="4" ry="9" fill="none" stroke="rgba(0,180,255,0.3)" strokeWidth="0.8"/>
-          <line x1="2" y1="11" x2="20" y2="11" stroke="rgba(0,180,255,0.3)" strokeWidth="0.8"/>
-          <circle cx="11" cy="11" r="2" fill="rgba(0,210,255,0.9)"/>
-        </svg>
-        <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-          <span style={{ color: "#f8fafc", fontFamily: display, fontSize: isMobile ? 17 : 19,
-            fontWeight: 700, letterSpacing: "0.14em" }}>GRIGORI</span>
-          {!isMobile && (
-            <span style={{ color: "rgba(191,219,254,0.68)", fontFamily: "Georgia, serif", fontSize: 11, letterSpacing: "0.06em" }}>
-              by oryth.io
-            </span>
-          )}
-        </div>
-
-        {!isMobile && (
-          <>
-            <div style={{ width: 1, height: 16, background: "rgba(0,180,255,0.18)" }}/>
-            <div style={{ display: "flex", gap: 8 }}>
-              {[["H", counts.high, "#ff2233"], ["M", counts.medium, "#ff8800"], ["L", counts.low, "#ffcc00"]].map(([l,c,cl]) => (
-                <div key={l} style={{ display: "flex", alignItems: "center", gap: 4 }}>
-                  <span style={{ width: 6, height: 6, borderRadius: "50%", background: cl,
-                    boxShadow: `0 0 6px ${cl}`, display: "inline-block" }}/>
-                  <span style={{ color: "rgba(180,220,255,0.45)", fontSize: 9,
-                    fontFamily: mono, letterSpacing: "0.08em" }}>{l}:{c}</span>
-                </div>
-              ))}
+      <div style={{ display: "flex", alignItems: "center", gap: 14, minWidth: 0 }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: 2, minWidth: 0 }}>
+          <span style={{ color: "#f8fafc", fontFamily: display, fontSize: isMobile ? 19 : 21, fontWeight: 700, letterSpacing: "0.16em", textTransform: "uppercase", lineHeight: 1 }}>
+            Grigori
+          </span>
+          <span style={{ color: "rgba(191,219,254,0.76)", fontFamily: bodyFont, fontSize: 12, letterSpacing: "0.06em", lineHeight: 1.1 }}>
+            by oryth.io
+          </span>
+          {!isMobile ? (
+            <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 3 }}>
+              <span style={{ color: "#74d9f3", fontFamily: mono, fontSize: 10, letterSpacing: "0.16em", textTransform: "uppercase" }}>
+                Strategic Intelligence Dashboard
+              </span>
+              <span style={{ width: 6, height: 6, borderRadius: "50%", background: "#4ed69f", boxShadow: "0 0 10px rgba(78,214,159,0.8)" }} />
+              <span style={{ color: "rgba(140,165,186,0.82)", fontFamily: bodyFont, fontSize: 12 }}>
+                Operational
+              </span>
             </div>
-          </>
-        )}
+          ) : null}
+        </div>
       </div>
 
-      {/* Right: layers (desktop) + live + time */}
-      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+      {!isMobile ? (
+        <div style={{ display: "flex", alignItems: "center", gap: 14, justifyContent: "center", flex: 1, minWidth: 0 }}>
+          {APP_VIEWS.map((item) => {
+            const active = activeView === item.key;
+            return (
+              <button
+                key={item.key}
+                onClick={() => onNavigate?.(item.key)}
+                style={{
+                  border: "none",
+                  borderBottom: `2px solid ${active ? "rgba(87,216,255,0.95)" : "transparent"}`,
+                  background: "transparent",
+                  color: active ? "#73ebff" : "rgba(214, 230, 244, 0.72)",
+                  padding: "16px 4px 12px",
+                  minWidth: item.key === "reports" ? 152 : 84,
+                  cursor: "pointer",
+                  fontFamily: mono,
+                  fontSize: 11,
+                  letterSpacing: "0.12em",
+                  textTransform: "uppercase",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                {item.label}
+                {item.badge ? (
+                  <span style={{
+                    marginLeft: 8,
+                    borderRadius: 999,
+                    border: "1px solid rgba(144, 164, 181, 0.18)",
+                    padding: "1px 6px",
+                    color: "rgba(189,216,232,0.75)",
+                    fontSize: 9,
+                  }}>
+                    {item.badge}
+                  </span>
+                ) : null}
+              </button>
+            );
+          })}
+        </div>
+      ) : null}
+
+      <div style={{ display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
         {!isMobile && (
-          <DesktopLayerBar activeLayers={activeLayers} onToggle={onLayerToggle}
-            bordersLoaded={bordersLoaded} layerEntries={layerEntries} />
-        )}
-        {/* Market ticker (desktop only) */}
-        {!isMobile && <MarketTicker marketData={marketData} />}
-        {!isMobile && marketData && (
-          <span style={{ color: "rgba(0,180,255,0.2)", fontSize: 10 }}>|</span>
+          <div style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            padding: "7px 10px",
+            borderRadius: 14,
+            background: "rgba(6, 15, 30, 0.76)",
+            border: "1px solid rgba(87,216,255,0.14)",
+          }}>
+            <span style={{ color: "rgba(150,200,240,0.55)", fontSize: 10, fontFamily: mono, letterSpacing: "0.16em", textTransform: "uppercase" }}>
+              Layers
+            </span>
+            <DesktopLayerBar activeLayers={activeLayers} onToggle={onLayerToggle}
+              bordersLoaded={bordersLoaded} layerEntries={layerEntries} />
+          </div>
         )}
 
-        {/* Personalize button */}
         {!isMobile && (
           <button onClick={onPersonalize} style={{
-            display: "flex", alignItems: "center", gap: 5, padding: "4px 10px",
-            background: showPersonalize ? "rgba(0,180,255,0.15)" : "rgba(0,20,50,0.5)",
-            border: `1px solid ${showPersonalize ? "rgba(0,180,255,0.5)" : "rgba(0,100,180,0.3)"}`,
-            borderRadius: 4, cursor: "pointer", minHeight: 30, transition: "all 0.18s ease",
+            display: "flex", alignItems: "center", gap: 5, padding: "8px 12px",
+            background: showPersonalize ? "rgba(0,180,255,0.12)" : "rgba(6,15,30,0.76)",
+            border: `1px solid ${showPersonalize ? "rgba(0,180,255,0.32)" : "rgba(87,216,255,0.14)"}`,
+            borderRadius: 14, cursor: "pointer", minHeight: 36, transition: "all 0.18s ease",
           }}>
             <span style={{ color: showPersonalize ? "#44ccff" : "rgba(200,220,255,0.55)",
-              fontSize: 9, fontFamily: mono, letterSpacing: "0.1em" }}>⊞ FOCUS</span>
+              fontSize: 10, fontFamily: mono, letterSpacing: "0.12em" }}>Focus</span>
           </button>
         )}
 
         <button onClick={onAdminRefresh} disabled={refreshState?.status === "running"} style={{
-          display: "flex", alignItems: "center", gap: 5, padding: "4px 10px",
-          background: refreshState?.status === "success" ? "rgba(0,140,90,0.18)" : refreshState?.status === "error" ? "rgba(180,30,60,0.18)" : "rgba(0,20,50,0.5)",
-          border: `1px solid ${refreshState?.status === "success" ? "rgba(0,200,140,0.35)" : refreshState?.status === "error" ? "rgba(255,80,120,0.35)" : "rgba(0,100,180,0.3)"}`,
-          borderRadius: 4, cursor: refreshState?.status === "running" ? "wait" : "pointer", minHeight: 30, transition: "all 0.18s ease",
+          display: "flex", alignItems: "center", gap: 5, padding: "8px 12px",
+          background: refreshState?.status === "success" ? "rgba(0,140,90,0.18)" : refreshState?.status === "error" ? "rgba(180,30,60,0.18)" : "rgba(6,15,30,0.76)",
+          border: `1px solid ${refreshState?.status === "success" ? "rgba(0,200,140,0.28)" : refreshState?.status === "error" ? "rgba(255,80,120,0.28)" : "rgba(87,216,255,0.14)"}`,
+          borderRadius: 14, cursor: refreshState?.status === "running" ? "wait" : "pointer", minHeight: 36, transition: "all 0.18s ease",
         }}>
           <span style={{ color: refreshState?.status === "running" ? "rgba(200,220,255,0.45)" : "rgba(200,220,255,0.7)",
-            fontSize: 9, fontFamily: mono, letterSpacing: "0.1em" }}>
+            fontSize: 10, fontFamily: mono, letterSpacing: "0.12em" }}>
             {refreshState?.status === "running" ? "… RUNNING" : "↻ REFRESH"}
           </span>
         </button>
 
-        {!isMobile && refreshState?.message ? (
-          <span style={{ color: refreshState.status === "error" ? "#ff8da1" : "rgba(120,220,255,0.78)", fontSize: 9, fontFamily: mono }}>
-            {refreshState.message}
-          </span>
-        ) : null}
-
         <button onClick={onWarRoom} style={{
-          display: "flex", alignItems: "center", gap: 5, padding: "4px 10px",
-          background: showWarRoom ? "rgba(255,34,51,0.15)" : "rgba(0,20,50,0.5)",
-          border: `1px solid ${showWarRoom ? "rgba(255,34,51,0.5)" : "rgba(0,100,180,0.3)"}`,
-          borderRadius: 4, cursor: "pointer", minHeight: 30, transition: "all 0.18s ease",
+          display: "flex", alignItems: "center", gap: 5, padding: "8px 12px",
+          background: showWarRoom ? "rgba(255,34,51,0.12)" : "rgba(6,15,30,0.76)",
+          border: `1px solid ${showWarRoom ? "rgba(255,34,51,0.28)" : "rgba(87,216,255,0.14)"}`,
+          borderRadius: 14, cursor: "pointer", minHeight: 36, transition: "all 0.18s ease",
         }}>
           <span style={{ color: showWarRoom ? "#ff4455" : "rgba(200,220,255,0.55)",
-            fontSize: 9, fontFamily: mono, letterSpacing: "0.1em" }}>⬛ WAR ROOM</span>
+            fontSize: 10, fontFamily: mono, letterSpacing: "0.12em" }}>War Room</span>
         </button>
-        <span style={{ background: "rgba(0,255,100,0.09)", color: "#00ff88",
-          border: "1px solid rgba(0,255,100,0.22)", borderRadius: 3,
-          padding: "2px 8px", fontSize: 9, fontFamily: mono, letterSpacing: "0.1em" }}>● LIVE</span>
-        {!isMobile && (
-          <span style={{ color: "rgba(0,180,255,0.3)", fontSize: 10, fontFamily: mono }}>
-            {time} UTC
-          </span>
-        )}
+
+        {!isMobile ? (
+          <div style={{
+            minWidth: 168,
+            padding: "8px 12px",
+            borderRadius: 14,
+            background: "rgba(6, 15, 30, 0.76)",
+            border: "1px solid rgba(87,216,255,0.14)",
+          }}>
+            <div style={{ color: "rgba(171,208,228,0.72)", fontSize: 10, fontFamily: mono, letterSpacing: "0.14em", textTransform: "uppercase" }}>
+              Intel Status
+            </div>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 4, gap: 10 }}>
+              <span style={{ color: "#4ed69f", fontFamily: mono, fontSize: 10, letterSpacing: "0.12em", textTransform: "uppercase" }}>
+                Operational
+              </span>
+              <span style={{ color: "rgba(148,175,198,0.7)", fontFamily: mono, fontSize: 10 }}>
+                {time} UTC
+              </span>
+            </div>
+            {systemStatus?.automation ? (
+              <div style={{ display: "grid", gap: 2, marginTop: 8, color: "rgba(148,175,198,0.76)", fontFamily: mono, fontSize: 9 }}>
+                <div>News {formatLayerTime(systemStatus.automation.lastNewsRefreshAt)}</div>
+                <div>AI {formatLayerTime(systemStatus.automation.lastAiRefreshAt)}</div>
+                <div>AI remaining {systemStatus.aiRemainingToday}</div>
+              </div>
+            ) : null}
+          </div>
+        ) : null}
       </div>
     </div>
   );
@@ -2771,23 +2928,28 @@ function TopBar({ counts, bordersLoaded, activeLayers, onLayerToggle, isMobile, 
 function DesktopSidebar({ events, selectedEvent, onSelect }) {
   return (
     <div style={{
-      position: "absolute", left: 0, top: 48, bottom: 0, width: 264,
-      background: "rgba(2,7,18,0.85)", backdropFilter: "blur(14px)",
+      position: "absolute", left: 0, top: TOP_BAR_HEIGHT, bottom: 0, width: 284,
+      background: "rgba(4,10,21,0.82)", backdropFilter: "blur(16px)",
       WebkitBackdropFilter: "blur(14px)",
-      borderRight: "1px solid rgba(0,180,255,0.1)",
+      borderRight: "1px solid rgba(87,216,255,0.12)",
       display: "flex", flexDirection: "column", zIndex: 30,
     }}>
-      <div style={{ padding: "11px 15px 9px", borderBottom: "1px solid rgba(0,180,255,0.08)",
+      <div style={{ padding: "16px 18px 14px", borderBottom: "1px solid rgba(87,216,255,0.08)",
         flexShrink: 0 }}>
-        <div style={{ color: "rgba(0,200,255,0.38)", fontSize: 9, fontFamily: mono,
+        <div style={{ color: "rgba(0,200,255,0.38)", fontSize: 10, fontFamily: mono,
           letterSpacing: "0.18em", textTransform: "uppercase" }}>ACTIVE EVENTS</div>
-        <div style={{ color: "rgba(0,200,255,0.62)", fontSize: 11, fontFamily: mono, marginTop: 2 }}>
+        <div style={{ color: "rgba(0,200,255,0.62)", fontSize: 12, fontFamily: mono, marginTop: 6 }}>
           {events.length} TRACKED
+        </div>
+        <div style={{ display: "flex", gap: 10, marginTop: 12, flexWrap: "wrap" }}>
+          <TrafficPill level="red">{events.filter((ev) => ev.intensity === "high").length} H</TrafficPill>
+          <TrafficPill level="amber">{events.filter((ev) => ev.intensity === "medium").length} M</TrafficPill>
+          <TrafficPill level="neutral">{events.filter((ev) => ev.intensity === "low").length} L</TrafficPill>
         </div>
       </div>
       <div style={{ flex: 1, overflowY: "auto" }}>
         {events.length === 0 ? (
-          <div style={{ padding: "18px 15px", color: "rgba(150,200,240,0.55)", fontSize: 10, fontFamily: mono, lineHeight: 1.6 }}>
+          <div style={{ padding: "18px 18px", color: "rgba(150,200,240,0.55)", fontSize: 10, fontFamily: mono, lineHeight: 1.6 }}>
             No events match the current timeline and focus filters.
           </div>
         ) : null}
@@ -2797,43 +2959,44 @@ function DesktopSidebar({ events, selectedEvent, onSelect }) {
           const sel  = selectedEvent?.id === ev.id;
           return (
             <div key={ev.id} onClick={() => onSelect(ev)} style={{
-              padding: "10px 15px",
-              borderBottom: "1px solid rgba(0,160,220,0.06)",
-              borderLeft: `2px solid ${sel ? cfg.color : "transparent"}`,
-              background: sel ? "rgba(0,50,100,0.28)" : "transparent",
+              padding: "14px 18px",
+              borderBottom: "1px solid rgba(87,216,255,0.06)",
+              borderLeft: `3px solid ${sel ? cfg.color : "transparent"}`,
+              background: sel ? "rgba(8,34,56,0.42)" : "transparent",
               cursor: "pointer", transition: "all 0.15s ease",
             }}
-            onMouseEnter={e => { if (!sel) e.currentTarget.style.background = "rgba(0,35,70,0.22)"; }}
+            onMouseEnter={e => { if (!sel) e.currentTarget.style.background = "rgba(8,28,48,0.3)"; }}
             onMouseLeave={e => { if (!sel) e.currentTarget.style.background = "transparent"; }}
             >
-              <div style={{ display: "flex", gap: 7, alignItems: "center", marginBottom: 4 }}>
-                <span style={{ width: 6, height: 6, borderRadius: "50%", background: cfg.color,
-                  flexShrink: 0, boxShadow: `0 0 6px ${cfg.color}` }}/>
-                <span style={{ color: "rgba(0,180,255,0.42)", fontSize: 8, fontFamily: mono,
-                  letterSpacing: "0.1em", textTransform: "uppercase" }}>
+              <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 8, flexWrap: "wrap" }}>
+                <TrafficPill level={ev.intensity === "high" ? "red" : ev.intensity === "medium" ? "amber" : "green"}>
+                  {ev.intensity}
+                </TrafficPill>
+                <span style={{ color: "rgba(0,180,255,0.42)", fontSize: 9, fontFamily: mono,
+                  letterSpacing: "0.12em", textTransform: "uppercase" }}>
                   {ev.intensity} · {ev.tone}
                 </span>
                 {ev.watchlistMatch?.matched ? <TrafficPill level="amber">Watchlist</TrafficPill> : null}
               </div>
-              <div style={{ color: sel ? "#c8e8ff" : "rgba(155,205,250,0.72)", fontSize: 12,
-                fontFamily: display, fontWeight: 700, lineHeight: 1.35, marginBottom: 2 }}>
+              <div style={{ color: sel ? "#c8e8ff" : "rgba(235,244,255,0.9)", fontSize: 18,
+                fontFamily: display, fontWeight: 700, lineHeight: 1.2, marginBottom: 8, letterSpacing: "0.02em" }}>
                 {ev.title}
               </div>
-              <div style={{ color: "rgba(125,185,235,0.55)", fontSize: 10, lineHeight: 1.45, marginBottom: 4 }}>
+              <div style={{ color: "rgba(178,205,228,0.72)", fontSize: 13, lineHeight: 1.55, marginBottom: 10, fontFamily: bodyFont }}>
                 {ev.briefSummary}
               </div>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                <div style={{ color: "rgba(0,160,220,0.38)", fontSize: 9, fontFamily: mono }}>
+                <div style={{ color: "rgba(0,160,220,0.38)", fontSize: 10, fontFamily: mono }}>
                   {ev.lat.toFixed(1)}°, {ev.lng.toFixed(1)}°
                 </div>
                 {ev.priorityScore !== undefined && (
                   <span style={{ color: pcfg.color, fontSize: 9, fontFamily: mono,
                     fontWeight: 700, background: pcfg.bg,
-                    border: `1px solid ${pcfg.border}`, borderRadius: 3,
-                    padding: "1px 5px" }}>{ev.priorityScore}</span>
+                    border: `1px solid ${pcfg.border}`, borderRadius: 999,
+                    padding: "4px 8px" }}>{ev.priorityScore}</span>
                 )}
               </div>
-              <div style={{ marginTop: 6, display: "flex", justifyContent: "space-between", gap: 6, color: "rgba(150,200,240,0.5)", fontSize: 9, fontFamily: mono }}>
+              <div style={{ marginTop: 10, display: "flex", justifyContent: "space-between", gap: 8, color: "rgba(150,200,240,0.5)", fontSize: 10, fontFamily: mono, flexWrap: "wrap" }}>
                 <span>CONF {ev.confidence}</span>
                 <span>{ev.sourceSignals?.sourceCount ?? 0} src / {ev.sourceSignals?.corroboratedCount ?? 0} corr</span>
               </div>
@@ -2849,7 +3012,7 @@ function DesktopSidebar({ events, selectedEvent, onSelect }) {
 // MAIN APP
 // ═══════════════════════════════════════════════════════════════════════════════
 
-export default function GlobeApp() {
+export default function GlobeApp({ activeView = "globe", onNavigate }) {
   const mountRef = useRef(null);
   const sceneRef = useRef({});
 
@@ -2866,6 +3029,7 @@ export default function GlobeApp() {
     events: true,
     briefing: true,
     marketImpact: true,
+    dataConfidence: true,
     flights: false,
     vessels: false,
     satellites: false,
@@ -2885,6 +3049,11 @@ export default function GlobeApp() {
   const [vessels,         setVessels]         = useState([]);
   const [satellites,      setSatellites]      = useState([]);
   const [layersStatus,    setLayersStatus]    = useState({ flights: null, vessels: null, satellites: null });
+  const [systemStatus,    setSystemStatus]    = useState({
+    automation: null,
+    aiCallsToday: 0,
+    aiRemainingToday: 0,
+  });
   const [vesselSearch,    setVesselSearch]    = useState("");
   const [watchlist,       setWatchlist]       = useState(() => {
     if (typeof window === "undefined") return { regions: [], topics: [] };
@@ -2924,11 +3093,16 @@ export default function GlobeApp() {
     } catch {}
 
     try {
-      const status = await fetchLayerStatus();
+      const status = await fetchOperationalStatus();
       setLayersStatus({
-        flights: status.flights ?? null,
-        vessels: status.vessels ?? null,
-        satellites: status.satellites ?? null,
+        flights: status.layers?.flights ?? null,
+        vessels: status.layers?.vessels ?? null,
+        satellites: status.layers?.satellites ?? null,
+      });
+      setSystemStatus({
+        automation: status.automation ?? null,
+        aiCallsToday: status.automation?.aiCallsToday ?? 0,
+        aiRemainingToday: status.automation?.aiRemainingToday ?? 0,
       });
     } catch {}
   }, []);
@@ -3036,6 +3210,23 @@ export default function GlobeApp() {
     [filteredEvents]
   );
 
+  const confidenceStats = useMemo(() => {
+    const total = Math.max(filteredEvents.length, 1);
+    const high = filteredEvents.filter((event) => event.confidence === "High").length;
+    const medium = filteredEvents.filter((event) => event.confidence === "Medium").length;
+    const low = filteredEvents.filter((event) => event.confidence === "Low").length;
+    const overall = Math.max(18, Math.min(94, Math.round(((high * 0.92) + (medium * 0.66) + (low * 0.34)) / total * 100)));
+    return {
+      overall,
+      bands: [
+        { label: "High", value: Math.round((high / total) * 100), color: "#ff5f6f" },
+        { label: "Medium", value: Math.round((medium / total) * 100), color: "#ffb648" },
+        { label: "Low", value: Math.round((low / total) * 100), color: "#6ea7d2" },
+      ],
+      updatedAt: new Date().toISOString().slice(11, 19) + " UTC",
+    };
+  }, [filteredEvents]);
+
   const visibleLayerEntries = useMemo(() => {
     return Object.entries(LAYER_DEFS).filter(([key]) => {
       if (key === "events" || key === "intelBoard") return true;
@@ -3099,6 +3290,7 @@ export default function GlobeApp() {
           events: next[key],
           briefing: next[key],
           marketImpact: next[key],
+          dataConfidence: next[key],
           timeline: next[key],
         }));
         return next;
@@ -3152,7 +3344,14 @@ export default function GlobeApp() {
     const segs = mob ? 48 : 96;
     const globeMesh = new THREE.Mesh(
       new THREE.SphereGeometry(R, segs, segs),
-      new THREE.MeshPhongMaterial({ map: makeGlobeTex(), specular: new THREE.Color(0x1a3055), shininess: 45, opacity: 1.0 })
+      new THREE.MeshPhongMaterial({
+        map: makeGlobeTex(),
+        specular: new THREE.Color(0x101d33),
+        shininess: 14,
+        emissive: new THREE.Color(0x03111c),
+        emissiveIntensity: 0.34,
+        opacity: 1.0,
+      })
     );
     globeMesh.renderOrder = 0;
     scene.add(globeMesh);
@@ -3595,7 +3794,6 @@ export default function GlobeApp() {
   return (
     <>
       <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=Rajdhani:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap');
         *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0 }
         html, body { width: 100%; height: 100%; background: #020810; overflow: hidden }
         ::-webkit-scrollbar { width: 3px }
@@ -3620,7 +3818,10 @@ export default function GlobeApp() {
           showPersonalize={showPersonalize}
           onAdminRefresh={handleAdminRefresh}
           refreshState={refreshState}
-          layerEntries={visibleLayerEntries} />
+          layerEntries={visibleLayerEntries}
+          activeView={activeView}
+          onNavigate={onNavigate}
+          systemStatus={systemStatus} />
 
         {!isMobile && (
           <>
@@ -3646,6 +3847,12 @@ export default function GlobeApp() {
               <MarketImpactDashboard
                 aggregate={marketImpact}
                 onClose={() => setPanelVisibility((current) => ({ ...current, marketImpact: false }))}
+              />
+            ) : null}
+            {panelVisibility.dataConfidence && activeLayers.intelBoard ? (
+              <DataConfidencePanel
+                stats={confidenceStats}
+                onClose={() => setPanelVisibility((current) => ({ ...current, dataConfidence: false }))}
               />
             ) : null}
             {panelVisibility.flights && activeLayers.flights ? (
@@ -3680,8 +3887,8 @@ export default function GlobeApp() {
         {/* GLOBE ROW — fills all remaining space between topbar and (on mobile) bottom sheet */}
         <div style={{
           position: "absolute",
-          top: 48,
-          left: (!isMobile && panelVisibility.events && activeLayers.intelBoard) ? 264 : 0,
+          top: TOP_BAR_HEIGHT,
+          left: (!isMobile && panelVisibility.events && activeLayers.intelBoard) ? 284 : 0,
           right: (!isMobile && selectedDetail && panelVisibility.selectedObjectDetail) ? (selectedDetail.type === "event" ? 420 : 340) : 0,
           bottom: 0,
           transition: "left 0.3s ease, right 0.3s ease",

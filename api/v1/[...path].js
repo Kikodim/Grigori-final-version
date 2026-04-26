@@ -111,7 +111,7 @@ export default async function handler(req, res) {
       return handleReportsExport(req, res);
     }
     if (parts[1] === "waitlist") {
-      if (method !== "POST") return res.status(405).json({ success: false, error: "Method not allowed" });
+      if (method !== "POST" && method !== "GET") return res.status(405).json({ success: false, error: "Method not allowed" });
       return handleReportsWaitlist(req, res);
     }
   }

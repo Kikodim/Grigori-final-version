@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import ClassicApp from "../grigori.jsx";
 import GlobeApp from "../grigori-globe.jsx";
@@ -70,12 +70,6 @@ function Shell() {
     setPropertyMeta("og:description", config.description);
   }, [view]);
 
-  const ActiveView = useMemo(() => {
-    if (view === "classic") return ClassicApp;
-    if (view === "reports") return ReportsApp;
-    return GlobeApp;
-  }, [view]);
-
   const navigate = (nextView) => {
     const target = VIEW_CONFIG[nextView];
     if (!target) return;
@@ -83,59 +77,27 @@ function Shell() {
     setView(nextView);
   };
 
+  const ActiveView = view === "classic" ? ClassicApp : view === "reports" ? ReportsApp : GlobeApp;
+
   return (
     <div style={{ width: "100%", height: "100%", position: "relative", overflowY: view === "globe" ? "hidden" : "auto", overflowX: "hidden" }}>
-      <div
-        style={{
-          position: "fixed",
-          top: 14,
-          right: 14,
-          zIndex: 3000,
-          display: "flex",
-          alignItems: "center",
-          gap: 12,
-          padding: "10px 12px",
-          background: "rgba(2, 8, 20, 0.68)",
-          border: "1px solid rgba(71, 85, 105, 0.42)",
-          borderRadius: 16,
-          backdropFilter: "blur(16px)",
-        }}
-      >
-        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "flex-end" }}>
-          {Object.entries(VIEW_CONFIG).map(([key, config]) => (
-            <button
-              key={key}
-              onClick={() => navigate(key)}
-              style={{
-                border: `1px solid ${view === key ? "rgba(125, 211, 252, 0.38)" : "rgba(71, 85, 105, 0.42)"}`,
-                borderRadius: 999,
-                padding: "10px 14px",
-                background: view === key ? "rgba(56, 189, 248, 0.12)" : "rgba(15, 23, 42, 0.72)",
-                color: "#e2e8f0",
-                cursor: "pointer",
-                fontFamily: "monospace",
-                fontSize: 11,
-                letterSpacing: "0.08em",
-                textTransform: "uppercase",
-              }}
-            >
-              {config.label}
-            </button>
-          ))}
-        </div>
-      </div>
-      <ActiveView key={view} />
+      <ActiveView key={view} activeView={view} onNavigate={navigate} />
       <div style={{
         position: "fixed",
-        right: 16,
-        bottom: 12,
+        right: 18,
+        bottom: 14,
         zIndex: 2500,
-        color: "rgba(148,163,184,0.72)",
-        fontSize: 11,
-        letterSpacing: "0.08em",
+        color: "rgba(148,163,184,0.68)",
+        fontSize: 10,
+        letterSpacing: "0.18em",
         textTransform: "uppercase",
-        fontFamily: "monospace",
+        fontFamily: "'Share Tech Mono', 'IBM Plex Mono', monospace",
         pointerEvents: "none",
+        padding: "8px 12px",
+        borderRadius: 999,
+        background: "rgba(3, 9, 22, 0.62)",
+        border: "1px solid rgba(86, 146, 180, 0.18)",
+        backdropFilter: "blur(14px)",
       }}>
         Built by oryth.io
       </div>
