@@ -13,6 +13,7 @@ import {
   handleReportsHistory,
   handleReportsWaitlist,
   handleSatellitesLive,
+  handleSocialSignalsLive,
   handleSubscriptionStatus,
 } from "../../api-handlers.js";
 
@@ -90,6 +91,11 @@ export default async function handler(req, res) {
   if (parts[0] === "satellites" && parts[1] === "live") {
     if (method !== "GET") return res.status(405).json({ success: false, error: "Method not allowed" });
     return handleSatellitesLive(req, res);
+  }
+
+  if (parts[0] === "social" && parts[1] === "live") {
+    if (method !== "GET") return res.status(405).json({ success: false, error: "Method not allowed" });
+    return handleSocialSignalsLive(req, res);
   }
 
   if (parts[0] === "subscription" && parts[1] === "status") {

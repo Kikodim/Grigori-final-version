@@ -1,7 +1,7 @@
 import { getAIStatus } from "./ai.js";
 import { describeEnvVar, getConfig, getIntegrationConfigStatus } from "./config.js";
 import { buildBriefing } from "./event-insights.js";
-import { getFlightsLayer, getLayersStatus, getSatellitesLayer, getVesselsLayer } from "./layers.js";
+import { getFlightsLayer, getLayersStatus, getSatellitesLayer, getSocialSignalsLayer, getVesselsLayer } from "./layers.js";
 import { createLogger } from "./logger.js";
 import { runPipeline } from "./pipeline.js";
 import {
@@ -184,6 +184,11 @@ export async function handleVesselsLive(_req, res) {
 
 export async function handleSatellitesLive(_req, res) {
   const result = await getSatellitesLayer();
+  return res.status(200).json(result);
+}
+
+export async function handleSocialSignalsLive(_req, res) {
+  const result = await getSocialSignalsLayer();
   return res.status(200).json(result);
 }
 

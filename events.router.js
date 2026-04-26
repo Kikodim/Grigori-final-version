@@ -13,6 +13,7 @@ import {
   handleReportsHistory,
   handleReportsWaitlist,
   handleSatellitesLive,
+  handleSocialSignalsLive,
   handleSubscriptionStatus,
 } from "./api-handlers.js";
 
@@ -30,5 +31,6 @@ eventsRouter.post("/reports/generate", handleReportsGenerate);
 eventsRouter.post("/reports/waitlist", handleReportsWaitlist);
 eventsRouter.get("/flights/live", handleFlightsLive);
 eventsRouter.get("/satellites/live", handleSatellitesLive);
+eventsRouter.get("/social/live", handleSocialSignalsLive);
 eventsRouter.post("/pipeline/run", handlePipelineRun);
 eventsRouter.post("/admin/refresh", handlePipelineRun);

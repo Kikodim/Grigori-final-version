@@ -144,9 +144,27 @@ Depending on what is configured, Grigori may use:
 - NewsData.io
 - Currents
 - NewsAPI
+- optional X / social signals from monitored accounts
 - stored event history
 - scenario tags
 - source-domain trust heuristics
+
+## 8A. X / Social Signals
+
+Optional X signals are treated as early-warning inputs, not confirmed intelligence on their own.
+
+Rules:
+
+- X-only content defaults to low confidence
+- X content can become medium confidence only when partially corroborated by existing event/news signals
+- X content can become high-confidence context only when multiple independent reputable sources corroborate the same signal
+- social signals can increase speed / recency awareness, but they do not by themselves prove an event
+
+Relevant logic:
+
+- [/Users/kirildimitrov/grigori/sources/social/x.adapter.js](/Users/kirildimitrov/grigori/sources/social/x.adapter.js)
+- [/Users/kirildimitrov/grigori/layers.js](/Users/kirildimitrov/grigori/layers.js)
+- [/Users/kirildimitrov/grigori/grigori-globe.jsx](/Users/kirildimitrov/grigori/grigori-globe.jsx)
 
 ## 9. Limitations
 
@@ -155,6 +173,7 @@ Depending on what is configured, Grigori may use:
 - Rule-based logic can miss nuance.
 - Source trust heuristics are broad and not a substitute for analyst review.
 - Location inference can remain uncertain.
+- Social signals can be noisy, misleading, or incomplete without corroboration.
 
 ## 10. Disclaimers
 

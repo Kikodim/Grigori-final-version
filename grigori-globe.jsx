@@ -403,6 +403,25 @@ function makeGlobeTex() {
   const cv = document.createElement("canvas");
   cv.width = W; cv.height = H;
   const ctx = cv.getContext("2d");
+  const project = (lon, lat) => [((lon + 180) / 360) * W, ((90 - lat) / 180) * H];
+  const tracePolygon = (points) => {
+    points.forEach(([lon, lat], index) => {
+      const [x, y] = project(lon, lat);
+      if (index === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    });
+    ctx.closePath();
+  };
+  const continents = [
+    [[-168, 72], [-140, 70], [-126, 61], [-118, 52], [-104, 44], [-95, 31], [-86, 20], [-80, 9], [-92, 8], [-103, 16], [-114, 22], [-126, 31], [-133, 43], [-151, 56], [-168, 62]],
+    [[-81, 11], [-74, 5], [-67, -8], [-63, -19], [-58, -31], [-54, -41], [-47, -53], [-38, -54], [-34, -38], [-39, -20], [-48, -2], [-58, 8], [-69, 12]],
+    [[-17, 36], [-5, 44], [15, 53], [40, 60], [70, 60], [98, 57], [123, 50], [147, 45], [165, 52], [180, 62], [180, 10], [154, 4], [130, 15], [113, 21], [96, 11], [82, 21], [67, 26], [60, 31], [46, 31], [33, 31], [24, 36], [15, 41], [3, 42], [-8, 40]],
+    [[-17, 34], [4, 36], [18, 32], [30, 24], [35, 12], [42, 3], [47, -10], [43, -21], [33, -31], [20, -34], [10, -35], [2, -30], [-7, -16], [-13, 0], [-15, 16]],
+    [[40, 31], [49, 30], [56, 27], [54, 17], [48, 12], [44, 15], [42, 22]],
+    [[67, 26], [79, 31], [89, 24], [87, 15], [78, 9], [72, 18]],
+    [[111, -10], [116, -21], [128, -23], [139, -30], [151, -33], [155, -24], [150, -12], [140, -11], [129, -15], [118, -12]],
+    [[-54, 59], [-42, 76], [-25, 80], [-18, 70], [-31, 60]],
+  ];
 
   // Muted defense-tech ocean base
   const g = ctx.createLinearGradient(0, 0, 0, H);
@@ -514,6 +533,78 @@ function makeGlobeTex() {
   ctx.fillStyle = southGlow;
   ctx.fillRect(0, 0, W, H);
 
+  // Landmasses with muted relief
+  continents.forEach((polygon, index) => {
+    ctx.save();
+    ctx.beginPath();
+    tracePolygon(polygon);
+    const landGradient = ctx.createLinearGradient(0, project(0, 70)[1], 0, project(0, -55)[1]);
+    landGradient.addColorStop(0, "rgba(86,104,104,0.88)");
+    landGradient.addColorStop(0.45, "rgba(64,86,82,0.9)");
+    landGradient.addColorStop(1, "rgba(48,66,70,0.94)");
+    ctx.fillStyle = landGradient;
+    ctx.fill();
+    ctx.strokeStyle = "rgba(184,206,196,0.18)";
+    ctx.lineWidth = 1.4;
+    ctx.stroke();
+    ctx.clip();
+
+    for (let i = 0; i < 18; i++) {
+      const y = Math.random() * H;
+      ctx.beginPath();
+      for (let x = 0; x <= W; x += 18) {
+        const offset = Math.sin((x / W) * Math.PI * (2.4 + index * 0.2) + i * 0.4) * (5 + i * 0.15);
+        if (x === 0) ctx.moveTo(x, y + offset);
+        else ctx.lineTo(x, y + offset);
+      }
+      ctx.strokeStyle = `rgba(210,220,205,${0.025 + (i % 5) * 0.006})`;
+      ctx.lineWidth = 0.6;
+      ctx.stroke();
+    }
+    for (let i = 0; i < 650; i++) {
+      const px = Math.random() * W;
+      const py = Math.random() * H;
+      ctx.fillStyle = `rgba(${122 + Math.floor(Math.random() * 26)},${132 + Math.floor(Math.random() * 30)},${118 + Math.floor(Math.random() * 18)},${0.025 + Math.random() * 0.05})`;
+      ctx.fillRect(px, py, 1.2, 1.2);
+    }
+    ctx.restore();
+  });
+
+  // Coastline highlight
+  continents.forEach((polygon) => {
+    ctx.beginPath();
+    tracePolygon(polygon);
+    ctx.strokeStyle = "rgba(218,232,226,0.16)";
+    ctx.lineWidth = 1;
+    ctx.stroke();
+  });
+
+  return new THREE.CanvasTexture(cv);
+}
+
+function makeReliefTex() {
+  const W = 1024, H = 512;
+  const cv = document.createElement("canvas");
+  cv.width = W;
+  cv.height = H;
+  const ctx = cv.getContext("2d");
+  ctx.fillStyle = "#202020";
+  ctx.fillRect(0, 0, W, H);
+
+  for (let y = 0; y < H; y += 3) {
+    ctx.strokeStyle = `rgba(150,150,150,${0.02 + (y / H) * 0.015})`;
+    ctx.beginPath();
+    ctx.moveTo(0, y);
+    ctx.lineTo(W, y + Math.sin(y * 0.04) * 2);
+    ctx.stroke();
+  }
+
+  for (let i = 0; i < 2600; i++) {
+    const shade = 90 + Math.floor(Math.random() * 90);
+    ctx.fillStyle = `rgba(${shade},${shade},${shade},0.09)`;
+    ctx.fillRect(Math.random() * W, Math.random() * H, 1.4, 1.4);
+  }
+
   return new THREE.CanvasTexture(cv);
 }
 
@@ -541,7 +632,7 @@ function makeAtmosphere() {
         float intensity = pow(rim, 3.2);
         vec3 col = mix(vec3(0.0, 0.25, 0.72), vec3(0.0, 0.65, 1.0), intensity);
         float pulse = 0.93 + 0.07 * sin(time * 0.35);
-        gl_FragColor = vec4(col * pulse, intensity * 0.62);
+        gl_FragColor = vec4(col * pulse, intensity * 0.42);
       }`,
     side:        THREE.FrontSide,
     blending:    THREE.AdditiveBlending,
@@ -676,6 +767,7 @@ function makeHotspot(ev) {
   // White core dot
   const core = addDisc(0, 0.007, 0xffffff, 1.0);
   core.userData = { clickable: true, eventId: ev.id, objectType: "event", objectData: ev };
+  core.userData.markerGroup = group;
 
   // Coloured inner ring
   const ring1 = addDisc(0.009, 0.017, color, 0.85);
@@ -721,7 +813,7 @@ function buildImpactLayer(event, scenarioIndex) {
     const mat = new THREE.LineBasicMaterial({
       color: disrupted ? 0xff3322 : 0x00aaff,
       transparent: true, opacity: disrupted ? 0.75 : 0.45,
-      blending: THREE.AdditiveBlending, depthWrite: false,
+      blending: THREE.AdditiveBlending, depthWrite: false, depthTest: true,
     });
     group.add(new THREE.Line(geo, mat));
 
@@ -730,7 +822,7 @@ function buildImpactLayer(event, scenarioIndex) {
     const dotMat = new THREE.MeshBasicMaterial({
       color: disrupted ? 0xff4433 : 0x44ddff,
       transparent: true, depthWrite: false,
-      blending: THREE.AdditiveBlending,
+      blending: THREE.AdditiveBlending, depthTest: true,
     });
     const dot = new THREE.Mesh(dotGeo, dotMat);
     dot.userData = { arcPts: pts, arcT: Math.random(), arcSpeed: 0.15 + Math.random() * 0.1 };
@@ -747,7 +839,7 @@ function buildImpactLayer(event, scenarioIndex) {
     const haloMat = new THREE.MeshBasicMaterial({
       color: arcColor, transparent: true, opacity: 0.22 * intensity,
       side: THREE.DoubleSide, depthWrite: false,
-      blending: THREE.AdditiveBlending, depthTest: false,
+      blending: THREE.AdditiveBlending, depthTest: true,
     });
     const halo = new THREE.Mesh(haloGeo, haloMat);
     halo.userData = { regionHalo: true, baseOpacity: 0.22 * intensity };
@@ -761,7 +853,7 @@ function buildImpactLayer(event, scenarioIndex) {
       const lineGeo = new THREE.BufferGeometry().setFromPoints(pts);
       const lineMat = new THREE.LineBasicMaterial({
         color: arcColor, transparent: true, opacity: 0.18,
-        blending: THREE.AdditiveBlending, depthWrite: false,
+        blending: THREE.AdditiveBlending, depthWrite: false, depthTest: true,
       });
       group.add(new THREE.Line(lineGeo, lineMat));
     }
@@ -799,6 +891,7 @@ function makeObjectMarker(item, type) {
     depthWrite: false,
   }));
   mesh.userData = { clickable: true, objectType: type, objectData: item, baseOpacity: 0.95 };
+  mesh.userData.markerGroup = group;
   mesh.rotation.x = Math.PI / 2;
 
   if (type !== "satellite" && Number.isFinite(item.heading)) {
@@ -1091,6 +1184,7 @@ async function fetchLiveEvents() {
 const MAX_FLIGHTS_RENDERED = 100;
 const MAX_VESSELS_RENDERED = 100;
 const MAX_SATELLITES_RENDERED = 150;
+const MAX_SOCIAL_SIGNALS_RENDERED = 30;
 
 function normalizeFlightObject(item) {
   return {
@@ -1148,6 +1242,44 @@ function normalizeSatelliteObject(item) {
   };
 }
 
+function normalizeSocialSignalObject(item) {
+  return {
+    id: item.id ?? item.url,
+    type: "social",
+    title: item.title ?? "Social signal",
+    source: item.source ?? "X",
+    summary: item.summary ?? "",
+    content: item.content ?? "",
+    url: item.url ?? "",
+    region: item.region ?? "Region under review",
+    keywords: item.keywords ?? [],
+    publishedAt: item.publishedAt ?? new Date().toISOString(),
+    verificationStatus: item.verificationStatus ?? "unverified",
+    signalType: item.signalType ?? "social",
+    sourceQuality: item.sourceQuality ?? 0.32,
+    account: item.account ?? null,
+  };
+}
+
+function deriveSocialCorroboration(signal, events = []) {
+  const haystack = `${signal.title} ${signal.summary} ${signal.content} ${signal.region} ${(signal.keywords ?? []).join(" ")}`.toLowerCase();
+  const matches = events.filter((event) => {
+    const eventText = `${event.title} ${event.summary ?? ""} ${event.location?.label ?? ""} ${(event.keywords ?? []).join(" ")}`.toLowerCase();
+    return String(event.location?.label ?? "").toLowerCase() === String(signal.region ?? "").toLowerCase() ||
+      (signal.keywords ?? []).some((keyword) => eventText.includes(String(keyword).toLowerCase())) ||
+      haystack.includes(String(event.location?.label ?? "").toLowerCase());
+  });
+  const reputable = matches.filter((event) => (event.sourceSignals?.trustLabel ?? "Low") !== "Low");
+
+  if (reputable.length >= 2) {
+    return { label: "Corroborated", confidence: "High", relatedEvents: reputable.slice(0, 3) };
+  }
+  if (matches.length >= 1) {
+    return { label: "Partially corroborated", confidence: "Medium", relatedEvents: matches.slice(0, 3) };
+  }
+  return { label: "Unverified", confidence: "Low", relatedEvents: [] };
+}
+
 async function fetchOperationalStatus() {
   const res = await fetch(resolveBackendUrl("/api/v1/health"), { signal: AbortSignal.timeout(8000) });
   if (!res.ok) throw new Error(`health ${res.status}`);
@@ -1171,6 +1303,16 @@ async function fetchSatellitesLive() {
   return {
     ...data,
     data: Array.isArray(data.data) ? data.data.slice(0, MAX_SATELLITES_RENDERED).map(normalizeSatelliteObject) : [],
+  };
+}
+
+async function fetchSocialSignalsLive() {
+  const res = await fetch(resolveBackendUrl("/api/v1/social/live"), { signal: AbortSignal.timeout(12000) });
+  if (!res.ok) throw new Error(`social ${res.status}`);
+  const data = await res.json();
+  return {
+    ...data,
+    data: Array.isArray(data.data) ? data.data.slice(0, MAX_SOCIAL_SIGNALS_RENDERED).map(normalizeSocialSignalObject) : [],
   };
 }
 
@@ -1249,7 +1391,7 @@ function PersonalizationPanel({ prefs, onChange, onClose, watchlist, selectedEve
           borderRadius: 4, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12 }}>✕</button>
       </div>
 
-      <div style={{ padding: "12px 14px", maxHeight: "60vh", overflowY: "auto" }}>
+      <div style={sharedPanelBodyStyle({ padding: "12px 14px", maxHeight: "60vh" })}>
         {/* Region */}
         <div style={{ marginBottom: 14 }}>
           <div style={{ color: "rgba(0,200,255,0.4)", fontSize: 9, fontFamily: mono,
@@ -1701,7 +1843,7 @@ function LayerStatusMeta({ status, remainingLabel = "remaining" }) {
   if (!status) return null;
   const lastRefresh = status.lastRefresh ?? status.lastRefreshAt ?? null;
   const nextRefresh = status.nextRefresh ?? status.nextRefreshAt ?? null;
-  const remaining = status.remaining ?? status.remainingMonthlyCalls;
+  const remaining = status.remaining ?? status.remainingMonthlyCalls ?? status.remainingDailyCalls;
   return (
     <div style={{ marginTop: 10, display: "grid", gap: 4, color: "rgba(150,205,245,0.6)", fontSize: 10, fontFamily: mono }}>
       <div>Last refresh: {formatLayerTime(lastRefresh)}</div>
@@ -1812,6 +1954,42 @@ function SatellitesPanel({ satellites, status, onSelect, onClose }) {
   );
 }
 
+function SocialSignalsPanel({ signals, status, events, onClose }) {
+  return (
+    <FloatingPanel title="Social Signals" subtitle={`${signals.length} early-warning inputs`} top={FLOATING_TOP} right={348} width={316} onClose={onClose}>
+      <div style={{ display: "grid", gap: 10 }}>
+        {signals.length === 0 ? (
+          <div style={{ color: "rgba(130,185,230,0.62)", fontSize: 11, fontFamily: mono }}>
+            Social signals are not configured or no recent monitored posts are cached yet.
+          </div>
+        ) : signals.map((signal) => {
+          const corroboration = deriveSocialCorroboration(signal, events);
+          return (
+            <div key={signal.id} style={{ background: "rgba(8,20,36,0.76)", border: "1px solid rgba(94, 164, 195, 0.12)", borderRadius: 14, padding: "12px 13px" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", gap: 8, marginBottom: 6, alignItems: "center" }}>
+                <div style={{ color: "#d6ebff", fontSize: 13, fontFamily: display, fontWeight: 700 }}>{signal.title}</div>
+                <TrafficPill level={corroboration.label === "Corroborated" ? "green" : corroboration.label === "Partially corroborated" ? "amber" : "neutral"}>
+                  {corroboration.label}
+                </TrafficPill>
+              </div>
+              <div style={{ color: "rgba(150,205,245,0.66)", fontSize: 11, lineHeight: 1.6, marginBottom: 8 }}>{signal.summary}</div>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8 }}>
+                <TrafficPill level="neutral">{signal.source}</TrafficPill>
+                <TrafficPill level="neutral">{signal.region}</TrafficPill>
+                <TrafficPill level="amber">Unverified social signal</TrafficPill>
+              </div>
+              <a href={signal.url} target="_blank" rel="noreferrer" style={{ color: "#89ddff", fontSize: 11, lineHeight: 1.5, textDecoration: "none", wordBreak: "break-word" }}>
+                View original post
+              </a>
+            </div>
+          );
+        })}
+      </div>
+      <LayerStatusMeta status={status} remainingLabel="Daily reads left" />
+    </FloatingPanel>
+  );
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // MARKET TICKER  (PART 7)
 // Displays live Brent crude + market sentiment in TopBar
@@ -1899,9 +2077,9 @@ function getHeaderHeight(isMobile, isTablet = false) {
 
 function getMarkerVisibilityAlpha(surfaceNormal, cameraDirection) {
   const dot = surfaceNormal.dot(cameraDirection);
-  if (dot <= -0.08) return 0;
-  if (dot <= 0.14) {
-    return Math.max(0, Math.min(1, (dot + 0.08) / 0.22));
+  if (dot <= 0) return 0;
+  if (dot <= 0.18) {
+    return Math.max(0, Math.min(1, dot / 0.18));
   }
   return 1;
 }
@@ -1913,6 +2091,16 @@ function formatStatusMoment(value) {
   } catch {
     return "Awaiting refresh";
   }
+}
+
+function sharedPanelBodyStyle(extra = {}) {
+  return {
+    overflowY: "auto",
+    overscrollBehavior: "contain",
+    WebkitOverflowScrolling: "touch",
+    minHeight: 0,
+    ...extra,
+  };
 }
 
 function getDataFreshness(value) {
@@ -1998,8 +2186,11 @@ function FloatingPanel({ title, subtitle, children, top, left, right, width = 30
       boxShadow: "0 24px 55px rgba(0,0,0,0.46)",
       overflow: "hidden",
       backdropFilter: "blur(16px)",
+      display: "flex",
+      flexDirection: "column",
+      maxHeight: `calc(100vh - ${(typeof top === "number" ? top : FLOATING_TOP) + 18}px)`,
     }}>
-      <div style={{ padding: "14px 16px 12px", borderBottom: "1px solid rgba(94, 164, 195, 0.12)", display: "flex", justifyContent: "space-between", gap: 8 }}>
+      <div style={{ padding: "14px 16px 12px", borderBottom: "1px solid rgba(94, 164, 195, 0.12)", display: "flex", justifyContent: "space-between", gap: 8, flexShrink: 0 }}>
         <div>
           <div style={{ color: "rgba(103, 220, 255, 0.48)", fontSize: 10, fontFamily: mono, letterSpacing: "0.18em", textTransform: "uppercase" }}>{title}</div>
           {subtitle ? (
@@ -2021,7 +2212,7 @@ function FloatingPanel({ title, subtitle, children, top, left, right, width = 30
           }}>✕</button>
         ) : null}
       </div>
-      <div style={{ padding: "14px 16px" }}>
+      <div style={sharedPanelBodyStyle({ padding: "14px 16px" })}>
         {children}
       </div>
     </div>
@@ -2192,6 +2383,9 @@ function WarRoomPanel({ topEvents, onSelect, selectedEventId, onClose, marketImp
       boxShadow: "0 0 40px rgba(255,34,51,0.08), 0 24px 55px rgba(0,0,0,0.46)",
       animation: "panelIn 0.28s cubic-bezier(0.23,1,0.32,1)",
       overflow: "hidden",
+      display: "flex",
+      flexDirection: "column",
+      maxHeight: mobile ? "calc(100vh - 112px)" : "calc(100vh - 86px)",
     }}>
       {/* Header */}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center",
@@ -2211,7 +2405,7 @@ function WarRoomPanel({ topEvents, onSelect, selectedEventId, onClose, marketImp
       </div>
 
       {/* Event list */}
-      <div style={{ maxHeight: mobile ? "calc(100vh - 170px)" : "72vh", overflowY: "auto" }}>
+      <div style={sharedPanelBodyStyle({ maxHeight: mobile ? "calc(100vh - 170px)" : "72vh" })}>
         <div style={{ padding: "12px 14px", borderBottom: "1px solid rgba(0,180,255,0.07)", display: "grid", gap: 10 }}>
           <div style={{ display: "grid", gap: 4 }}>
             <div style={{ color: "rgba(103,220,255,0.48)", fontSize: 10, fontFamily: mono, letterSpacing: "0.14em", textTransform: "uppercase" }}>
@@ -2335,10 +2529,17 @@ function WarRoomPanel({ topEvents, onSelect, selectedEventId, onClose, marketImp
 // EVENT DETAIL CONTENT (shared between desktop panel and mobile sheet)
 // ═══════════════════════════════════════════════════════════════════════════════
 
-function EventDetailContent({ event, activeScenario, onScenarioChange, allEvents = [] }) {
+function EventDetailContent({ event, activeScenario, onScenarioChange, allEvents = [], socialSignals = [] }) {
   const cfg = INTENSITY[event.intensity];
   const brief = buildEventBrief(event, allEvents);
   const sourceLine = brief.sourceTrace.domains.slice(0, 3).join(", ") || "No named sources";
+  const linkedSignals = socialSignals
+    .map((signal) => ({ signal, corroboration: deriveSocialCorroboration(signal, [event, ...allEvents]) }))
+    .filter(({ signal, corroboration }) =>
+      corroboration.relatedEvents.some((related) => related.id === event.id) ||
+      String(signal.region ?? "").toLowerCase() === String(event.location?.label ?? "").toLowerCase()
+    )
+    .slice(0, 3);
   return (
     <>
       {/* Header badges */}
@@ -2367,7 +2568,8 @@ function EventDetailContent({ event, activeScenario, onScenarioChange, allEvents
       </div>
 
       {/* Scrollable content */}
-      <div style={{ flex: 1, overflowY: "auto", WebkitOverflowScrolling: "touch" }}>
+      <div style={sharedPanelBodyStyle({ flex: 1 })}>
+        
 
         {/* Summary */}
         <div style={{ padding: "13px 18px", borderBottom: "1px solid rgba(0,180,255,0.07)" }}>
@@ -2545,6 +2747,38 @@ function EventDetailContent({ event, activeScenario, onScenarioChange, allEvents
           </div>
         </div>
 
+        <div style={{ padding: "13px 18px", borderBottom: "1px solid rgba(0,180,255,0.07)" }}>
+          <div style={{ color: "rgba(0,200,255,0.3)", fontSize: 9, fontFamily: mono, letterSpacing: "0.15em", textTransform: "uppercase", marginBottom: 7 }}>
+            Social Signal Trace
+          </div>
+          {linkedSignals.length > 0 ? (
+            <div style={{ display: "grid", gap: 8 }}>
+              {linkedSignals.map(({ signal, corroboration }) => (
+                <div key={signal.id} style={{ background: "rgba(8,20,36,0.64)", border: "1px solid rgba(94,164,195,0.12)", borderRadius: 12, padding: "10px 11px" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", gap: 8, marginBottom: 6 }}>
+                    <div style={{ color: "#d6ebff", fontSize: 12, fontFamily: display, fontWeight: 700 }}>{signal.title}</div>
+                    <TrafficPill level={corroboration.label === "Corroborated" ? "green" : corroboration.label === "Partially corroborated" ? "amber" : "neutral"}>
+                      {corroboration.label}
+                    </TrafficPill>
+                  </div>
+                  <div style={{ color: "rgba(150,205,245,0.68)", fontSize: 11, lineHeight: 1.55, marginBottom: 8 }}>{signal.summary}</div>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8 }}>
+                    <TrafficPill level="amber">Unverified social signal</TrafficPill>
+                    <TrafficPill level="neutral">{signal.source}</TrafficPill>
+                  </div>
+                  <a href={signal.url} target="_blank" rel="noreferrer" style={{ color: "#89ddff", fontSize: 11, textDecoration: "none" }}>
+                    View original post
+                  </a>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div style={{ color: "rgba(130,185,230,0.62)", fontSize: 11, fontFamily: mono }}>
+              No linked social signals are currently loaded for this event.
+            </div>
+          )}
+        </div>
+
         <div style={{ padding: "13px 18px 20px" }}>
           <div style={{ color: "rgba(0,200,255,0.3)", fontSize: 9, fontFamily: mono, letterSpacing: "0.15em", textTransform: "uppercase", marginBottom: 7 }}>
             Related Events
@@ -2576,7 +2810,7 @@ function EventDetailContent({ event, activeScenario, onScenarioChange, allEvents
 // DESKTOP EVENT PANEL (right sidebar, 420px)
 // ═══════════════════════════════════════════════════════════════════════════════
 
-function DesktopEventPanel({ event, activeScenario, onScenarioChange, onClose, allEvents = [] }) {
+function DesktopEventPanel({ event, activeScenario, onScenarioChange, onClose, allEvents = [], socialSignals = [] }) {
   if (!event) return null;
   return (
     <div style={{
@@ -2596,7 +2830,7 @@ function DesktopEventPanel({ event, activeScenario, onScenarioChange, onClose, a
           justifyContent: "center", fontSize: 14, transition: "all 0.15s ease",
         }}>✕</button>
       </div>
-      <EventDetailContent event={event} activeScenario={activeScenario} onScenarioChange={onScenarioChange} allEvents={allEvents} />
+      <EventDetailContent event={event} activeScenario={activeScenario} onScenarioChange={onScenarioChange} allEvents={allEvents} socialSignals={socialSignals} />
     </div>
   );
 }
@@ -2692,6 +2926,8 @@ function SelectedObjectCard({ selected, onClose, onZoom, onClearSelection, mobil
       padding: 18,
       gap: 12,
       boxShadow: "0 24px 55px rgba(0,0,0,0.46)",
+      maxHeight: mobile ? "min(70vh, 560px)" : "calc(100vh - 82px)",
+      overflow: "hidden",
     }}>
       <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
         <div>
@@ -2704,7 +2940,7 @@ function SelectedObjectCard({ selected, onClose, onZoom, onClearSelection, mobil
         </div>
         <button onClick={onClose} style={{ background: "rgba(10, 21, 37, 0.82)", border: "1px solid rgba(94, 164, 195, 0.18)", color: "rgba(189,226,248,0.74)", borderRadius: 999, width: 30, height: 30, flexShrink: 0 }}>✕</button>
       </div>
-      <div style={{ display: "grid", gap: 8 }}>
+      <div style={sharedPanelBodyStyle({ display: "grid", gap: 8 })}>
         {rows.map(([label, value]) => (
           <div key={label} style={{ display: "grid", gridTemplateColumns: "84px 1fr", gap: 8 }}>
             <span style={{ color: "rgba(103, 220, 255, 0.42)", fontSize: 10, fontFamily: mono, letterSpacing: "0.12em", textTransform: "uppercase" }}>{label}</span>
@@ -2850,7 +3086,7 @@ const SHEET_STATES = {
 
 function MobileBottomSheet({ events, selectedEvent, activeScenario, onScenarioChange,
                              onSelectEvent, onClose, activeLayers, onLayerToggle, layerEntries,
-                             briefing, marketImpact, flights, satellites, onBriefingSelect,
+                             briefing, marketImpact, flights, satellites, socialSignals, onBriefingSelect,
                              onOpenIntelBoard, refreshState, adminUnlocked, onAdminUnlock,
                              onSelectObject, allEvents = [],
                              onAdminRefresh, systemStatus, selectedLens, onLensChange,
@@ -2991,6 +3227,7 @@ function MobileBottomSheet({ events, selectedEvent, activeScenario, onScenarioCh
               <MobileSheetTabButton active={activeTab === "market"} onClick={() => setActiveTab("market")}>Market Impact</MobileSheetTabButton>
               {activeLayers.flights ? <MobileSheetTabButton active={activeTab === "flights"} onClick={() => setActiveTab("flights")}>Flights</MobileSheetTabButton> : null}
               {activeLayers.satellites ? <MobileSheetTabButton active={activeTab === "satellites"} onClick={() => setActiveTab("satellites")}>Satellites</MobileSheetTabButton> : null}
+              {activeLayers.social ? <MobileSheetTabButton active={activeTab === "social"} onClick={() => setActiveTab("social")}>Social</MobileSheetTabButton> : null}
             </div>
           </div>
         )}
@@ -2999,10 +3236,10 @@ function MobileBottomSheet({ events, selectedEvent, activeScenario, onScenarioCh
         {sheetState === "full" && selectedEvent ? (
           <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
             <EventDetailContent event={selectedEvent} activeScenario={activeScenario}
-              onScenarioChange={onScenarioChange} allEvents={allEvents} />
+              onScenarioChange={onScenarioChange} allEvents={allEvents} socialSignals={socialSignals} />
           </div>
         ) : sheetState !== "peek" ? (
-          <div style={{ flex: 1, overflowY: "auto", WebkitOverflowScrolling: "touch", padding: 14 }}>
+          <div style={sharedPanelBodyStyle({ flex: 1, padding: 14 })}>
             {activeTab === "events" ? (
               <div style={{ display: "grid", gap: 10 }}>
                 {events.map(ev => {
@@ -3125,6 +3362,28 @@ function MobileBottomSheet({ events, selectedEvent, activeScenario, onScenarioCh
                   />
                 ))}
               </div>
+            ) : activeTab === "social" ? (
+              <div style={{ display: "grid", gap: 10 }}>
+                {socialSignals.length === 0 ? (
+                  <div style={{ color: "rgba(130,185,230,0.62)", fontSize: 11, fontFamily: mono }}>Social signals are unavailable or not configured.</div>
+                ) : socialSignals.map((signal) => {
+                  const corroboration = deriveSocialCorroboration(signal, events);
+                  return (
+                    <div key={signal.id} style={{ background: "rgba(8,20,36,0.78)", border: "1px solid rgba(94,164,195,0.14)", borderRadius: 14, padding: "12px 13px" }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", gap: 8, marginBottom: 6 }}>
+                        <span style={{ color: "#d6ebff", fontFamily: display, fontWeight: 700, fontSize: 13 }}>{signal.title}</span>
+                        <TrafficPill level={corroboration.label === "Corroborated" ? "green" : corroboration.label === "Partially corroborated" ? "amber" : "neutral"}>
+                          {corroboration.label}
+                        </TrafficPill>
+                      </div>
+                      <div style={{ color: "rgba(150,205,245,0.68)", fontSize: 11, lineHeight: 1.6, marginBottom: 8 }}>{signal.summary}</div>
+                      <a href={signal.url} target="_blank" rel="noreferrer" style={{ color: "#89ddff", fontSize: 11, textDecoration: "none" }}>
+                        View original post
+                      </a>
+                    </div>
+                  );
+                })}
+              </div>
             ) : null}
 
             {sheetState !== "peek" ? (
@@ -3202,6 +3461,7 @@ const LAYER_DEFS = {
   flights: { label: "FLIGHTS", icon: "✈", color: "#7ad0ff", desc: "Live aviation layer" },
   vessels: { label: "VESSELS", icon: "◫", color: "#8cf0c9", desc: "Live vessel layer" },
   satellites: { label: "SATELLITES", icon: "◉", color: "#c68dff", desc: "Orbital layer" },
+  social: { label: "SOCIAL", icon: "⌁", color: "#88b9ff", desc: "Early-warning social signals" },
   intelBoard: { label: "INTEL BOARD", icon: "▣", color: "#ffd166", desc: "Intel panels" },
 };
 
@@ -3785,7 +4045,7 @@ function DesktopSidebar({ events, selectedEvent, onSelect, topOffset = TOP_BAR_H
           <TrafficPill level="neutral">{events.filter((ev) => ev.intensity === "low").length} L</TrafficPill>
         </div>
       </div>
-      <div style={{ flex: 1, overflowY: "auto" }}>
+      <div style={sharedPanelBodyStyle({ flex: 1 })}>
         {events.length === 0 ? (
           <div style={{ padding: "18px 18px", color: "rgba(150,200,240,0.55)", fontSize: 10, fontFamily: mono, lineHeight: 1.6 }}>
             No events match the current timeline and focus filters.
@@ -3863,7 +4123,7 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
   const [bordersLoaded,  setBordersLoaded]  = useState(false);
   const [ready,          setReady]          = useState(false);
   const [activeLayers,   setActiveLayers]   = useState({
-    events: true, flights: false, vessels: false, satellites: false, intelBoard: true,
+    events: true, flights: false, vessels: false, satellites: false, social: false, intelBoard: true,
   });
   const [panelVisibility, setPanelVisibility] = useState({
     events: true,
@@ -3873,6 +4133,7 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
     flights: false,
     vessels: false,
     satellites: false,
+    social: false,
     selectedObjectDetail: true,
     timeline: true,
   });
@@ -3890,7 +4151,8 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
   const [flights,         setFlights]         = useState([]);
   const [vessels,         setVessels]         = useState([]);
   const [satellites,      setSatellites]      = useState([]);
-  const [layersStatus,    setLayersStatus]    = useState({ flights: null, vessels: null, satellites: null });
+  const [socialSignals,   setSocialSignals]   = useState([]);
+  const [layersStatus,    setLayersStatus]    = useState({ flights: null, vessels: null, satellites: null, social: null });
   const [systemStatus,    setSystemStatus]    = useState({
     automation: null,
     aiCallsToday: 0,
@@ -3953,6 +4215,7 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
         flights: status.layers?.flights ?? null,
         vessels: status.layers?.vessels ?? null,
         satellites: status.layers?.satellites ?? null,
+        social: status.layers?.social ?? null,
       });
       setSystemStatus({
         automation: status.automation ?? null,
@@ -4004,6 +4267,13 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
   }, [layersStatus.vessels]);
 
   useEffect(() => {
+    if (!layersStatus.social?.enabled || !layersStatus.social?.configured) {
+      setActiveLayers((current) => ({ ...current, social: false }));
+      setPanelVisibility((current) => ({ ...current, social: false }));
+    }
+  }, [layersStatus.social]);
+
+  useEffect(() => {
     let cancelled = false;
     if (!activeLayers.satellites) return undefined;
 
@@ -4019,6 +4289,23 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
       cancelled = true;
     };
   }, [activeLayers.satellites]);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!activeLayers.social) return undefined;
+
+    fetchSocialSignalsLive()
+      .then((result) => {
+        if (cancelled) return;
+        setSocialSignals(result.data ?? []);
+        setLayersStatus((current) => ({ ...current, social: result.quota ?? current.social }));
+      })
+      .catch(() => {});
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeLayers.social]);
 
   const handleAdminUnlock = useCallback(() => {
     const secret = window.prompt("Enter ADMIN_SECRET to unlock admin controls for this session.");
@@ -4108,6 +4395,7 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
       if (key === "flights") return Boolean(layersStatus.flights?.enabled && layersStatus.flights?.configured);
       if (key === "satellites") return Boolean(layersStatus.satellites?.enabled && layersStatus.satellites?.configured);
       if (key === "vessels") return Boolean(layersStatus.vessels?.enabled && layersStatus.vessels?.configured);
+      if (key === "social") return Boolean(layersStatus.social?.enabled && layersStatus.social?.configured);
       return false;
     });
   }, [layersStatus]);
@@ -4188,6 +4476,9 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
       if (key === "flights" || key === "vessels" || key === "satellites") {
         setPanelVisibility((current) => ({ ...current, [key]: next[key] }));
       }
+      if (key === "social") {
+        setPanelVisibility((current) => ({ ...current, social: next[key] }));
+      }
 
       const layers = sceneRef.current.liveLayers;
       if (layers && layers[key]) layers[key].visible = next[key];
@@ -4231,11 +4522,14 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
       new THREE.SphereGeometry(R, segs, segs),
       new THREE.MeshPhongMaterial({
         map: makeGlobeTex(),
-        specular: new THREE.Color(0x101d33),
-        shininess: 14,
-        emissive: new THREE.Color(0x03111c),
-        emissiveIntensity: 0.34,
-        opacity: 1.0,
+        bumpMap: makeReliefTex(),
+        bumpScale: mob ? 0.02 : 0.028,
+        specular: new THREE.Color(0x08131f),
+        shininess: 5,
+        emissive: new THREE.Color(0x02070e),
+        emissiveIntensity: 0.16,
+        transparent: false,
+        opacity: 1,
       })
     );
     globeMesh.renderOrder = 0;
@@ -4404,8 +4698,9 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
 
     function focusCameraOnEvent(ev) {
       if (!Number.isFinite(ev.lat) || !Number.isFinite(ev.lng)) return;
-      cam.targetTheta  = -ev.lng * (Math.PI / 180);
-      cam.targetPhi    = Math.max(0.25, Math.min(Math.PI - 0.25, (90 - ev.lat) * (Math.PI / 180)));
+      const normal = geoToVec3(ev.lat, ev.lng, 1).normalize();
+      cam.targetTheta  = Math.atan2(normal.x, normal.z);
+      cam.targetPhi    = Math.max(0.25, Math.min(Math.PI - 0.25, Math.acos(normal.y)));
       cam.targetRadius = mob ? 1.9 : 2.05;
       cam.autoSpin     = false;
       cam.thetaVelocity = 0;
@@ -4415,6 +4710,10 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
 
     // Interaction
     const raycaster = new THREE.Raycaster();
+    const resolveVisibleHit = (hits) => hits.find((entry) => {
+      const group = entry.object.userData.markerGroup ?? entry.object.parent;
+      return group?.userData?.clickableActive !== false && (group?.userData?.visibilityAlpha ?? 1) > 0.16;
+    });
     const getNDC = (cx, cy) => {
       const r = container.getBoundingClientRect();
       return new THREE.Vector2(((cx-r.left)/r.width)*2-1, -((cy-r.top)/r.height)*2+1);
@@ -4441,8 +4740,9 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
       // Hover tooltip (desktop)
       raycaster.setFromCamera(getNDC(e.clientX, e.clientY), camera);
       const hits = raycaster.intersectObjects(clickableObjects, false);
-      if (hits.length > 0) {
-        const hit = hits[0].object.userData;
+      const visibleHit = resolveVisibleHit(hits);
+      if (visibleHit) {
+        const hit = visibleHit.object.userData;
         const ev2 = hit.objectType === "event"
           ? interactiveEvents.find(ev => ev.id === hit.eventId)
           : hit.objectData;
@@ -4461,8 +4761,9 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
       if (wasDrag) return;
       raycaster.setFromCamera(getNDC(e.clientX, e.clientY), camera);
       const hits = raycaster.intersectObjects(clickableObjects, false);
-      if (hits.length > 0) {
-        const hit = hits[0].object.userData;
+      const visibleHit = resolveVisibleHit(hits);
+      if (visibleHit) {
+        const hit = visibleHit.object.userData;
         if (hit.objectType === "event") {
           const ev2 = interactiveEvents.find(ev => ev.id === hit.eventId);
           if (ev2) {
@@ -4520,8 +4821,9 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
         if (Math.abs(t.clientX-touchStartX) < 10 && Math.abs(t.clientY-touchStartY) < 10) {
           raycaster.setFromCamera(getNDC(t.clientX, t.clientY), camera);
           const hits = raycaster.intersectObjects(clickableObjects, false);
-          if (hits.length > 0) {
-            const hit = hits[0].object.userData;
+          const visibleHit = resolveVisibleHit(hits);
+          if (visibleHit) {
+            const hit = visibleHit.object.userData;
             if (hit.objectType === "event") {
               const ev2 = interactiveEvents.find(ev => ev.id === hit.eventId);
               if (ev2) {
@@ -4617,6 +4919,7 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
           if (!surfaceNormal) return;
           const alpha = getMarkerVisibilityAlpha(surfaceNormal, cameraDirection);
           group.userData.visibilityAlpha = alpha;
+          group.userData.clickableActive = alpha > 0.16;
           group.traverse((obj) => {
             if (!obj.material) return;
             const baseOpacity = obj.userData.baseOpacity ?? obj.material.opacity ?? 1;
@@ -4856,6 +5159,14 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
                 onClose={() => setPanelVisibility((current) => ({ ...current, satellites: false }))}
               />
             ) : null}
+            {panelVisibility.social && activeLayers.social ? (
+              <SocialSignalsPanel
+                signals={socialSignals}
+                status={layersStatus.social}
+                events={filteredEvents}
+                onClose={() => setPanelVisibility((current) => ({ ...current, social: false }))}
+              />
+            ) : null}
             {selectedMarketImpact ? (
               <MarketImpactDetailPanel item={selectedMarketImpact} onClose={() => setSelectedMarketKey(null)} />
             ) : null}
@@ -4957,6 +5268,7 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
               activeScenario={activeScenario}
               onScenarioChange={setActiveScenario}
               allEvents={filteredEvents}
+              socialSignals={socialSignals}
               onClose={() => {
                 setPanelVisibility((current) => ({ ...current, selectedObjectDetail: false }));
                 setSelectedEvent(null);
@@ -4995,6 +5307,7 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
             marketImpact={marketImpact}
             flights={flights}
             satellites={satellites}
+            socialSignals={socialSignals}
             onBriefingSelect={handleBriefingSelect}
             onOpenIntelBoard={() => onNavigate?.("classic")}
             refreshState={refreshState}

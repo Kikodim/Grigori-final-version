@@ -3,6 +3,7 @@ import { createLogger } from "./logger.js";
 import { getLayerCache, getLayerUsageStats, recordLayerUsage, setLayerCache } from "./supabase.js";
 import { fetchAishubVessels } from "./sources/ais/aishub.adapter.js";
 import { fetchAviationstackFlights } from "./sources/flights/aviationstack.adapter.js";
+import { fetchXSignals } from "./sources/social/x.adapter.js";
 import { fetchCelestrakSatellites } from "./sources/satellites/celestrak.adapter.js";
 
 const log = createLogger("layers");
@@ -84,10 +85,11 @@ async function getLayerQuotaState(layerKey, monthlyLimit, refreshHours) {
 
 async function getPassiveLayerStatus() {
   const config = getConfig();
-  const [flights, vessels, satellites] = await Promise.all([
+  const [flights, vessels, satellites, social] = await Promise.all([
     getLayerQuotaState("flights", config.flightMonthlyLimit, config.flightRefreshIntervalHours),
     getLayerQuotaState("vessels", config.vesselMonthlyLimit, config.vesselRefreshIntervalHours),
     getLayerQuotaState("satellites", Number.MAX_SAFE_INTEGER, config.satelliteRefreshIntervalHours),
+    getLayerQuotaState("social", config.xDailyReadLimit, config.xRefreshIntervalMinutes / 60),
   ]);
 
   return {
@@ -114,6 +116,15 @@ async function getPassiveLayerStatus() {
       configured: true,
       lastRefresh: satellites.lastRefreshAt,
       nextRefresh: satellites.nextRefreshAt,
+    },
+    social: {
+      enabled: config.enableXSignals,
+      configured: hasUsableKey(config.xBearerToken) && config.xMonitoredAccounts.length > 0,
+      callsToday: social.callsToday,
+      callsThisMonth: social.callsThisMonth,
+      remaining: Math.max(0, config.xDailyReadLimit - social.callsToday),
+      lastRefresh: social.lastRefreshAt,
+      nextRefresh: social.nextRefreshAt,
     },
   };
 }
@@ -325,6 +336,90 @@ export async function getSatellitesLayer() {
       reason: "Satellite source request failed",
       data: status.record?.payload ?? [],
       quota: status,
+    };
+  }
+}
+
+export async function getSocialSignalsLayer() {
+  const config = getConfig();
+  const configured = hasUsableKey(config.xBearerToken) && config.xMonitoredAccounts.length > 0;
+  const refreshHours = Math.max(0.5, config.xRefreshIntervalMinutes / 60);
+  const status = await getLayerQuotaState("social", config.xDailyReadLimit, refreshHours);
+
+  if (!config.enableXSignals) {
+    return {
+      ok: true,
+      enabled: false,
+      configured,
+      reason: "X signals disabled",
+      monitoredAccounts: config.xMonitoredAccounts,
+      data: status.record?.payload ?? [],
+      quota: status,
+    };
+  }
+
+  if (!configured) {
+    return {
+      ok: true,
+      enabled: true,
+      configured: false,
+      reason: "X API not configured",
+      monitoredAccounts: config.xMonitoredAccounts,
+      data: status.record?.payload ?? [],
+      quota: status,
+    };
+  }
+
+  if (status.fresh || status.callsToday >= config.xDailyReadLimit) {
+    return {
+      ok: true,
+      enabled: true,
+      configured: true,
+      source: status.callsToday >= config.xDailyReadLimit ? "cache-quota" : "cache",
+      monitoredAccounts: config.xMonitoredAccounts,
+      data: status.record?.payload ?? [],
+      quota: {
+        ...status,
+        remainingDailyCalls: Math.max(0, config.xDailyReadLimit - status.callsToday),
+      },
+    };
+  }
+
+  try {
+    const signals = await fetchXSignals(config.xBearerToken, {
+      accounts: config.xMonitoredAccounts,
+      limit: 12,
+    });
+    const nextRefreshAt = await refreshLayerCache("social", signals, { provider: "x" }, refreshHours);
+    return {
+      ok: true,
+      enabled: true,
+      configured: true,
+      source: "live",
+      monitoredAccounts: config.xMonitoredAccounts,
+      data: signals,
+      quota: {
+        ...status,
+        callsToday: status.callsToday + 1,
+        callsThisMonth: status.callsThisMonth + 1,
+        remainingDailyCalls: Math.max(0, config.xDailyReadLimit - (status.callsToday + 1)),
+        lastRefreshAt: new Date().toISOString(),
+        nextRefreshAt,
+      },
+    };
+  } catch (err) {
+    log.warn(`Social layer refresh failed: ${err.message}`);
+    return {
+      ok: true,
+      enabled: true,
+      configured: true,
+      reason: "X provider request failed",
+      monitoredAccounts: config.xMonitoredAccounts,
+      data: status.record?.payload ?? [],
+      quota: {
+        ...status,
+        remainingDailyCalls: Math.max(0, config.xDailyReadLimit - status.callsToday),
+      },
     };
   }
 }

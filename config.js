@@ -44,6 +44,7 @@ export function getIntegrationConfigStatus() {
   const adminSecret = describeEnvVar("ADMIN_SECRET");
   const aviationstack = describeEnvVar("AVIATIONSTACK_API_KEY");
   const aishub = describeEnvVar("AISHUB_API_KEY");
+  const xBearer = describeEnvVar("X_BEARER_TOKEN");
 
   return {
     newsApi,
@@ -60,6 +61,7 @@ export function getIntegrationConfigStatus() {
     adminSecret,
     aviationstack,
     aishub,
+    xBearer,
   };
 }
 
@@ -118,5 +120,13 @@ export function getConfig() {
     maxFlightsRendered:     parseInt(process.env.MAX_FLIGHTS_RENDERED ?? "100", 10),
     maxVesselsRendered:     parseInt(process.env.MAX_VESSELS_RENDERED ?? "100", 10),
     maxSatellitesRendered:  parseInt(process.env.MAX_SATELLITES_RENDERED ?? "150", 10),
+    enableXSignals:         String(process.env.ENABLE_X_SIGNALS ?? "false").toLowerCase() === "true",
+    xBearerToken:           process.env.X_BEARER_TOKEN ?? "",
+    xMonitoredAccounts:     (process.env.X_MONITORED_ACCOUNTS ?? "ww3_monitor")
+      .split(",")
+      .map((value) => value.trim())
+      .filter(Boolean),
+    xRefreshIntervalMinutes: parseInt(process.env.X_REFRESH_INTERVAL_MINUTES ?? "60", 10),
+    xDailyReadLimit:        parseInt(process.env.X_DAILY_READ_LIMIT ?? "100", 10),
   };
 }
