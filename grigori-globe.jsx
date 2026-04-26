@@ -1078,9 +1078,10 @@ function normalizeSatelliteObject(item) {
 }
 
 async function fetchLayerStatus() {
-  const res = await fetch(resolveBackendUrl("/api/v1/layers/status"), { signal: AbortSignal.timeout(8000) });
-  if (!res.ok) throw new Error(`layers ${res.status}`);
-  return res.json();
+  const res = await fetch(resolveBackendUrl("/api/v1/health"), { signal: AbortSignal.timeout(8000) });
+  if (!res.ok) throw new Error(`health ${res.status}`);
+  const data = await res.json();
+  return data.layers ?? { flights: null, vessels: null, satellites: null };
 }
 
 async function fetchFlightsLive() {
@@ -1090,16 +1091,6 @@ async function fetchFlightsLive() {
   return {
     ...data,
     data: Array.isArray(data.data) ? data.data.slice(0, MAX_FLIGHTS_RENDERED).map(normalizeFlightObject) : [],
-  };
-}
-
-async function fetchVesselsLive() {
-  const res = await fetch(resolveBackendUrl("/api/v1/vessels/live"), { signal: AbortSignal.timeout(12000) });
-  if (!res.ok) throw new Error(`vessels ${res.status}`);
-  const data = await res.json();
-  return {
-    ...data,
-    data: Array.isArray(data.data) ? data.data.slice(0, MAX_VESSELS_RENDERED).map(normalizeVesselObject) : [],
   };
 }
 
@@ -2208,7 +2199,7 @@ const SHEET_STATES = {
 };
 
 function MobileBottomSheet({ events, selectedEvent, activeScenario, onScenarioChange,
-                             onSelectEvent, onClose, activeLayers, onLayerToggle }) {
+                             onSelectEvent, onClose, activeLayers, onLayerToggle, layerEntries }) {
   const [sheetState, setSheetState] = useState("peek");
   const sheetRef   = useRef(null);
   const dragRef    = useRef({ startY: 0, startH: 0, dragging: false });
@@ -2329,7 +2320,7 @@ function MobileBottomSheet({ events, selectedEvent, activeScenario, onScenarioCh
             flexShrink: 0 }}>
             <div style={{ display: "flex", gap: 8, overflowX: "auto", paddingBottom: 2,
               WebkitOverflowScrolling: "touch" }}>
-              {Object.entries(LAYER_DEFS).map(([key, def]) => (
+              {layerEntries.map(([key, def]) => (
                 <LayerToggleChip key={key} layerKey={key} def={def}
                   active={activeLayers[key]} onToggle={onLayerToggle} />
               ))}
@@ -2417,10 +2408,10 @@ function LayerToggleChip({ layerKey, def, active, onToggle }) {
 }
 
 // Desktop layer toggle bar
-function DesktopLayerBar({ activeLayers, onToggle, bordersLoaded }) {
+function DesktopLayerBar({ activeLayers, onToggle, bordersLoaded, layerEntries }) {
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
-      {Object.entries(LAYER_DEFS).map(([key, def]) => (
+      {layerEntries.map(([key, def]) => (
         <LayerToggleChip key={key} layerKey={key} def={def}
           active={activeLayers[key]} onToggle={onToggle} />
       ))}
@@ -2656,7 +2647,7 @@ function buildConnectionLayer() {
 // TOP BAR
 // ═══════════════════════════════════════════════════════════════════════════════
 
-function TopBar({ counts, bordersLoaded, activeLayers, onLayerToggle, isMobile, onWarRoom, showWarRoom, marketData, onPersonalize, showPersonalize, onAdminRefresh, refreshState }) {
+function TopBar({ counts, bordersLoaded, activeLayers, onLayerToggle, isMobile, onWarRoom, showWarRoom, marketData, onPersonalize, showPersonalize, onAdminRefresh, refreshState, layerEntries }) {
   const [time, setTime] = useState(() => new Date().toISOString().slice(11,19));
   useEffect(() => {
     const t = setInterval(() => setTime(new Date().toISOString().slice(11,19)), 1000);
@@ -2681,8 +2672,15 @@ function TopBar({ counts, bordersLoaded, activeLayers, onLayerToggle, isMobile, 
           <line x1="2" y1="11" x2="20" y2="11" stroke="rgba(0,180,255,0.3)" strokeWidth="0.8"/>
           <circle cx="11" cy="11" r="2" fill="rgba(0,210,255,0.9)"/>
         </svg>
-        <span style={{ color: "#d0eaff", fontFamily: display, fontSize: isMobile ? 17 : 19,
-          fontWeight: 700, letterSpacing: "0.14em" }}>GRIGORI</span>
+        <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+          <span style={{ color: "#f8fafc", fontFamily: display, fontSize: isMobile ? 17 : 19,
+            fontWeight: 700, letterSpacing: "0.14em" }}>GRIGORI</span>
+          {!isMobile && (
+            <span style={{ color: "rgba(191,219,254,0.68)", fontFamily: "Georgia, serif", fontSize: 11, letterSpacing: "0.06em" }}>
+              by oryth.io
+            </span>
+          )}
+        </div>
 
         {!isMobile && (
           <>
@@ -2705,7 +2703,7 @@ function TopBar({ counts, bordersLoaded, activeLayers, onLayerToggle, isMobile, 
       <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
         {!isMobile && (
           <DesktopLayerBar activeLayers={activeLayers} onToggle={onLayerToggle}
-            bordersLoaded={bordersLoaded} />
+            bordersLoaded={bordersLoaded} layerEntries={layerEntries} />
         )}
         {/* Market ticker (desktop only) */}
         {!isMobile && <MarketTicker marketData={marketData} />}
@@ -2965,21 +2963,11 @@ export default function GlobeApp() {
   }, [activeLayers.flights]);
 
   useEffect(() => {
-    let cancelled = false;
-    if (!activeLayers.vessels) return undefined;
-
-    fetchVesselsLive()
-      .then((result) => {
-        if (cancelled) return;
-        setVessels(result.data ?? []);
-        setLayersStatus((current) => ({ ...current, vessels: result.quota ?? current.vessels }));
-      })
-      .catch(() => {});
-
-    return () => {
-      cancelled = true;
-    };
-  }, [activeLayers.vessels]);
+    if (!layersStatus.vessels?.enabled || !layersStatus.vessels?.configured) {
+      setActiveLayers((current) => ({ ...current, vessels: false }));
+      setPanelVisibility((current) => ({ ...current, vessels: false }));
+    }
+  }, [layersStatus.vessels]);
 
   useEffect(() => {
     let cancelled = false;
@@ -3047,6 +3035,16 @@ export default function GlobeApp() {
     () => aggregateMarketImpact(filteredEvents),
     [filteredEvents]
   );
+
+  const visibleLayerEntries = useMemo(() => {
+    return Object.entries(LAYER_DEFS).filter(([key]) => {
+      if (key === "events" || key === "intelBoard") return true;
+      if (key === "flights") return Boolean(layersStatus.flights?.enabled && layersStatus.flights?.configured);
+      if (key === "satellites") return Boolean(layersStatus.satellites?.enabled && layersStatus.satellites?.configured);
+      if (key === "vessels") return Boolean(layersStatus.vessels?.enabled && layersStatus.vessels?.configured);
+      return false;
+    });
+  }, [layersStatus]);
 
   const timelineCursorLabel = useMemo(() => {
     if (liveEvents.length === 0) return "No live events";
@@ -3621,7 +3619,8 @@ export default function GlobeApp() {
           onPersonalize={() => setShowPersonalize(v => !v)}
           showPersonalize={showPersonalize}
           onAdminRefresh={handleAdminRefresh}
-          refreshState={refreshState} />
+          refreshState={refreshState}
+          layerEntries={visibleLayerEntries} />
 
         {!isMobile && (
           <>
@@ -3773,6 +3772,7 @@ export default function GlobeApp() {
             onClose={() => { setSelectedEvent(null); setActiveScenario(0); }}
             activeLayers={activeLayers}
             onLayerToggle={handleLayerToggle}
+            layerEntries={visibleLayerEntries}
           />
         )}
 
@@ -3802,6 +3802,12 @@ export default function GlobeApp() {
             flexDirection: "column", gap: 18 }}>
             <div style={{ color: "rgba(0,200,255,0.88)", fontFamily: display,
               fontSize: 34, fontWeight: 700, letterSpacing: "0.18em" }}>GRIGORI</div>
+            <div style={{ color: "rgba(191,219,254,0.72)", fontFamily: "Georgia, serif", fontSize: 14, letterSpacing: "0.08em" }}>
+              by oryth.io
+            </div>
+            <div style={{ color: "rgba(148,163,184,0.78)", fontFamily: mono, fontSize: 11, letterSpacing: "0.08em", textTransform: "uppercase" }}>
+              Loading Grigori Intelligence Systems...
+            </div>
             <div style={{ display: "flex", gap: 8 }}>
               {[0,1,2].map(i => (
                 <div key={i} style={{ width: 6, height: 6, borderRadius: "50%",

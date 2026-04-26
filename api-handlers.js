@@ -5,6 +5,13 @@ import { getFlightsLayer, getLayersStatus, getSatellitesLayer, getVesselsLayer }
 import { createLogger } from "./logger.js";
 import { runPipeline } from "./pipeline.js";
 import {
+  buildSubscriptionStatus,
+  captureWaitlistInterest,
+  exportReportPreview,
+  generatePreviewReport,
+  getReportHistory,
+} from "./reports.js";
+import {
   checkRateLimit,
   getClientIp,
   parsePagination,
@@ -41,6 +48,7 @@ function missingProductionSecret() {
 export async function handleHealth(_req, res) {
   const config = getConfig();
   const integrations = getIntegrationConfigStatus();
+  const layers = await getLayersStatus();
   const missing = [
     ["NEWS_API_KEY", integrations.newsApi],
     ["GEMINI_API_KEY", integrations.gemini],
@@ -80,6 +88,7 @@ export async function handleHealth(_req, res) {
       clusterThreshold: config.clusterThreshold,
       nodeEnv: config.nodeEnv,
     },
+    layers,
     timestamp: new Date().toISOString(),
   });
 }
@@ -163,11 +172,29 @@ export async function handleSatellitesLive(_req, res) {
   return res.status(200).json(result);
 }
 
-export async function handleLayersStatus(_req, res) {
-  return res.status(200).json({
-    ok: true,
-    ...(await getLayersStatus()),
-  });
+export async function handleSubscriptionStatus(req, res) {
+  return res.status(200).json(await buildSubscriptionStatus(req));
+}
+
+export async function handleReportsGenerate(req, res) {
+  const payload = req.body ?? {};
+  const result = await generatePreviewReport(req, payload);
+  return res.status(result.status).json(result.body);
+}
+
+export async function handleReportsHistory(req, res) {
+  const result = await getReportHistory(req, req.query ?? {});
+  return res.status(result.status).json(result.body);
+}
+
+export async function handleReportsExport(req, res) {
+  const result = await exportReportPreview(req, req.query?.id ?? req.params?.id);
+  return res.status(result.status).json(result.body);
+}
+
+export async function handleReportsWaitlist(req, res) {
+  const result = await captureWaitlistInterest(req.body ?? {}, req);
+  return res.status(result.status).json(result.body);
 }
 
 export async function handlePipelineRun(req, res) {

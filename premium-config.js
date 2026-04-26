@@ -1,0 +1,99 @@
+export const BRAND = {
+  name: "Grigori",
+  signature: "by oryth.io",
+  subtitle: "Strategic Intelligence Dashboard",
+  fullName: "Grigori by oryth.io",
+  pageTitle: "Grigori by oryth.io | Strategic Intelligence Dashboard",
+  description: "Real-time geopolitical intelligence, strategic risk monitoring, live situational awareness, and personalized executive reports.",
+};
+
+export const REPORT_STATUS_BADGE = "Work in Progress";
+export const REPORTS_WIP_COPY = "Personalized intelligence reports are currently being prepared. This section previews the upcoming premium reporting system.";
+
+export const PREMIUM_PLANS = [
+  {
+    tier: "confidential",
+    name: "Confidential Clearance",
+    priceLabel: "€20 / month",
+    reportsPerDay: 1,
+    watchlists: 1,
+    features: [
+      "1 personalized report per day",
+      "1 watchlist",
+      "Standard report depth",
+      "PDF export",
+    ],
+  },
+  {
+    tier: "top_secret",
+    name: "Top Secret Clearance",
+    priceLabel: "€59 / month",
+    reportsPerDay: 5,
+    watchlists: "Multiple",
+    features: [
+      "5 personalized reports per day",
+      "Multiple watchlists",
+      "Advanced report depth",
+      "Scenario engine",
+      "Priority generation",
+      "PDF export",
+      "Historical comparisons",
+    ],
+  },
+];
+
+export const REPORT_INPUT_OPTIONS = {
+  regions: [
+    "Taiwan Strait",
+    "Black Sea",
+    "Balkans",
+    "Middle East",
+    "Red Sea",
+    "Iran",
+    "Russia / Ukraine",
+    "Global",
+  ],
+  focusAreas: [
+    "Military",
+    "Trade Routes",
+    "Energy",
+    "Shipping",
+    "Politics",
+    "Supply Chains",
+    "Technology",
+    "Financial Markets",
+  ],
+  timeHorizons: ["72 hours", "7 days", "30 days", "90 days"],
+  audienceTypes: ["Executive", "Investor", "Security Team", "Analyst", "General"],
+  riskAppetites: ["Conservative", "Balanced", "Aggressive"],
+};
+
+export const REPORT_OUTPUT_SECTIONS = [
+  "Executive Summary",
+  "Current Situation",
+  "Trend Analysis",
+  "Historical Parallels",
+  "Scenario Matrix",
+  "Probability / Risk Bands",
+  "Market Impact",
+  "Sector Impact",
+  "Watch Indicators Next 72h",
+  "Recommended Monitoring Actions",
+];
+
+export function getTierConfig(tier = "free") {
+  if (tier === "confidential") {
+    return PREMIUM_PLANS[0];
+  }
+  if (tier === "top_secret") {
+    return PREMIUM_PLANS[1];
+  }
+  return {
+    tier: "free",
+    name: "Free Access",
+    priceLabel: "€0",
+    reportsPerDay: 0,
+    watchlists: 0,
+    features: ["Globe UI", "Intel Board", "Daily briefing", "Situational layers"],
+  };
+}

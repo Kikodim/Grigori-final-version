@@ -13,6 +13,10 @@ const EQUIVALENT_EVENT_WINDOW_MS = 24 * 60 * 60 * 1000;
 const memoryAIUsageLog = [];
 const memoryLayerCache = new Map();
 const memoryLayerUsageLog = [];
+const memoryWaitlistEntries = [];
+const memoryUserProfiles = new Map();
+const memoryReports = [];
+const memoryWatchlists = [];
 
 let clientPromise = null;
 let clientDisabled = false;
@@ -218,6 +222,10 @@ async function getClient() {
     });
 
   return clientPromise;
+}
+
+export async function getSupabaseServiceClient() {
+  return getClient();
 }
 
 function filterMemoryEvents(events, { tone, confidence, region } = {}) {
@@ -566,6 +574,217 @@ export async function healthCheck() {
       ok: false,
       mode: "memory",
       detail: err.message,
+    };
+  }
+}
+
+export async function getAuthenticatedSupabaseUser(accessToken) {
+  if (!accessToken) return null;
+  const db = await getClient();
+  if (!db) return null;
+
+  try {
+    const { data, error } = await db.auth.getUser(accessToken);
+    if (error) {
+      log.warn(`Supabase auth lookup failed: ${error.message}`);
+      return null;
+    }
+    return data.user ?? null;
+  } catch (err) {
+    log.warn(`Supabase auth lookup failed: ${err.message}`);
+    return null;
+  }
+}
+
+function defaultUserProfile(userId, email = "") {
+  return {
+    user_id: userId,
+    email,
+    subscription_tier: "free",
+    subscription_status: "inactive",
+    reports_used_today: 0,
+    reset_daily_at: utcDayStartIso(Date.now() + 24 * 3600_000),
+    stripe_customer_id: null,
+    waitlist_opt_in: false,
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  };
+}
+
+export async function getUserProfile(userId, email = "") {
+  const db = await getClient();
+  const memoryProfile = memoryUserProfiles.get(userId) ?? defaultUserProfile(userId, email);
+
+  if (!db) {
+    memoryUserProfiles.set(userId, memoryProfile);
+    return { ...memoryProfile };
+  }
+
+  try {
+    const { data, error } = await db
+      .from("user_profiles")
+      .select("*")
+      .eq("user_id", userId)
+      .maybeSingle();
+
+    if (error) throw error;
+
+    if (!data) {
+      const fresh = defaultUserProfile(userId, email);
+      memoryUserProfiles.set(userId, fresh);
+      return fresh;
+    }
+
+    memoryUserProfiles.set(userId, data);
+    return data;
+  } catch (err) {
+    log.warn(`Supabase user profile lookup failed — using memory fallback (${err.message})`);
+    memoryUserProfiles.set(userId, memoryProfile);
+    return { ...memoryProfile };
+  }
+}
+
+export async function upsertUserProfile(profile) {
+  const merged = {
+    ...defaultUserProfile(profile.user_id, profile.email ?? ""),
+    ...profile,
+    updated_at: new Date().toISOString(),
+  };
+  memoryUserProfiles.set(merged.user_id, merged);
+
+  const db = await getClient();
+  if (!db) {
+    return { persisted: false, mode: "memory", profile: merged };
+  }
+
+  try {
+    const { error } = await db.from("user_profiles").upsert(merged);
+    if (error) throw error;
+    return { persisted: true, mode: "supabase", profile: merged };
+  } catch (err) {
+    log.warn(`Supabase user profile upsert failed: ${err.message}`);
+    return { persisted: false, mode: "memory", error: err.message, profile: merged };
+  }
+}
+
+export async function saveWaitlistEntry(entry) {
+  const normalized = {
+    email: String(entry.email ?? "").trim().toLowerCase(),
+    interest_tier: entry.interestTier ?? "confidential",
+    requested_region: entry.requestedRegion ?? "Global",
+    note: entry.note ?? "",
+    created_at: new Date().toISOString(),
+  };
+  memoryWaitlistEntries.push(normalized);
+
+  const db = await getClient();
+  if (!db) {
+    return { persisted: false, mode: "memory" };
+  }
+
+  try {
+    const { error } = await db.from("report_waitlist").insert(normalized);
+    if (error) throw error;
+    return { persisted: true, mode: "supabase" };
+  } catch (err) {
+    log.warn(`Supabase waitlist insert failed: ${err.message}`);
+    return { persisted: false, mode: "memory", error: err.message };
+  }
+}
+
+export async function getUserReports(userId, { limit = 20, query = "" } = {}) {
+  const db = await getClient();
+  const needle = query.trim().toLowerCase();
+
+  if (!db) {
+    const filtered = memoryReports
+      .filter((report) => report.user_id === userId)
+      .filter((report) => !needle || `${report.title} ${report.region} ${report.focus_area}`.toLowerCase().includes(needle))
+      .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+    return { mode: "memory", reports: filtered.slice(0, limit) };
+  }
+
+  try {
+    let qb = db
+      .from("reports")
+      .select("*")
+      .eq("user_id", userId)
+      .order("created_at", { ascending: false })
+      .limit(limit);
+
+    if (needle) {
+      qb = qb.or(`title.ilike.%${needle}%,region.ilike.%${needle}%,focus_area.ilike.%${needle}%`);
+    }
+
+    const { data, error } = await qb;
+    if (error) throw error;
+    return { mode: "supabase", reports: data ?? [] };
+  } catch (err) {
+    log.warn(`Supabase report history lookup failed — using memory fallback (${err.message})`);
+    const filtered = memoryReports
+      .filter((report) => report.user_id === userId)
+      .filter((report) => !needle || `${report.title} ${report.region} ${report.focus_area}`.toLowerCase().includes(needle))
+      .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+    return { mode: "memory", reports: filtered.slice(0, limit) };
+  }
+}
+
+export async function saveUserReport(report) {
+  const normalized = {
+    id: report.id,
+    user_id: report.user_id,
+    title: report.title,
+    region: report.region,
+    focus_area: report.focus_area,
+    time_horizon: report.time_horizon,
+    audience_type: report.audience_type,
+    risk_appetite: report.risk_appetite,
+    status: report.status ?? "draft",
+    content: report.content ?? {},
+    favorite: Boolean(report.favorite),
+    created_at: report.created_at ?? new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  };
+  memoryReports.push(normalized);
+
+  const db = await getClient();
+  if (!db) {
+    return { persisted: false, mode: "memory", report: normalized };
+  }
+
+  try {
+    const { error } = await db.from("reports").upsert(normalized);
+    if (error) throw error;
+    return { persisted: true, mode: "supabase", report: normalized };
+  } catch (err) {
+    log.warn(`Supabase report upsert failed: ${err.message}`);
+    return { persisted: false, mode: "memory", error: err.message, report: normalized };
+  }
+}
+
+export async function getUserWatchlists(userId) {
+  const db = await getClient();
+
+  if (!db) {
+    return {
+      mode: "memory",
+      watchlists: memoryWatchlists.filter((watchlist) => watchlist.user_id === userId),
+    };
+  }
+
+  try {
+    const { data, error } = await db
+      .from("watchlists")
+      .select("*")
+      .eq("user_id", userId)
+      .order("created_at", { ascending: false });
+    if (error) throw error;
+    return { mode: "supabase", watchlists: data ?? [] };
+  } catch (err) {
+    log.warn(`Supabase watchlist lookup failed — using memory fallback (${err.message})`);
+    return {
+      mode: "memory",
+      watchlists: memoryWatchlists.filter((watchlist) => watchlist.user_id === userId),
     };
   }
 }

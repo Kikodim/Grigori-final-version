@@ -67,6 +67,11 @@ export function requireAdmin(req) {
   return true;
 }
 
+export function getBearerToken(req) {
+  const authHeader = req.headers["authorization"] ?? "";
+  return authHeader.startsWith("Bearer ") ? authHeader.slice(7).trim() : "";
+}
+
 // ─── IP-based rate limiter ────────────────────────────────────────────────────
 // In-memory, resets on cold start.
 // Sufficient for abuse prevention on serverless; upgrade to Upstash Redis

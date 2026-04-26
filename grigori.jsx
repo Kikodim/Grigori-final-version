@@ -268,11 +268,11 @@ function IntelCard({ event }) {
 
 export default function ClassicIntelBoard() {
   const [events, setEvents] = useState([]);
-  const [loadState, setLoadState] = useState({ status: "loading", message: "Loading intelligence board..." });
+  const [loadState, setLoadState] = useState({ status: "loading", message: "Loading Grigori Intelligence Systems..." });
   const [refreshState, setRefreshState] = useState({ status: "idle", message: "" });
 
   const loadEvents = useCallback(async () => {
-    setLoadState({ status: "loading", message: "Loading intelligence board..." });
+    setLoadState({ status: "loading", message: "Loading Grigori Intelligence Systems..." });
     const res = await fetch(resolveBackendUrl(EVENTS_ENDPOINT), { signal: AbortSignal.timeout(8000) });
     if (!res.ok) {
       throw new Error(`Failed to load events (${res.status})`);
@@ -360,10 +360,13 @@ export default function ClassicIntelBoard() {
       }}>
         <div>
           <div style={{ color: "#38bdf8", fontFamily: "monospace", fontSize: 11, letterSpacing: "0.14em", textTransform: "uppercase" }}>
-            Classic UI · Intel Board
+            Strategic Intelligence Dashboard
           </div>
           <div style={{ color: "#f8fafc", fontFamily: "'Space Mono', monospace", fontSize: 24, fontWeight: 700, marginTop: 4 }}>
-            Rule-based Intelligence Board
+            Grigori <span style={{ color: "#93c5fd", fontSize: 14, fontFamily: "Georgia, serif", fontWeight: 400 }}>by oryth.io</span>
+          </div>
+          <div style={{ color: "#94a3b8", marginTop: 6, fontSize: 13 }}>
+            Intel Board
           </div>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
@@ -398,7 +401,7 @@ export default function ClassicIntelBoard() {
       ) : null}
 
       {loadState.status === "loading" ? (
-        <EmptyState title="Loading Intel Board" body="Pulling live events and rule-based briefings from /api/v1/events." />
+        <EmptyState title="Loading Grigori Intelligence Systems..." body="Pulling live events and rule-based briefings from /api/v1/events." />
       ) : null}
 
       {loadState.status === "error" ? (

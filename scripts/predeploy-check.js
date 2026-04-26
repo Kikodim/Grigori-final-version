@@ -18,10 +18,10 @@ const requiredFiles = [
   "api/v1/health.js",
   "api/v1/admin/refresh.js",
   "api/v1/briefing.js",
+  "api/v1/subscription/status.js",
+  "api/v1/reports/[action].js",
   "api/v1/flights/live.js",
-  "api/v1/vessels/live.js",
   "api/v1/satellites/live.js",
-  "api/v1/layers/status.js",
   "api/v1/events/index.js",
   "api/v1/events/[id].js",
   "api/v1/events/stats.js",
@@ -29,6 +29,7 @@ const requiredFiles = [
   "schema.sql",
   "supabase_migration_grigori_ai_fields.sql",
   "supabase_migration_grigori_live_layers.sql",
+  "supabase_migration_grigori_premium_phase1.sql",
 ];
 
 let hasError = false;
