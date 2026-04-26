@@ -1,3 +1,5 @@
+import { buildWatchIndicators, buildWhyThisMatters, inferLocationDetails } from "./event-insights.js";
+
 const SECTOR_RULES = [
   { pattern: /\b(oil|tanker|hormuz|gulf|red sea|shipping|port|freight|strait|suez|maritime)\b/i, sectors: ["Energy", "Shipping"] },
   { pattern: /\b(taiwan|semiconductor|chip|chips|tsmc|semiconductor|fab)\b/i, sectors: ["Tech"] },
@@ -131,6 +133,9 @@ function buildScenarios(preEvent, locationLabel, tone, sectors, oilImpact, marke
   const escalationProbability = tone === "Escalating" ? 62 : tone === "De-escalating" ? 38 : 52;
   const stabilizationProbability = 100 - escalationProbability;
   const stabilizedMarkets = tone === "De-escalating" ? "Risk-on" : "Neutral";
+  const tradeRoutesImpact = sectors.includes("Shipping") || sectors.includes("Trade")
+    ? (tone === "Escalating" ? "Disrupted" : "Stressed")
+    : "Neutral";
 
   return [
     {
@@ -140,6 +145,7 @@ function buildScenarios(preEvent, locationLabel, tone, sectors, oilImpact, marke
       impact: {
         oil: oilImpact === "Up" ? "Up" : "Neutral",
         markets: marketsImpact === "Risk-off" ? "Risk-off" : "Neutral",
+        tradeRoutes: tradeRoutesImpact,
         sectors,
       },
     },
@@ -150,6 +156,7 @@ function buildScenarios(preEvent, locationLabel, tone, sectors, oilImpact, marke
       impact: {
         oil: "Neutral",
         markets: stabilizedMarkets,
+        tradeRoutes: sectors.includes("Shipping") ? "Stressed" : "Neutral",
         sectors: sectors.filter((sector, index) => index < 3),
       },
     },
@@ -157,7 +164,12 @@ function buildScenarios(preEvent, locationLabel, tone, sectors, oilImpact, marke
 }
 
 export function buildRuleBasedBriefing(preEvent, articles = []) {
-  const locationLabel = preEvent.region?.label ?? "the affected region";
+  const inferredLocation = inferLocationDetails({
+    ...preEvent,
+    location: preEvent.region,
+    summary: articles.map((article) => article.summary ?? article.content ?? "").join(" "),
+  }, articles);
+  const locationLabel = inferredLocation.label ?? "the affected region";
   const sectors = inferSectors(preEvent, articles);
   const tone = inferTone(preEvent, articles);
   const confidence = inferConfidence(preEvent, articles);
@@ -173,6 +185,18 @@ export function buildRuleBasedBriefing(preEvent, articles = []) {
       : [`Rule-based briefing generated from source signals around ${locationLabel}.`],
     tone,
     confidence,
+    location: inferredLocation,
+    whyThisMatters: buildWhyThisMatters({
+      ...preEvent,
+      location: inferredLocation,
+      summary: buildSummary(preEvent, locationLabel, tone, confidence, sectors, marketsImpact, articles),
+      scenarios: buildScenarios(preEvent, locationLabel, tone, sectors, oilImpact, marketsImpact),
+    }),
+    watchIndicators72h: buildWatchIndicators({
+      ...preEvent,
+      location: inferredLocation,
+      summary: buildSummary(preEvent, locationLabel, tone, confidence, sectors, marketsImpact, articles),
+    }).slice(0, 5),
     scenarios: buildScenarios(preEvent, locationLabel, tone, sectors, oilImpact, marketsImpact),
     generationMethod: "rule-based",
   };

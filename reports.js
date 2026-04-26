@@ -221,19 +221,36 @@ export async function captureWaitlistInterest(payload, req) {
     return { status: 400, body: { success: false, error: "Valid email required" } };
   }
 
-  await saveWaitlistEntry({
+  const serializedNote = [
+    payload.note ? `Notes: ${String(payload.note).trim()}` : "",
+    payload.focusArea ? `Focus area: ${String(payload.focusArea).trim()}` : "",
+    payload.intendedUseCase ? `Use case: ${String(payload.intendedUseCase).trim()}` : "",
+    payload.linkedinProfile ? `LinkedIn: ${String(payload.linkedinProfile).trim()}` : "",
+  ].filter(Boolean).join("\n");
+
+  const saved = await saveWaitlistEntry({
     email,
     interestTier: payload.interestTier ?? "confidential",
     requestedRegion: payload.requestedRegion ?? "Global",
-    note: payload.note ?? "",
+    note: serializedNote,
     source_ip: getClientIp(req),
   });
+
+  if (saved.mode === "supabase" && saved.persisted === false) {
+    return {
+      status: 503,
+      body: {
+        success: false,
+        error: "We couldn't save your request just now. Please try again shortly.",
+      },
+    };
+  }
 
   return {
     status: 202,
     body: {
       ok: true,
-      message: "You’re on the early access list for Personalized Reports.",
+      message: "Request received. You’re on the early access list for Grigori Reports.",
       brand: BRAND.fullName,
     },
   };

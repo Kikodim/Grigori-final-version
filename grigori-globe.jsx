@@ -1,8 +1,13 @@
 import { useEffect, useRef, useState, useCallback, useMemo } from "react";
 import * as THREE from "three";
 import {
+  applyDecisionLens,
   aggregateMarketImpact,
+  buildConfidenceDrivers,
+  buildEventBrief,
   buildBriefing,
+  buildStrategicBrief,
+  DECISION_LENSES,
   deriveImportance,
   deriveRiskLevel,
   eventMatchesWatchlist,
@@ -11,6 +16,7 @@ import {
   getEventSourceSignals,
   getMarketImpactTags,
   getOneLineSummary,
+  inferLocationDetails,
 } from "./event-insights.js";
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -640,14 +646,14 @@ function makeHotspot(ev) {
   // Priority-aware sizing: CRITICAL events are larger & brighter
   const scored     = SCORED_EVENTS.find(s => s.id === ev.id) || ev;
   const pLevel     = scored.priorityLevel || "LOW";
-  const sizeScale  = { CRITICAL: 1.5, HIGH: 1.25, WATCH: 1.0, LOW: 0.75 }[pLevel] ?? 1.0;
+  const sizeScale  = ({ CRITICAL: 1.5, HIGH: 1.25, WATCH: 1.0, LOW: 0.75 }[pLevel] ?? 1.0) * (ev.lensMatched ? 1.12 : 0.94);
   const surfacePos = geoToVec3(ev.lat, ev.lng, R + 0.015);
 
   // Normal vector pointing outward (used for lookAt)
   const outward = geoToVec3(ev.lat, ev.lng, 1.0).normalize();
 
   const group = new THREE.Group();
-  group.userData = { eventId: ev.id };
+  group.userData = { eventId: ev.id, surfaceNormal: outward.clone(), markerType: "event" };
 
   // Scale: mobile enlarges tap targets; priority score enlarges visual size
   const mobileScale = (IS_MOBILE ? 1.6 : 1.0) * sizeScale;
@@ -662,7 +668,9 @@ function makeHotspot(ev) {
       blending: THREE.AdditiveBlending,
       ...extra,
     });
-    return new THREE.Mesh(geo, mat);
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.userData.baseOpacity = opacity;
+    return mesh;
   };
 
   // White core dot
@@ -671,6 +679,9 @@ function makeHotspot(ev) {
 
   // Coloured inner ring
   const ring1 = addDisc(0.009, 0.017, color, 0.85);
+  if (ev.lensMatched) {
+    ring1.userData.baseOpacity = 0.96;
+  }
 
   // Animated pulse rings
   const pulse1 = addDisc(0.020, 0.026, color, 0.5);
@@ -774,7 +785,7 @@ function makeObjectMarker(item, type) {
   const outward = geoToVec3(item.lat, item.lng, 1.0).normalize();
   const color = new THREE.Color(colorMap[type] ?? "#ffffff");
   const group = new THREE.Group();
-  group.userData = { objectType: type, objectData: item };
+  group.userData = { objectType: type, objectData: item, surfaceNormal: outward.clone(), markerType: type };
 
   const shape = type === "flight"
     ? new THREE.ConeGeometry(0.01, 0.035, 4)
@@ -787,7 +798,7 @@ function makeObjectMarker(item, type) {
     opacity: 0.95,
     depthWrite: false,
   }));
-  mesh.userData = { clickable: true, objectType: type, objectData: item };
+  mesh.userData = { clickable: true, objectType: type, objectData: item, baseOpacity: 0.95 };
   mesh.rotation.x = Math.PI / 2;
 
   if (type !== "satellite" && Number.isFinite(item.heading)) {
@@ -805,7 +816,7 @@ function makeObjectMarker(item, type) {
       blending: THREE.AdditiveBlending,
     })
   );
-  halo.userData = { pulse: true, speed: 1.4, base: 0.22, phase: Math.random() * Math.PI };
+  halo.userData = { pulse: true, speed: 1.4, base: 0.22, phase: Math.random() * Math.PI, baseOpacity: 0.24 };
 
   group.add(mesh, halo);
   group.position.copy(pos);
@@ -963,19 +974,18 @@ function normalizeBackendScenario(scenario) {
 }
 
 function normalizeBackendEvent(event) {
-  const location = event.location ?? { label: "Unknown Region", lat: 0, lng: 0 };
+  const location = inferLocationDetails({
+    ...event,
+    location: event.location ?? { label: "Region under review", lat: null, lng: null },
+  });
   const scenarios = (event.scenarios ?? []).map(normalizeBackendScenario);
 
   return {
     id: event.id,
     title: event.title ?? "Untitled Event",
-    lat: location.lat ?? 0,
-    lng: location.lng ?? 0,
-    location: {
-      label: location.label ?? "Unknown Region",
-      lat: location.lat ?? 0,
-      lng: location.lng ?? 0,
-    },
+    lat: Number.isFinite(location.lat) ? location.lat : null,
+    lng: Number.isFinite(location.lng) ? location.lng : null,
+    location,
     intensity: mapToneToGlobeIntensity(event.tone, event.confidence),
     summary: event.summary ?? "",
     tone: event.tone ?? "Stable",
@@ -993,7 +1003,7 @@ function normalizeBackendEvent(event) {
         regionalEffects: [],
       },
     }],
-    affectedRegions: [{ lat: location.lat ?? 0, lng: location.lng ?? 0 }],
+    affectedRegions: Number.isFinite(location.lat) && Number.isFinite(location.lng) ? [{ lat: location.lat, lng: location.lng }] : [],
     tradeRoutes: [],
     timestamp: event.timestamp ?? new Date().toISOString(),
     importanceScore: Number(event.importanceScore ?? event.importance_score ?? 0),
@@ -1007,15 +1017,21 @@ function normalizeBackendEvent(event) {
 function decorateEventForUi(event) {
   const sourceSignals = getEventSourceSignals(event);
   const importanceScore = Number(event.importanceScore ?? event.priorityScore ?? deriveImportance(event));
+  const location = inferLocationDetails(event);
 
   return {
     ...event,
+    lat: Number.isFinite(location.lat) ? location.lat : (Number.isFinite(event.lat) ? event.lat : null),
+    lng: Number.isFinite(location.lng) ? location.lng : (Number.isFinite(event.lng) ? event.lng : null),
+    location,
+    hasRenderableLocation: Number.isFinite(location.lat) && Number.isFinite(location.lng),
     importanceScore,
     sourceSignals,
     riskLevel: deriveRiskLevel({ ...event, importanceScore }),
     marketImpactTags: getMarketImpactTags(event),
     confidenceExplanation: explainConfidence(event),
     briefSummary: getOneLineSummary(event),
+    confidenceDrivers: buildConfidenceDrivers({ ...event, location }),
   };
 }
 
@@ -1040,6 +1056,10 @@ async function fetchLiveEvents() {
     if (backendEvents.length > 0) return backendEvents;
   } catch (err) {
     console.warn("[Grigori] Backend events fetch failed:", err.message);
+  }
+
+  if (DEMO_MODE) {
+    return [...SCORED_EVENTS].map(decorateEventForUi);
   }
 
   const [gdelt] = await Promise.allSettled([fetchGDELTEvents()]);
@@ -1352,13 +1372,83 @@ function WatchlistPanel({ watchlist, selectedEvent, onToggleRegion, onToggleTopi
   );
 }
 
-function BriefingPanel({ briefing, onSelect, onClose }) {
+function BriefingPanel({ briefing, strategicBrief, selectedLens, onLensChange, onSelect, onClose, systemStatus, feedState }) {
+  const lens = strategicBrief?.lens ?? DECISION_LENSES[0];
+  const newsFreshness = getDataFreshness(systemStatus?.automation?.lastNewsRefreshAt);
+  const aiFreshness = getDataFreshness(systemStatus?.automation?.lastAiRefreshAt);
   return (
-    <FloatingPanel title="Today's Briefing" subtitle="Top 5 by importance and freshness" top={FLOATING_TOP} left={588} width={330} onClose={onClose}>
+    <FloatingPanel title="Today's Strategic Brief" subtitle={lens.description} top={FLOATING_TOP} left={588} width={344} onClose={onClose}>
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 12 }}>
+        {DECISION_LENSES.map((item) => (
+          <button
+            key={item.id}
+            onClick={() => onLensChange?.(item.id)}
+            style={{
+              minHeight: 30,
+              padding: "6px 10px",
+              borderRadius: 999,
+              border: `1px solid ${selectedLens === item.id ? "rgba(87,216,255,0.42)" : "rgba(94,164,195,0.12)"}`,
+              background: selectedLens === item.id ? "rgba(56,189,248,0.16)" : "rgba(8,20,36,0.7)",
+              color: selectedLens === item.id ? "#8ae8ff" : "rgba(190,218,236,0.74)",
+              fontSize: 10,
+              fontFamily: mono,
+              letterSpacing: "0.1em",
+              textTransform: "uppercase",
+              cursor: "pointer",
+            }}
+          >
+            {item.label}
+          </button>
+        ))}
+      </div>
+      <div style={{ display: "grid", gap: 10, marginBottom: 12 }}>
+        <div style={{ background: "rgba(8,20,36,0.76)", border: "1px solid rgba(94, 164, 195, 0.12)", borderRadius: 16, padding: "12px 13px" }}>
+          <div style={{ color: "rgba(0,200,255,0.38)", fontSize: 9, fontFamily: mono, letterSpacing: "0.14em", textTransform: "uppercase", marginBottom: 8 }}>
+            Daily Snapshot
+          </div>
+          <div style={{ display: "grid", gap: 8 }}>
+            <div>
+              <div style={{ color: "#d6ebff", fontSize: 12, fontFamily: display, fontWeight: 700, marginBottom: 4 }}>Top escalating regions</div>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                {(strategicBrief?.topEscalatingRegions?.length ? strategicBrief.topEscalatingRegions : ["Awaiting next intelligence refresh."]).map((region) => (
+                  <TrafficPill key={region} level="amber">{region}</TrafficPill>
+                ))}
+              </div>
+            </div>
+            <div>
+              <div style={{ color: "#d6ebff", fontSize: 12, fontFamily: display, fontWeight: 700, marginBottom: 4 }}>Chokepoint to watch</div>
+              <div style={{ color: "rgba(150,205,245,0.72)", fontSize: 11, lineHeight: 1.6 }}>{strategicBrief?.chokepointToWatch ?? "Awaiting next intelligence refresh."}</div>
+            </div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+              <TrafficPill level={newsFreshness.tone}>{newsFreshness.label}</TrafficPill>
+              <TrafficPill level={aiFreshness.tone}>AI {aiFreshness.label}</TrafficPill>
+              <TrafficPill level="neutral">AI remaining {strategicBrief?.aiRemainingToday ?? 0}</TrafficPill>
+            </div>
+            {feedState?.message ? (
+              <div style={{ color: "#cbd5e1", fontSize: 11, lineHeight: 1.6 }}>{feedState.message}</div>
+            ) : null}
+          </div>
+        </div>
+      </div>
       {briefing.items.length === 0 ? (
-        <div style={{ color: "rgba(130,185,230,0.62)", fontSize: 11, fontFamily: mono }}>No briefing items available yet.</div>
+        <div style={{ color: "rgba(130,185,230,0.62)", fontSize: 11, fontFamily: mono }}>Awaiting next intelligence refresh.</div>
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          {strategicBrief?.topMarketSensitiveEvents?.length ? (
+            <div style={{ background: "rgba(8,20,36,0.76)", border: "1px solid rgba(94, 164, 195, 0.12)", borderRadius: 16, padding: "12px 13px" }}>
+              <div style={{ color: "rgba(0,200,255,0.38)", fontSize: 9, fontFamily: mono, letterSpacing: "0.14em", textTransform: "uppercase", marginBottom: 8 }}>
+                Market-sensitive events
+              </div>
+              <div style={{ display: "grid", gap: 8 }}>
+                {strategicBrief.topMarketSensitiveEvents.map((item) => (
+                  <button key={item.id} onClick={() => onSelect(item.id)} style={{ background: "rgba(5,14,28,0.88)", border: "1px solid rgba(94, 164, 195, 0.12)", borderRadius: 12, padding: "10px 11px", textAlign: "left", cursor: "pointer" }}>
+                    <div style={{ color: "#d6ebff", fontSize: 12, fontFamily: display, fontWeight: 700, marginBottom: 4 }}>{item.title}</div>
+                    <div style={{ color: "rgba(150,205,245,0.68)", fontSize: 11, lineHeight: 1.55 }}>{item.summary}</div>
+                  </button>
+                ))}
+              </div>
+            </div>
+          ) : null}
           {briefing.items.map((item, index) => (
             <button key={item.id} onClick={() => onSelect(item.id)} style={{
               background: "rgba(8,20,36,0.76)",
@@ -1402,13 +1492,15 @@ function BriefingPanel({ briefing, onSelect, onClose }) {
   );
 }
 
-function MarketImpactDashboard({ aggregate, onClose }) {
-  const items = [aggregate.oil, aggregate.shipping, aggregate.defense, aggregate.tech, aggregate.equities];
+function MarketImpactDashboard({ aggregate, onClose, onSelectCategory, emphasis = [] }) {
+  const baseItems = [aggregate.oil, aggregate.shipping, aggregate.defense, aggregate.tech, aggregate.equities];
+  const rank = new Map(emphasis.map((key, index) => [key, index]));
+  const items = [...baseItems].sort((a, b) => (rank.get(a.key) ?? 99) - (rank.get(b.key) ?? 99));
   return (
     <FloatingPanel title="Market Impact" subtitle="Scenario-weighted dashboard" top={FLOATING_TOP} right={16} width={320} onClose={onClose}>
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
         {items.map((item) => (
-          <div key={item.label} style={{ background: "rgba(8,20,36,0.76)", border: "1px solid rgba(94, 164, 195, 0.12)", borderRadius: 16, padding: "13px 14px" }}>
+          <button key={item.label} onClick={() => onSelectCategory?.(item.key)} style={{ background: "rgba(8,20,36,0.76)", border: "1px solid rgba(94, 164, 195, 0.12)", borderRadius: 16, padding: "13px 14px", textAlign: "left", cursor: "pointer" }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 5 }}>
               <span style={{ color: "#d6ebff", fontSize: 14, fontFamily: display, fontWeight: 700, letterSpacing: "0.03em" }}>{item.label}</span>
               <TrafficPill level={item.level}>{item.trend}</TrafficPill>
@@ -1416,8 +1508,102 @@ function MarketImpactDashboard({ aggregate, onClose }) {
             <div style={{ color: "rgba(150,205,245,0.62)", fontSize: 10, fontFamily: mono }}>
               score {item.score.toFixed(2)}
             </div>
-          </div>
+          </button>
         ))}
+      </div>
+    </FloatingPanel>
+  );
+}
+
+function MiniTrendChart({ series }) {
+  const maxValue = Math.max(1, ...series.map((point) => Math.abs(point.value)));
+  return (
+    <div style={{ display: "grid", gridTemplateColumns: `repeat(${series.length}, minmax(0, 1fr))`, gap: 6, alignItems: "end", height: 84 }}>
+      {series.map((point, index) => {
+        const height = Math.max(8, Math.round((Math.abs(point.value) / maxValue) * 72));
+        const color = point.value >= 0 ? "#68dff6" : "#ff8f78";
+        return (
+          <div key={`${point.label}-${index}`} style={{ display: "grid", gap: 6, justifyItems: "center" }}>
+            <div style={{ width: "100%", maxWidth: 24, height, borderRadius: 999, background: color, boxShadow: `0 0 16px ${color}55` }} />
+            <div style={{ color: "rgba(148,175,198,0.62)", fontSize: 9, fontFamily: mono }}>{point.label}</div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function MarketImpactDetailPanel({ item, onClose, isMobile = false }) {
+  if (!item) return null;
+  const chartWindows = item.series ?? [];
+  const [windowLabel, setWindowLabel] = useState(chartWindows[0]?.window ?? "24h");
+  const activeSeries = chartWindows.find((entry) => entry.window === windowLabel)?.series ?? [];
+
+  return (
+    <FloatingPanel
+      title={`${item.label} Signal`}
+      subtitle="Directional risk signal detail"
+      top={isMobile ? 98 : FLOATING_TOP}
+      right={16}
+      left={isMobile ? 16 : undefined}
+      width={isMobile ? undefined : 360}
+      onClose={onClose}
+    >
+      <div style={{ display: "grid", gap: 12 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
+          <TrafficPill level={item.level}>{item.trend}</TrafficPill>
+          <span style={{ color: "#d6ebff", fontSize: 12, fontFamily: mono }}>score {item.score.toFixed(2)}</span>
+        </div>
+        <div style={{ color: "rgba(180,220,255,0.78)", fontSize: 12, lineHeight: 1.7 }}>
+          Why this score? {item.drivers.length > 0 ? item.drivers.join(", ") : "Signals remain light and directional."}
+        </div>
+        <div>
+          <div style={{ color: "rgba(0,200,255,0.3)", fontSize: 9, fontFamily: mono, letterSpacing: "0.15em", textTransform: "uppercase", marginBottom: 7 }}>
+            Main contributing events
+          </div>
+          <div style={{ display: "grid", gap: 8 }}>
+            {item.contributingEvents.length > 0 ? item.contributingEvents.map((event) => (
+              <div key={event.id} style={{ background: "rgba(8,20,36,0.68)", border: "1px solid rgba(94,164,195,0.12)", borderRadius: 12, padding: "10px 11px" }}>
+                <div style={{ color: "#d6ebff", fontSize: 12, fontFamily: display, fontWeight: 700, marginBottom: 4 }}>{event.title}</div>
+                <div style={{ color: "rgba(150,205,245,0.68)", fontSize: 11, lineHeight: 1.55 }}>{getOneLineSummary(event)}</div>
+              </div>
+            )) : <div style={{ color: "rgba(130,185,230,0.62)", fontSize: 11, fontFamily: mono }}>No strong contributing events in the current window.</div>}
+          </div>
+        </div>
+        <div>
+          <div style={{ color: "rgba(0,200,255,0.3)", fontSize: 9, fontFamily: mono, letterSpacing: "0.15em", textTransform: "uppercase", marginBottom: 7 }}>
+            Keywords & confidence
+          </div>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8 }}>
+            {item.drivers.map((driver) => <TrafficPill key={driver} level="neutral">{driver}</TrafficPill>)}
+          </div>
+          <div style={{ color: "rgba(180,220,255,0.76)", fontSize: 11, lineHeight: 1.6 }}>
+            Confidence: {item.confidence} · Related sectors: {item.relatedSectors.join(", ") || "General market sensitivity"}
+          </div>
+        </div>
+        <div>
+          <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
+            {chartWindows.map((entry) => (
+              <button key={entry.window} onClick={() => setWindowLabel(entry.window)} style={{
+                minHeight: 30, padding: "6px 10px", borderRadius: 10,
+                border: `1px solid ${windowLabel === entry.window ? "rgba(87,216,255,0.36)" : "rgba(83,148,182,0.16)"}`,
+                background: windowLabel === entry.window ? "rgba(56,189,248,0.14)" : "rgba(8,20,36,0.66)",
+                color: windowLabel === entry.window ? "#88ddff" : "rgba(150,200,240,0.62)", fontSize: 10, fontFamily: mono,
+              }}>
+                {entry.window}
+              </button>
+            ))}
+          </div>
+          {activeSeries.length > 0 ? <MiniTrendChart series={activeSeries} /> : null}
+          {item.priceFeedStatus ? (
+            <div style={{ marginTop: 10, color: "rgba(130,185,230,0.62)", fontSize: 10, lineHeight: 1.6, fontFamily: mono }}>
+              {item.priceFeedStatus}
+            </div>
+          ) : null}
+        </div>
+        <div style={{ color: "rgba(130,185,230,0.62)", fontSize: 10, lineHeight: 1.6, fontFamily: mono }}>
+          Last updated: {formatLayerTime(item.lastUpdated)} · {item.methodology}
+        </div>
       </div>
     </FloatingPanel>
   );
@@ -1682,6 +1868,7 @@ function MarketTicker({ marketData }) {
 const mono = "'Share Tech Mono', 'IBM Plex Mono', monospace";
 const display = "'Rajdhani', 'Space Grotesk', sans-serif";
 const bodyFont = "'Inter', 'Space Grotesk', sans-serif";
+const DEMO_MODE = String(import.meta.env.VITE_DEMO_MODE ?? "false").toLowerCase() === "true";
 const TOP_BAR_HEIGHT = 58;
 const FLOATING_TOP = 68;
 const APP_VIEWS = [
@@ -1690,15 +1877,51 @@ const APP_VIEWS = [
   { key: "reports", label: "Personalized Reports", badge: "WIP" },
 ];
 
-const useIsMobile = () => {
-  const [mob, setMob] = useState(() => window.innerWidth < 768);
+const useViewport = () => {
+  const [width, setWidth] = useState(() => (typeof window === "undefined" ? 1280 : window.innerWidth));
   useEffect(() => {
-    const fn = () => setMob(window.innerWidth < 768);
+    const fn = () => setWidth(window.innerWidth);
     window.addEventListener("resize", fn);
     return () => window.removeEventListener("resize", fn);
   }, []);
-  return mob;
+  return {
+    width,
+    isMobile: width <= 768,
+    isTablet: width > 768 && width <= 1024,
+  };
 };
+
+function getHeaderHeight(isMobile, isTablet = false) {
+  if (isMobile) return 86;
+  if (isTablet) return 74;
+  return TOP_BAR_HEIGHT;
+}
+
+function getMarkerVisibilityAlpha(surfaceNormal, cameraDirection) {
+  const dot = surfaceNormal.dot(cameraDirection);
+  if (dot <= -0.08) return 0;
+  if (dot <= 0.14) {
+    return Math.max(0, Math.min(1, (dot + 0.08) / 0.22));
+  }
+  return 1;
+}
+
+function formatStatusMoment(value) {
+  if (!value) return "Awaiting refresh";
+  try {
+    return new Date(value).toISOString().slice(11, 16) + " UTC";
+  } catch {
+    return "Awaiting refresh";
+  }
+}
+
+function getDataFreshness(value) {
+  if (!value) return { label: "Awaiting refresh", tone: "neutral", hours: null };
+  const hours = Math.max(0, (Date.now() - new Date(value).getTime()) / 3600_000);
+  if (hours < 2) return { label: `Fresh · ${hours < 1 ? "<1h" : `${Math.round(hours)}h`} ago`, tone: "green", hours };
+  if (hours <= 12) return { label: `Aging · ${Math.round(hours)}h ago`, tone: "amber", hours };
+  return { label: `Stale · ${Math.round(hours)}h ago`, tone: "red", hours };
+}
 
 // ── Reusable atoms ────────────────────────────────────────────────────────────
 
@@ -1952,10 +2175,17 @@ function ScoreBreakdownPanel({ event }) {
 // WAR ROOM PANEL — "What Matters Now"
 // ═══════════════════════════════════════════════════════════════════════════════
 
-function WarRoomPanel({ topEvents, onSelect, selectedEventId, onClose }) {
+function WarRoomPanel({ topEvents, onSelect, selectedEventId, onClose, marketImpact, systemStatus, adminUnlocked, onAdminUnlock, onAdminRefresh, onOpenIntelBoard, refreshState, mobile = false, demoMode = false }) {
+  const marketRows = marketImpact ? [marketImpact.oil, marketImpact.shipping, marketImpact.defense, marketImpact.equities] : [];
   return (
     <div style={{
-      position: "absolute", top: FLOATING_TOP, right: 16, width: 320, zIndex: 45,
+      position: mobile ? "fixed" : "absolute",
+      top: mobile ? 96 : FLOATING_TOP,
+      right: 16,
+      left: mobile ? 16 : "auto",
+      bottom: mobile ? 16 : "auto",
+      width: mobile ? "auto" : 320,
+      zIndex: 65,
       background: "linear-gradient(180deg, rgba(5,12,24,0.96) 0%, rgba(7,15,29,0.98) 100%)",
       border: "1px solid rgba(255,34,51,0.3)",
       borderRadius: 18,
@@ -1981,7 +2211,63 @@ function WarRoomPanel({ topEvents, onSelect, selectedEventId, onClose }) {
       </div>
 
       {/* Event list */}
-      <div>
+      <div style={{ maxHeight: mobile ? "calc(100vh - 170px)" : "72vh", overflowY: "auto" }}>
+        <div style={{ padding: "12px 14px", borderBottom: "1px solid rgba(0,180,255,0.07)", display: "grid", gap: 10 }}>
+          <div style={{ display: "grid", gap: 4 }}>
+            <div style={{ color: "rgba(103,220,255,0.48)", fontSize: 10, fontFamily: mono, letterSpacing: "0.14em", textTransform: "uppercase" }}>
+              Command Snapshot
+            </div>
+            {demoMode ? <TrafficPill level="neutral">Public Preview</TrafficPill> : null}
+            <div style={{ color: "#d6ebff", fontFamily: display, fontSize: 17, fontWeight: 700 }}>
+              AI remaining today: {systemStatus?.aiRemainingToday ?? 0}
+            </div>
+            <div style={{ color: "rgba(150,205,245,0.7)", fontSize: 11, lineHeight: 1.6, fontFamily: bodyFont }}>
+              News refresh: {formatStatusMoment(systemStatus?.automation?.lastNewsRefreshAt)}
+            </div>
+            <div style={{ color: "rgba(150,205,245,0.7)", fontSize: 11, lineHeight: 1.6, fontFamily: bodyFont }}>
+              AI refresh: {formatStatusMoment(systemStatus?.automation?.lastAiRefreshAt)}
+            </div>
+          </div>
+          <div style={{ display: "grid", gap: 8 }}>
+            {marketRows.map((item) => (
+              <div key={item.label} style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
+                <span style={{ color: "rgba(214,235,255,0.88)", fontSize: 12, fontFamily: bodyFont }}>{item.label}</span>
+                <TrafficPill level={item.level}>{item.trend}</TrafficPill>
+              </div>
+            ))}
+          </div>
+          <div style={{ display: "grid", gap: 8 }}>
+            <button onClick={onOpenIntelBoard} style={{
+              minHeight: 38, borderRadius: 12, border: "1px solid rgba(87,216,255,0.18)", background: "rgba(10,31,52,0.76)",
+              color: "#d6ebff", fontFamily: mono, fontSize: 10, letterSpacing: "0.12em", textTransform: "uppercase", cursor: "pointer",
+            }}>
+              Open Intel Board
+            </button>
+            {!demoMode && adminUnlocked ? (
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                <button onClick={() => onAdminRefresh("news")} disabled={refreshState?.status === "running"} style={{
+                  minHeight: 38, borderRadius: 12, border: "1px solid rgba(87,216,255,0.18)", background: "rgba(10,31,52,0.76)",
+                  color: "#d6ebff", fontFamily: mono, fontSize: 10, letterSpacing: "0.12em", textTransform: "uppercase", cursor: "pointer",
+                }}>
+                  Refresh Newsfeed
+                </button>
+                <button onClick={() => onAdminRefresh("ai")} disabled={refreshState?.status === "running"} style={{
+                  minHeight: 38, borderRadius: 12, border: "1px solid rgba(255,120,88,0.2)", background: "rgba(58,20,22,0.82)",
+                  color: "#ffd4cc", fontFamily: mono, fontSize: 10, letterSpacing: "0.12em", textTransform: "uppercase", cursor: "pointer",
+                }}>
+                  Master Refresh with AI
+                </button>
+              </div>
+            ) : !demoMode ? (
+              <button onClick={onAdminUnlock} style={{
+                minHeight: 38, borderRadius: 12, border: "1px solid rgba(87,216,255,0.18)", background: "rgba(10,31,52,0.76)",
+                color: "#d6ebff", fontFamily: mono, fontSize: 10, letterSpacing: "0.12em", textTransform: "uppercase", cursor: "pointer",
+              }}>
+                Admin Unlock
+              </button>
+            ) : null}
+          </div>
+        </div>
         {topEvents.map((ev, rank) => {
           const pcfg = PRIORITY_CONFIG[ev.priorityLevel];
           const sel  = selectedEventId === ev.id;
@@ -2049,9 +2335,10 @@ function WarRoomPanel({ topEvents, onSelect, selectedEventId, onClose }) {
 // EVENT DETAIL CONTENT (shared between desktop panel and mobile sheet)
 // ═══════════════════════════════════════════════════════════════════════════════
 
-function EventDetailContent({ event, activeScenario, onScenarioChange }) {
+function EventDetailContent({ event, activeScenario, onScenarioChange, allEvents = [] }) {
   const cfg = INTENSITY[event.intensity];
-  const sourceLine = event.sourceSignals?.uniqueSources?.slice(0, 3).join(", ") || "No named sources";
+  const brief = buildEventBrief(event, allEvents);
+  const sourceLine = brief.sourceTrace.domains.slice(0, 3).join(", ") || "No named sources";
   return (
     <>
       {/* Header badges */}
@@ -2074,7 +2361,7 @@ function EventDetailContent({ event, activeScenario, onScenarioChange }) {
             TRUST: {event.sourceSignals?.trustLabel ?? "Low"}
           </Badge>
           <span style={{ color: "rgba(0,180,255,0.38)", fontSize: 9, fontFamily: mono }}>
-            {event.lat.toFixed(2)}°, {event.lng.toFixed(2)}°
+            {event.location?.lat != null && event.location?.lng != null ? `${event.location.lat.toFixed(2)}°, ${event.location.lng.toFixed(2)}°` : brief.whereItHappened}
           </span>
         </div>
       </div>
@@ -2085,9 +2372,9 @@ function EventDetailContent({ event, activeScenario, onScenarioChange }) {
         {/* Summary */}
         <div style={{ padding: "13px 18px", borderBottom: "1px solid rgba(0,180,255,0.07)" }}>
           <div style={{ color: "rgba(0,200,255,0.3)", fontSize: 9, fontFamily: mono,
-            letterSpacing: "0.15em", textTransform: "uppercase", marginBottom: 7 }}>INTEL SUMMARY</div>
+            letterSpacing: "0.15em", textTransform: "uppercase", marginBottom: 7 }}>Executive Summary</div>
           <p style={{ color: "rgba(180,220,255,0.72)", fontSize: 12, lineHeight: 1.72, margin: 0 }}>
-            {event.summary}
+            {brief.executiveSummary}
           </p>
           <div style={{ marginTop: 10, color: "rgba(130,185,230,0.7)", fontSize: 10, fontFamily: mono, lineHeight: 1.6 }}>
             {event.confidenceExplanation}
@@ -2095,7 +2382,7 @@ function EventDetailContent({ event, activeScenario, onScenarioChange }) {
           <div style={{ marginTop: 10, display: "flex", flexWrap: "wrap", gap: 6 }}>
             <TrafficPill level="neutral">Sources: {sourceLine}</TrafficPill>
             <TrafficPill level={event.sourceSignals?.trustLabel === "High" ? "green" : event.sourceSignals?.trustLabel === "Medium" ? "amber" : "neutral"}>
-              Signals: {event.sourceSignals?.sourceCount ?? 0} / {event.sourceSignals?.corroboratedCount ?? 0} corroborated
+              {brief.sourceTrace.corroborationLabel}
             </TrafficPill>
           </div>
           {event.marketImpactTags?.length > 0 ? (
@@ -2109,17 +2396,73 @@ function EventDetailContent({ event, activeScenario, onScenarioChange }) {
           ) : null}
         </div>
 
+        <div style={{ padding: "13px 18px", borderBottom: "1px solid rgba(0,180,255,0.07)", display: "grid", gap: 12 }}>
+          <div>
+            <div style={{ color: "rgba(0,200,255,0.3)", fontSize: 9, fontFamily: mono, letterSpacing: "0.15em", textTransform: "uppercase", marginBottom: 7 }}>
+              What happened
+            </div>
+            <div style={{ color: "rgba(180,220,255,0.74)", fontSize: 12, lineHeight: 1.7 }}>{brief.whatHappened}</div>
+          </div>
+          <div>
+            <div style={{ color: "rgba(0,200,255,0.3)", fontSize: 9, fontFamily: mono, letterSpacing: "0.15em", textTransform: "uppercase", marginBottom: 7 }}>
+              Where it happened
+            </div>
+            <div style={{ color: "rgba(180,220,255,0.74)", fontSize: 12, lineHeight: 1.7 }}>
+              {brief.whereItHappened} · {brief.locationConfidence} confidence
+            </div>
+            <div style={{ marginTop: 6, color: "rgba(130,185,230,0.68)", fontSize: 10, lineHeight: 1.6, fontFamily: mono }}>
+              {brief.locationReason}
+            </div>
+          </div>
+          <div>
+            <div style={{ color: "rgba(0,200,255,0.3)", fontSize: 9, fontFamily: mono, letterSpacing: "0.15em", textTransform: "uppercase", marginBottom: 7 }}>
+              Why this matters
+            </div>
+            <div style={{ color: "rgba(180,220,255,0.74)", fontSize: 12, lineHeight: 1.7 }}>{brief.whyThisMatters}</div>
+          </div>
+        </div>
+
         {/* Developments */}
         <div style={{ padding: "13px 18px", borderBottom: "1px solid rgba(0,180,255,0.07)" }}>
           <div style={{ color: "rgba(0,200,255,0.3)", fontSize: 9, fontFamily: mono,
             letterSpacing: "0.15em", textTransform: "uppercase", marginBottom: 8 }}>KEY DEVELOPMENTS</div>
           <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
-            {event.developments.map((d, i) => (
+            {brief.keyDevelopments.map((d, i) => (
               <div key={i} style={{ display: "flex", gap: 9, alignItems: "flex-start" }}>
                 <span style={{ color: "rgba(0,200,255,0.55)", fontSize: 10, marginTop: 2, flexShrink: 0 }}>▸</span>
                 <span style={{ color: "rgba(155,205,250,0.7)", fontSize: 11, lineHeight: 1.58 }}>{d}</span>
               </div>
             ))}
+          </div>
+        </div>
+
+        <div style={{ padding: "13px 18px", borderBottom: "1px solid rgba(0,180,255,0.07)", display: "grid", gap: 12 }}>
+          <div>
+            <div style={{ color: "rgba(0,200,255,0.3)", fontSize: 9, fontFamily: mono, letterSpacing: "0.15em", textTransform: "uppercase", marginBottom: 7 }}>
+              Confidence Drivers
+            </div>
+            <div style={{ display: "grid", gap: 7 }}>
+              {brief.confidenceDrivers.map((driver) => (
+                <div key={driver} style={{ display: "flex", gap: 9, alignItems: "flex-start" }}>
+                  <span style={{ color: "rgba(0,200,255,0.55)", fontSize: 10, marginTop: 2, flexShrink: 0 }}>•</span>
+                  <span style={{ color: "rgba(155,205,250,0.72)", fontSize: 11, lineHeight: 1.58 }}>{driver}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div>
+            <div style={{ color: "rgba(0,200,255,0.3)", fontSize: 9, fontFamily: mono, letterSpacing: "0.15em", textTransform: "uppercase", marginBottom: 7 }}>
+              Watch Indicators
+            </div>
+            <div style={{ display: "grid", gap: 7 }}>
+              {brief.watchIndicators.map((indicator) => (
+                <div key={indicator} style={{ display: "flex", gap: 9, alignItems: "flex-start" }}>
+                  <span style={{ color: "rgba(0,200,255,0.55)", fontSize: 10, marginTop: 2, flexShrink: 0 }}>•</span>
+                  <span style={{ color: "rgba(155,205,250,0.72)", fontSize: 11, lineHeight: 1.58 }}>{indicator}</span>
+                </div>
+              ))}
+            </div>
           </div>
         </div>
 
@@ -2133,15 +2476,96 @@ function EventDetailContent({ event, activeScenario, onScenarioChange }) {
         )}
 
         {/* Scenarios */}
-        <div style={{ padding: "13px 18px 20px" }}>
+        <div style={{ padding: "13px 18px", borderBottom: "1px solid rgba(0,180,255,0.07)" }}>
           <div style={{ color: "rgba(0,200,255,0.3)", fontSize: 9, fontFamily: mono,
             letterSpacing: "0.15em", textTransform: "uppercase", marginBottom: 4 }}>SCENARIO ENGINE</div>
           <div style={{ color: "rgba(0,180,255,0.28)", fontSize: 9, fontFamily: mono,
             marginBottom: 12 }}>Tap a scenario to update globe visualisation</div>
-          {event.scenarios.map((sc, i) => (
+          {brief.scenarios.map((sc, i) => (
             <ScenarioCard key={i} sc={sc} active={activeScenario === i}
               onClick={() => onScenarioChange(i)} />
           ))}
+        </div>
+
+        <div style={{ padding: "13px 18px", borderBottom: "1px solid rgba(0,180,255,0.07)" }}>
+          <div style={{ color: "rgba(0,200,255,0.3)", fontSize: 9, fontFamily: mono, letterSpacing: "0.15em", textTransform: "uppercase", marginBottom: 7 }}>
+            Market & Sector Impact
+          </div>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 10 }}>
+            {brief.marketImpactTags.map((tag) => (
+              <TrafficPill key={tag} level={/Oil Up|Shipping Risk|Equities Risk-off/i.test(tag) ? "red" : /Defense|Tech|Finance/i.test(tag) ? "amber" : "neutral"}>
+                {tag}
+              </TrafficPill>
+            ))}
+          </div>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+            {brief.sectorImpact.map((sector) => (
+              <TrafficPill key={sector} level="neutral">{sector}</TrafficPill>
+            ))}
+          </div>
+          <div style={{ marginTop: 10, color: "rgba(130,185,230,0.68)", fontSize: 10, lineHeight: 1.6, fontFamily: mono }}>
+            Directional intelligence signal only. Not financial advice.
+          </div>
+        </div>
+
+        <div style={{ padding: "13px 18px", borderBottom: "1px solid rgba(0,180,255,0.07)" }}>
+          <div style={{ color: "rgba(0,200,255,0.3)", fontSize: 9, fontFamily: mono, letterSpacing: "0.15em", textTransform: "uppercase", marginBottom: 7 }}>
+            Source Trace
+          </div>
+          <div style={{ marginBottom: 10, color: "rgba(180,220,255,0.74)", fontSize: 12, lineHeight: 1.7 }}>
+            {brief.sourceTrace.sourceCount} sources · {brief.sourceTrace.independentDomainCount} independent domains · {brief.sourceTrace.corroborationLabel}
+          </div>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 10 }}>
+            {brief.sourceTrace.domains.map((domain) => (
+              <TrafficPill key={domain} level={brief.sourceTrace.trustLabel === "High" ? "green" : brief.sourceTrace.trustLabel === "Medium" ? "amber" : "neutral"}>
+                {domain}
+              </TrafficPill>
+            ))}
+          </div>
+          <div style={{ display: "grid", gap: 8 }}>
+            {brief.sourceTrace.links.length > 0 ? brief.sourceTrace.links.map((link) => (
+              <a key={link} href={link} target="_blank" rel="noreferrer" style={{
+                color: "#89ddff",
+                fontSize: 11,
+                lineHeight: 1.55,
+                textDecoration: "none",
+                wordBreak: "break-all",
+                border: "1px solid rgba(87,216,255,0.12)",
+                borderRadius: 12,
+                padding: "9px 10px",
+                background: "rgba(8,20,36,0.64)",
+              }}>
+                {link}
+              </a>
+            )) : (
+              <div style={{ color: "rgba(130,185,230,0.62)", fontSize: 11, fontFamily: mono }}>
+                No article URLs were stored for this event.
+              </div>
+            )}
+          </div>
+        </div>
+
+        <div style={{ padding: "13px 18px 20px" }}>
+          <div style={{ color: "rgba(0,200,255,0.3)", fontSize: 9, fontFamily: mono, letterSpacing: "0.15em", textTransform: "uppercase", marginBottom: 7 }}>
+            Related Events
+          </div>
+          {brief.relatedEvents.length > 0 ? (
+            <div style={{ display: "grid", gap: 8 }}>
+              {brief.relatedEvents.map((related) => (
+                <div key={related.id} style={{ background: "rgba(8,20,36,0.64)", border: "1px solid rgba(94,164,195,0.12)", borderRadius: 12, padding: "10px 11px" }}>
+                  <div style={{ color: "#d6ebff", fontSize: 12, fontFamily: display, fontWeight: 700, marginBottom: 4 }}>{related.title}</div>
+                  <div style={{ color: "rgba(150,205,245,0.68)", fontSize: 11, lineHeight: 1.55 }}>{getOneLineSummary(related)}</div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div style={{ color: "rgba(130,185,230,0.62)", fontSize: 11, fontFamily: mono }}>
+              No closely related events are visible in the current window.
+            </div>
+          )}
+          <div style={{ marginTop: 12, color: "rgba(130,185,230,0.62)", fontSize: 10, lineHeight: 1.6, fontFamily: mono }}>
+            {brief.aiStatusLabel} · Scores are directional intelligence signals, not guaranteed forecasts.
+          </div>
         </div>
       </div>
     </>
@@ -2152,7 +2576,7 @@ function EventDetailContent({ event, activeScenario, onScenarioChange }) {
 // DESKTOP EVENT PANEL (right sidebar, 420px)
 // ═══════════════════════════════════════════════════════════════════════════════
 
-function DesktopEventPanel({ event, activeScenario, onScenarioChange, onClose }) {
+function DesktopEventPanel({ event, activeScenario, onScenarioChange, onClose, allEvents = [] }) {
   if (!event) return null;
   return (
     <div style={{
@@ -2172,7 +2596,7 @@ function DesktopEventPanel({ event, activeScenario, onScenarioChange, onClose })
           justifyContent: "center", fontSize: 14, transition: "all 0.15s ease",
         }}>✕</button>
       </div>
-      <EventDetailContent event={event} activeScenario={activeScenario} onScenarioChange={onScenarioChange} />
+      <EventDetailContent event={event} activeScenario={activeScenario} onScenarioChange={onScenarioChange} allEvents={allEvents} />
     </div>
   );
 }
@@ -2296,6 +2720,124 @@ function SelectedObjectCard({ selected, onClose, onZoom, onClearSelection, mobil
   );
 }
 
+function MobileSheetTabButton({ active, children, onClick }) {
+  return (
+    <button
+      onClick={onClick}
+      style={{
+        border: `1px solid ${active ? "rgba(87,216,255,0.42)" : "rgba(94,164,195,0.12)"}`,
+        background: active ? "rgba(24,58,84,0.78)" : "rgba(8,20,36,0.7)",
+        color: active ? "#8ae8ff" : "rgba(190,218,236,0.74)",
+        borderRadius: 999,
+        minHeight: 34,
+        padding: "7px 11px",
+        fontSize: 10,
+        fontFamily: mono,
+        letterSpacing: "0.12em",
+        textTransform: "uppercase",
+        whiteSpace: "nowrap",
+        cursor: "pointer",
+      }}
+    >
+      {children}
+    </button>
+  );
+}
+
+function MobileMarketImpactContent({ aggregate, onSelectCategory }) {
+  const items = [aggregate.oil, aggregate.shipping, aggregate.defense, aggregate.tech, aggregate.equities];
+  return (
+    <div style={{ display: "grid", gap: 10 }}>
+      {items.map((item) => (
+        <button key={item.label} onClick={() => onSelectCategory?.(item.key ?? item.label.toLowerCase())} style={{
+          background: "rgba(8,20,36,0.78)",
+          border: "1px solid rgba(94,164,195,0.14)",
+          borderRadius: 14,
+          padding: "12px 13px",
+          textAlign: "left",
+          cursor: "pointer",
+        }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: 6 }}>
+            <span style={{ color: "#d6ebff", fontFamily: display, fontSize: 14, fontWeight: 700 }}>{item.label}</span>
+            <TrafficPill level={item.level}>{item.trend}</TrafficPill>
+          </div>
+          <div style={{ color: "rgba(150,205,245,0.62)", fontSize: 10, fontFamily: mono }}>score {item.score.toFixed(2)}</div>
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function MobileBriefingContent({ briefing, onSelect }) {
+  if (!briefing.items.length) {
+    return <div style={{ color: "rgba(130,185,230,0.62)", fontSize: 11, fontFamily: mono }}>Awaiting next intelligence refresh.</div>;
+  }
+  return (
+    <div style={{ display: "grid", gap: 10 }}>
+      {briefing.items.map((item) => (
+        <button
+          key={item.id}
+          onClick={() => onSelect(item.id)}
+          style={{
+            width: "100%",
+            textAlign: "left",
+            background: "rgba(8,20,36,0.78)",
+            border: "1px solid rgba(94,164,195,0.14)",
+            borderRadius: 14,
+            padding: "12px 13px",
+            cursor: "pointer",
+          }}
+        >
+          <div style={{ display: "flex", justifyContent: "space-between", gap: 8, marginBottom: 6 }}>
+            <span style={{ color: "#d6ebff", fontFamily: display, fontWeight: 700, fontSize: 13 }}>{item.title}</span>
+            <TrafficPill level={item.riskLevel === "Critical" ? "red" : item.riskLevel === "High" ? "amber" : "neutral"}>
+              {item.riskLevel}
+            </TrafficPill>
+          </div>
+          <div style={{ color: "rgba(150,205,245,0.68)", fontSize: 11, lineHeight: 1.6, fontFamily: bodyFont }}>
+            {item.summary}
+          </div>
+          {item.aiStatusLabel ? (
+            <div style={{ marginTop: 8 }}>
+              <TrafficPill level={item.aiStatus === "enriched" ? "green" : item.aiStatus === "budget_exhausted" ? "amber" : "neutral"}>
+                {item.aiStatusLabel}
+              </TrafficPill>
+            </div>
+          ) : null}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function GlobalViewButton({ onReset, mobile = false }) {
+  return (
+    <button
+      onClick={onReset}
+      style={{
+        position: "absolute",
+        left: mobile ? 12 : 18,
+        bottom: mobile ? 108 : 22,
+        zIndex: 38,
+        borderRadius: 14,
+        minHeight: mobile ? 40 : 36,
+        padding: mobile ? "10px 14px" : "8px 12px",
+        background: "rgba(6,15,30,0.82)",
+        border: "1px solid rgba(87,216,255,0.18)",
+        color: "#d6ebff",
+        fontFamily: mono,
+        fontSize: 10,
+        letterSpacing: "0.12em",
+        textTransform: "uppercase",
+        cursor: "pointer",
+        boxShadow: "0 16px 40px rgba(0,0,0,0.34)",
+      }}
+    >
+      Return to Global View
+    </button>
+  );
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // MOBILE BOTTOM SHEET  (3 states: peek → half → full)
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -2307,8 +2849,14 @@ const SHEET_STATES = {
 };
 
 function MobileBottomSheet({ events, selectedEvent, activeScenario, onScenarioChange,
-                             onSelectEvent, onClose, activeLayers, onLayerToggle, layerEntries }) {
+                             onSelectEvent, onClose, activeLayers, onLayerToggle, layerEntries,
+                             briefing, marketImpact, flights, satellites, onBriefingSelect,
+                             onOpenIntelBoard, refreshState, adminUnlocked, onAdminUnlock,
+                             onSelectObject, allEvents = [],
+                             onAdminRefresh, systemStatus, selectedLens, onLensChange,
+                             strategicBrief, demoMode = false }) {
   const [sheetState, setSheetState] = useState("peek");
+  const [activeTab, setActiveTab] = useState("events");
   const sheetRef   = useRef(null);
   const dragRef    = useRef({ startY: 0, startH: 0, dragging: false });
 
@@ -2316,6 +2864,10 @@ function MobileBottomSheet({ events, selectedEvent, activeScenario, onScenarioCh
   useEffect(() => {
     if (selectedEvent) setSheetState("full");
     else if (sheetState === "full") setSheetState("half");
+  }, [selectedEvent]);
+
+  useEffect(() => {
+    if (selectedEvent) setActiveTab("events");
   }, [selectedEvent]);
 
   const snapVh  = SHEET_STATES[sheetState].snapVh;
@@ -2433,6 +2985,13 @@ function MobileBottomSheet({ events, selectedEvent, activeScenario, onScenarioCh
                   active={activeLayers[key]} onToggle={onLayerToggle} />
               ))}
             </div>
+            <div style={{ display: "flex", gap: 8, overflowX: "auto", paddingTop: 10, WebkitOverflowScrolling: "touch" }}>
+              <MobileSheetTabButton active={activeTab === "events"} onClick={() => setActiveTab("events")}>Events</MobileSheetTabButton>
+              <MobileSheetTabButton active={activeTab === "briefing"} onClick={() => setActiveTab("briefing")}>Intel Board</MobileSheetTabButton>
+              <MobileSheetTabButton active={activeTab === "market"} onClick={() => setActiveTab("market")}>Market Impact</MobileSheetTabButton>
+              {activeLayers.flights ? <MobileSheetTabButton active={activeTab === "flights"} onClick={() => setActiveTab("flights")}>Flights</MobileSheetTabButton> : null}
+              {activeLayers.satellites ? <MobileSheetTabButton active={activeTab === "satellites"} onClick={() => setActiveTab("satellites")}>Satellites</MobileSheetTabButton> : null}
+            </div>
           </div>
         )}
 
@@ -2440,46 +2999,193 @@ function MobileBottomSheet({ events, selectedEvent, activeScenario, onScenarioCh
         {sheetState === "full" && selectedEvent ? (
           <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
             <EventDetailContent event={selectedEvent} activeScenario={activeScenario}
-              onScenarioChange={onScenarioChange} />
+              onScenarioChange={onScenarioChange} allEvents={allEvents} />
           </div>
         ) : sheetState !== "peek" ? (
-          /* Event list (half state) */
-          <div style={{ flex: 1, overflowY: "auto", WebkitOverflowScrolling: "touch" }}>
-            {events.map(ev => {
-              const c    = INTENSITY[ev.intensity];
-              const pcfg = PRIORITY_CONFIG[ev.priorityLevel] || PRIORITY_CONFIG.LOW;
-              const sel = selectedEvent?.id === ev.id;
-              return (
-                <div key={ev.id} onClick={() => { onSelectEvent(ev); setSheetState("full"); }}
-                  style={{ padding: "11px 18px", borderBottom: "1px solid rgba(0,180,255,0.06)",
-                    borderLeft: `3px solid ${sel ? c.color : "transparent"}`,
-                    background: sel ? "rgba(0,50,100,0.3)" : "transparent",
-                    display: "flex", alignItems: "center", gap: 12, minHeight: 52 }}>
-                  <span style={{ width: 8, height: 8, borderRadius: "50%",
-                    background: c.color, boxShadow: `0 0 7px ${c.color}`, flexShrink: 0 }}/>
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ color: sel ? "#c8e8ff" : "rgba(155,205,250,0.78)",
-                      fontSize: 13, fontFamily: display, fontWeight: 700,
-                      lineHeight: 1.3, marginBottom: 2, overflow: "hidden",
-                      textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{ev.title}</div>
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                      <span style={{ color: "rgba(0,160,220,0.42)", fontSize: 9, fontFamily: mono,
-                        letterSpacing: "0.08em", textTransform: "uppercase" }}>
-                        {ev.intensity} · {ev.tone}
-                      </span>
-                      {ev.priorityScore !== undefined && (
-                        <span style={{ color: pcfg.color, fontSize: 9, fontFamily: mono,
-                          fontWeight: 700, background: pcfg.bg,
-                          border: `1px solid ${pcfg.border}`, borderRadius: 3, padding: "1px 5px" }}>
-                          {ev.priorityScore}
-                        </span>
-                      )}
+          <div style={{ flex: 1, overflowY: "auto", WebkitOverflowScrolling: "touch", padding: 14 }}>
+            {activeTab === "events" ? (
+              <div style={{ display: "grid", gap: 10 }}>
+                {events.map(ev => {
+                  const c    = INTENSITY[ev.intensity];
+                  const pcfg = PRIORITY_CONFIG[ev.priorityLevel] || PRIORITY_CONFIG.LOW;
+                  const sel = selectedEvent?.id === ev.id;
+                  return (
+                    <button key={ev.id} onClick={() => { onSelectEvent(ev); setSheetState("full"); }}
+                      style={{ padding: "13px 14px", border: "1px solid rgba(94,164,195,0.14)",
+                        borderLeft: `3px solid ${sel ? c.color : `${c.color}66`}`,
+                        borderRadius: 14, background: sel ? "rgba(0,50,100,0.28)" : "rgba(8,20,36,0.74)",
+                        display: "grid", gap: 8, textAlign: "left", width: "100%", cursor: "pointer" }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
+                        <TrafficPill level={ev.intensity === "high" ? "red" : ev.intensity === "medium" ? "amber" : "green"}>{ev.intensity}</TrafficPill>
+                        <TrafficPill level={ev.tone === "Escalating" ? "red" : ev.tone === "Stable" ? "neutral" : "green"}>{ev.tone}</TrafficPill>
+                      </div>
+                      <div style={{ color: "#d6ebff", fontSize: 14, fontFamily: display, fontWeight: 700, lineHeight: 1.35 }}>{ev.title}</div>
+                      <div style={{ color: "rgba(150,205,245,0.72)", fontSize: 11, lineHeight: 1.55, fontFamily: bodyFont }}>
+                        {ev.briefSummary}
+                      </div>
+                      <div style={{ display: "flex", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
+                        <span style={{ color: "rgba(0,180,255,0.38)", fontSize: 9, fontFamily: mono }}>{ev.location?.label ?? "Region under review"}</span>
+                        <span style={{ color: pcfg.color, fontSize: 9, fontFamily: mono, fontWeight: 700 }}>{Math.round(ev.lensPriorityScore ?? ev.priorityScore ?? 0)} pts</span>
+                      </div>
+                      <div style={{ display: "flex", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
+                        <TrafficPill level={ev.aiStatus === "enriched" ? "green" : ev.aiStatus === "budget_exhausted" ? "amber" : "neutral"}>
+                          {ev.aiStatus === "enriched" ? "AI enriched" : ev.aiStatus === "cached" ? "Cached intelligence" : ev.aiStatus === "budget_exhausted" ? "Budget exhausted" : "Rule-based"}
+                        </TrafficPill>
+                        <span style={{ color: "rgba(150,200,240,0.5)", fontSize: 9, fontFamily: mono }}>{getDataFreshness(ev.timestamp).label}</span>
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            ) : activeTab === "briefing" ? (
+              <div style={{ display: "grid", gap: 12 }}>
+                <div style={{ display: "grid", gap: 10 }}>
+                  <select
+                    value={selectedLens}
+                    onChange={(event) => onLensChange?.(event.target.value)}
+                    style={{
+                      minHeight: 40,
+                      borderRadius: 12,
+                      background: "rgba(8,20,36,0.78)",
+                      border: "1px solid rgba(94,164,195,0.14)",
+                      color: "#d6ebff",
+                      fontFamily: mono,
+                      fontSize: 10,
+                      letterSpacing: "0.08em",
+                      padding: "0 10px",
+                    }}
+                  >
+                    {DECISION_LENSES.map((lens) => (
+                      <option key={lens.id} value={lens.id}>{lens.label}</option>
+                    ))}
+                  </select>
+                  <div style={{ background: "rgba(8,20,36,0.78)", border: "1px solid rgba(94,164,195,0.14)", borderRadius: 14, padding: 12 }}>
+                    <div style={{ color: "rgba(103,220,255,0.48)", fontSize: 10, fontFamily: mono, letterSpacing: "0.14em", textTransform: "uppercase", marginBottom: 8 }}>
+                      Today’s Strategic Brief
+                    </div>
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8 }}>
+                      {(strategicBrief?.topEscalatingRegions?.length ? strategicBrief.topEscalatingRegions : ["Awaiting next intelligence refresh."]).map((region) => (
+                        <TrafficPill key={region} level="amber">{region}</TrafficPill>
+                      ))}
+                    </div>
+                    <div style={{ color: "#d6ebff", fontSize: 12, lineHeight: 1.7, fontFamily: bodyFont }}>
+                      Chokepoint to watch: {strategicBrief?.chokepointToWatch ?? "Awaiting next intelligence refresh."}
                     </div>
                   </div>
-                  <span style={{ color: "rgba(0,180,255,0.3)", fontSize: 16, flexShrink: 0 }}>›</span>
                 </div>
-              );
-            })}
+                <MobileBriefingContent briefing={briefing} onSelect={(eventId) => { onBriefingSelect(eventId); setSheetState("full"); }} />
+                <div style={{ background: "rgba(8,20,36,0.78)", border: "1px solid rgba(94,164,195,0.14)", borderRadius: 14, padding: 12 }}>
+                  <div style={{ color: "rgba(103,220,255,0.48)", fontSize: 10, fontFamily: mono, letterSpacing: "0.14em", textTransform: "uppercase", marginBottom: 8 }}>
+                    System Pulse
+                  </div>
+                  {demoMode ? <TrafficPill level="neutral">Public Preview</TrafficPill> : null}
+                  <div style={{ color: "#d6ebff", fontSize: 12, lineHeight: 1.7, fontFamily: bodyFont }}>
+                    AI remaining today: {systemStatus?.aiRemainingToday ?? 0}
+                  </div>
+                  <div style={{ color: "rgba(150,205,245,0.68)", fontSize: 11, lineHeight: 1.7, fontFamily: bodyFont }}>
+                    News refresh: {formatStatusMoment(systemStatus?.automation?.lastNewsRefreshAt)}
+                  </div>
+                  <div style={{ color: "rgba(150,205,245,0.68)", fontSize: 11, lineHeight: 1.7, fontFamily: bodyFont }}>
+                    AI refresh: {formatStatusMoment(systemStatus?.automation?.lastAiRefreshAt)}
+                  </div>
+                  <button onClick={onOpenIntelBoard} style={{
+                    marginTop: 10, width: "100%", minHeight: 38, borderRadius: 12,
+                    border: "1px solid rgba(87,216,255,0.18)", background: "rgba(10,31,52,0.76)",
+                    color: "#d6ebff", fontFamily: mono, fontSize: 10, letterSpacing: "0.12em", textTransform: "uppercase",
+                  }}>
+                    Open Intel Board
+                  </button>
+                </div>
+              </div>
+            ) : activeTab === "market" ? (
+              <MobileMarketImpactContent aggregate={marketImpact} onSelectCategory={setSelectedMarketKey} />
+            ) : activeTab === "flights" ? (
+              <div style={{ display: "grid", gap: 10 }}>
+                {flights.length === 0 ? (
+                  <div style={{ color: "rgba(130,185,230,0.62)", fontSize: 11, fontFamily: mono }}>Flight layer is enabled, but no cached flights are available yet.</div>
+                ) : flights.map((flight) => (
+                  <ObjectRowButton
+                    key={flight.id}
+                    item={{ ...flight, title: flight.flightNumber }}
+                    subtitle={`${flight.airline} · ${flight.departureAirport} → ${flight.arrivalAirport}`}
+                    onClick={() => onSelectObject?.({ type: "flight", data: flight })}
+                  />
+                ))}
+              </div>
+            ) : activeTab === "satellites" ? (
+              <div style={{ display: "grid", gap: 10 }}>
+                {satellites.length === 0 ? (
+                  <div style={{ color: "rgba(130,185,230,0.62)", fontSize: 11, fontFamily: mono }}>No satellite cache available yet.</div>
+                ) : satellites.map((satellite) => (
+                  <ObjectRowButton
+                    key={satellite.id}
+                    item={{ ...satellite, title: satellite.name }}
+                    subtitle={`${satellite.satelliteType} · NORAD ${satellite.noradId}`}
+                    onClick={() => onSelectObject?.({ type: "satellite", data: satellite })}
+                  />
+                ))}
+              </div>
+            ) : null}
+
+            {sheetState !== "peek" ? (
+              <div style={{ marginTop: 14, display: "grid", gap: 10 }}>
+                {!demoMode && adminUnlocked ? (
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                    <button
+                      onClick={() => onAdminRefresh("news")}
+                      disabled={refreshState?.status === "running"}
+                      style={{
+                        minHeight: 40,
+                        borderRadius: 12,
+                        border: "1px solid rgba(87,216,255,0.18)",
+                        background: "rgba(10,31,52,0.76)",
+                        color: "#d6ebff",
+                        fontFamily: mono,
+                        fontSize: 10,
+                        letterSpacing: "0.1em",
+                        textTransform: "uppercase",
+                      }}
+                    >
+                      Refresh Newsfeed
+                    </button>
+                    <button
+                      onClick={() => onAdminRefresh("ai")}
+                      disabled={refreshState?.status === "running"}
+                      style={{
+                        minHeight: 40,
+                        borderRadius: 12,
+                        border: "1px solid rgba(255,144,92,0.18)",
+                        background: "rgba(56,24,18,0.76)",
+                        color: "#ffd9cc",
+                        fontFamily: mono,
+                        fontSize: 10,
+                        letterSpacing: "0.1em",
+                        textTransform: "uppercase",
+                      }}
+                    >
+                      Master Refresh with AI
+                    </button>
+                  </div>
+                ) : !demoMode ? (
+                  <button
+                    onClick={onAdminUnlock}
+                    style={{
+                      minHeight: 40,
+                      borderRadius: 12,
+                      border: "1px solid rgba(87,216,255,0.18)",
+                      background: "rgba(10,31,52,0.72)",
+                      color: "#d6ebff",
+                      fontFamily: mono,
+                      fontSize: 10,
+                      letterSpacing: "0.12em",
+                      textTransform: "uppercase",
+                    }}
+                  >
+                    Admin Unlock
+                  </button>
+                ) : null}
+              </div>
+            ) : null}
           </div>
         ) : null}
       </div>
@@ -2755,23 +3461,64 @@ function buildConnectionLayer() {
 // TOP BAR
 // ═══════════════════════════════════════════════════════════════════════════════
 
-function TopBar({ counts, bordersLoaded, activeLayers, onLayerToggle, isMobile, onWarRoom, showWarRoom, marketData, onPersonalize, showPersonalize, onAdminRefresh, refreshState, layerEntries, activeView = "globe", onNavigate, systemStatus }) {
+function TopBar({ counts, bordersLoaded, activeLayers, onLayerToggle, isMobile, isTablet, onWarRoom, showWarRoom, marketData, onPersonalize, showPersonalize, onAdminRefresh, refreshState, layerEntries, activeView = "globe", onNavigate, systemStatus, adminUnlocked, onAdminUnlock, selectedLens, onLensChange, demoMode = false, feedState, layersStatus }) {
   const [time, setTime] = useState(() => new Date().toISOString().slice(11,19));
   useEffect(() => {
     const t = setInterval(() => setTime(new Date().toISOString().slice(11,19)), 1000);
     return () => clearInterval(t);
   }, []);
 
+  const compact = isMobile || isTablet;
+  const headerHeight = getHeaderHeight(isMobile, isTablet);
+  const navButtons = APP_VIEWS.map((item) => {
+    const active = activeView === item.key;
+    return (
+      <button
+        key={item.key}
+        onClick={() => onNavigate?.(item.key)}
+        style={{
+          border: "none",
+          borderBottom: `2px solid ${active ? "rgba(87,216,255,0.95)" : "transparent"}`,
+          background: "transparent",
+          color: active ? "#73ebff" : "rgba(214, 230, 244, 0.72)",
+          padding: compact ? "8px 4px 7px" : "16px 4px 12px",
+          minWidth: compact ? "auto" : item.key === "reports" ? 152 : 84,
+          cursor: "pointer",
+          fontFamily: mono,
+          fontSize: compact ? 10 : 11,
+          letterSpacing: "0.12em",
+          textTransform: "uppercase",
+          whiteSpace: "nowrap",
+        }}
+      >
+        {item.label}
+        {item.badge ? (
+          <span style={{
+            marginLeft: 8,
+            borderRadius: 999,
+            border: "1px solid rgba(144, 164, 181, 0.18)",
+            padding: "1px 6px",
+            color: "rgba(189,216,232,0.75)",
+            fontSize: 9,
+          }}>
+            {item.badge}
+          </span>
+        ) : null}
+      </button>
+    );
+  });
+
   return (
     <div style={{
-      position: "absolute", top: 0, left: 0, right: 0, height: TOP_BAR_HEIGHT,
+      position: "absolute", top: 0, left: 0, right: 0, height: headerHeight,
       background: "linear-gradient(180deg, rgba(4,9,18,0.96) 0%, rgba(4,10,22,0.88) 100%)", backdropFilter: "blur(18px)",
       borderBottom: "1px solid rgba(87,216,255,0.12)",
-      display: "flex", alignItems: "center", justifyContent: "space-between",
-      padding: "0 18px", zIndex: 40, flexShrink: 0, gap: 16,
+      display: "flex", alignItems: compact ? "stretch" : "center", justifyContent: "space-between",
+      flexDirection: compact ? "column" : "row",
+      padding: compact ? "8px 12px 6px" : "0 18px", zIndex: 40, flexShrink: 0, gap: compact ? 8 : 16,
       WebkitBackdropFilter: "blur(18px)",
     }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 14, minWidth: 0 }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 14, minWidth: 0 }}>
         <div style={{ display: "flex", flexDirection: "column", gap: 2, minWidth: 0 }}>
           <span style={{ color: "#f8fafc", fontFamily: display, fontSize: isMobile ? 19 : 21, fontWeight: 700, letterSpacing: "0.16em", textTransform: "uppercase", lineHeight: 1 }}>
             Grigori
@@ -2784,6 +3531,7 @@ function TopBar({ counts, bordersLoaded, activeLayers, onLayerToggle, isMobile, 
               <span style={{ color: "#74d9f3", fontFamily: mono, fontSize: 10, letterSpacing: "0.16em", textTransform: "uppercase" }}>
                 Strategic Intelligence Dashboard
               </span>
+              {demoMode ? <TrafficPill level="neutral">Public Preview</TrafficPill> : null}
               <span style={{ width: 6, height: 6, borderRadius: "50%", background: "#4ed69f", boxShadow: "0 0 10px rgba(78,214,159,0.8)" }} />
               <span style={{ color: "rgba(140,165,186,0.82)", fontFamily: bodyFont, fontSize: 12 }}>
                 Operational
@@ -2791,52 +3539,112 @@ function TopBar({ counts, bordersLoaded, activeLayers, onLayerToggle, isMobile, 
             </div>
           ) : null}
         </div>
+
+        {compact ? (
+          <div style={{
+            minWidth: 120,
+            padding: "8px 10px",
+            borderRadius: 14,
+            background: "rgba(6, 15, 30, 0.76)",
+            border: "1px solid rgba(87,216,255,0.14)",
+          }}>
+            <div style={{ color: "rgba(171,208,228,0.72)", fontSize: 9, fontFamily: mono, letterSpacing: "0.14em", textTransform: "uppercase" }}>
+              Intel Status
+            </div>
+            <div style={{ color: "#4ed69f", fontFamily: mono, fontSize: 10, letterSpacing: "0.12em", textTransform: "uppercase", marginTop: 3 }}>
+              Operational
+            </div>
+            {demoMode ? (
+              <div style={{ color: "rgba(148,175,198,0.78)", fontFamily: mono, fontSize: 9, marginTop: 5 }}>
+                Public Preview
+              </div>
+            ) : null}
+          </div>
+        ) : null}
       </div>
 
-      {!isMobile ? (
-        <div style={{ display: "flex", alignItems: "center", gap: 14, justifyContent: "center", flex: 1, minWidth: 0 }}>
-          {APP_VIEWS.map((item) => {
-            const active = activeView === item.key;
-            return (
-              <button
-                key={item.key}
-                onClick={() => onNavigate?.(item.key)}
-                style={{
-                  border: "none",
-                  borderBottom: `2px solid ${active ? "rgba(87,216,255,0.95)" : "transparent"}`,
-                  background: "transparent",
-                  color: active ? "#73ebff" : "rgba(214, 230, 244, 0.72)",
-                  padding: "16px 4px 12px",
-                  minWidth: item.key === "reports" ? 152 : 84,
-                  cursor: "pointer",
-                  fontFamily: mono,
-                  fontSize: 11,
-                  letterSpacing: "0.12em",
-                  textTransform: "uppercase",
-                  whiteSpace: "nowrap",
-                }}
-              >
-                {item.label}
-                {item.badge ? (
-                  <span style={{
-                    marginLeft: 8,
-                    borderRadius: 999,
-                    border: "1px solid rgba(144, 164, 181, 0.18)",
-                    padding: "1px 6px",
-                    color: "rgba(189,216,232,0.75)",
-                    fontSize: 9,
-                  }}>
-                    {item.badge}
-                  </span>
-                ) : null}
-              </button>
-            );
-          })}
+      {compact ? (
+        <div style={{ display: "flex", alignItems: "center", gap: 10, justifyContent: "space-between" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 6, overflowX: "auto", flex: 1 }}>
+            {navButtons}
+          </div>
+          <select
+            value={selectedLens}
+            onChange={(event) => onLensChange?.(event.target.value)}
+            style={{
+              minHeight: 34,
+              borderRadius: 12,
+              background: "rgba(6,15,30,0.76)",
+              border: "1px solid rgba(87,216,255,0.14)",
+              color: "#d6ebff",
+              fontFamily: mono,
+              fontSize: 10,
+              letterSpacing: "0.08em",
+              padding: "0 10px",
+              maxWidth: 170,
+            }}
+          >
+            {DECISION_LENSES.map((lens) => (
+              <option key={lens.id} value={lens.id}>{lens.label}</option>
+            ))}
+          </select>
+          <div style={{ display: "flex", gap: 8, flexShrink: 0 }}>
+            <button onClick={onWarRoom} style={{
+              padding: "8px 10px",
+              borderRadius: 12,
+              border: `1px solid ${showWarRoom ? "rgba(255,34,51,0.28)" : "rgba(87,216,255,0.14)"}`,
+              background: showWarRoom ? "rgba(255,34,51,0.12)" : "rgba(6,15,30,0.76)",
+              color: showWarRoom ? "#ff6b7d" : "rgba(200,220,255,0.7)",
+              fontFamily: mono,
+              fontSize: 10,
+              letterSpacing: "0.12em",
+              textTransform: "uppercase",
+            }}>
+              War Room
+            </button>
+            {!demoMode ? <button onClick={adminUnlocked ? () => onAdminRefresh("full") : onAdminUnlock} style={{
+              padding: "8px 10px",
+              borderRadius: 12,
+              border: "1px solid rgba(87,216,255,0.14)",
+              background: adminUnlocked ? "rgba(0,140,90,0.16)" : "rgba(6,15,30,0.76)",
+              color: adminUnlocked ? "#74f3b0" : "rgba(200,220,255,0.7)",
+              fontFamily: mono,
+              fontSize: 10,
+              letterSpacing: "0.12em",
+              textTransform: "uppercase",
+            }}>
+              {adminUnlocked ? "Admin" : "Unlock"}
+            </button> : null}
+          </div>
         </div>
-      ) : null}
+      ) : (
+        <div style={{ display: "flex", alignItems: "center", gap: 14, justifyContent: "center", flex: 1, minWidth: 0, flexWrap: "wrap" }}>
+          {navButtons}
+          <select
+            value={selectedLens}
+            onChange={(event) => onLensChange?.(event.target.value)}
+            style={{
+              minHeight: 34,
+              borderRadius: 12,
+              background: "rgba(6,15,30,0.76)",
+              border: "1px solid rgba(87,216,255,0.14)",
+              color: "#d6ebff",
+              fontFamily: mono,
+              fontSize: 10,
+              letterSpacing: "0.08em",
+              padding: "0 10px",
+              minWidth: 172,
+            }}
+          >
+            {DECISION_LENSES.map((lens) => (
+              <option key={lens.id} value={lens.id}>{lens.label}</option>
+            ))}
+          </select>
+        </div>
+      )}
 
       <div style={{ display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
-        {!isMobile && (
+        {!compact && (
           <div style={{
             display: "flex",
             alignItems: "center",
@@ -2854,7 +3662,7 @@ function TopBar({ counts, bordersLoaded, activeLayers, onLayerToggle, isMobile, 
           </div>
         )}
 
-        {!isMobile && (
+        {!compact && (
           <button onClick={onPersonalize} style={{
             display: "flex", alignItems: "center", gap: 5, padding: "8px 12px",
             background: showPersonalize ? "rgba(0,180,255,0.12)" : "rgba(6,15,30,0.76)",
@@ -2866,19 +3674,7 @@ function TopBar({ counts, bordersLoaded, activeLayers, onLayerToggle, isMobile, 
           </button>
         )}
 
-        <button onClick={onAdminRefresh} disabled={refreshState?.status === "running"} style={{
-          display: "flex", alignItems: "center", gap: 5, padding: "8px 12px",
-          background: refreshState?.status === "success" ? "rgba(0,140,90,0.18)" : refreshState?.status === "error" ? "rgba(180,30,60,0.18)" : "rgba(6,15,30,0.76)",
-          border: `1px solid ${refreshState?.status === "success" ? "rgba(0,200,140,0.28)" : refreshState?.status === "error" ? "rgba(255,80,120,0.28)" : "rgba(87,216,255,0.14)"}`,
-          borderRadius: 14, cursor: refreshState?.status === "running" ? "wait" : "pointer", minHeight: 36, transition: "all 0.18s ease",
-        }}>
-          <span style={{ color: refreshState?.status === "running" ? "rgba(200,220,255,0.45)" : "rgba(200,220,255,0.7)",
-            fontSize: 10, fontFamily: mono, letterSpacing: "0.12em" }}>
-            {refreshState?.status === "running" ? "… RUNNING" : "↻ REFRESH"}
-          </span>
-        </button>
-
-        <button onClick={onWarRoom} style={{
+        {!compact ? <button onClick={onWarRoom} style={{
           display: "flex", alignItems: "center", gap: 5, padding: "8px 12px",
           background: showWarRoom ? "rgba(255,34,51,0.12)" : "rgba(6,15,30,0.76)",
           border: `1px solid ${showWarRoom ? "rgba(255,34,51,0.28)" : "rgba(87,216,255,0.14)"}`,
@@ -2886,9 +3682,47 @@ function TopBar({ counts, bordersLoaded, activeLayers, onLayerToggle, isMobile, 
         }}>
           <span style={{ color: showWarRoom ? "#ff4455" : "rgba(200,220,255,0.55)",
             fontSize: 10, fontFamily: mono, letterSpacing: "0.12em" }}>War Room</span>
-        </button>
+        </button> : null}
 
-        {!isMobile ? (
+        {!compact ? (
+          adminUnlocked ? (
+            <div style={{ display: "flex", gap: 8 }}>
+              <button onClick={() => onAdminRefresh("news")} disabled={refreshState?.status === "running"} style={{
+                display: "flex", alignItems: "center", gap: 5, padding: "8px 12px",
+                background: refreshState?.status === "success" ? "rgba(0,140,90,0.18)" : refreshState?.status === "error" ? "rgba(180,30,60,0.18)" : "rgba(6,15,30,0.76)",
+                border: `1px solid ${refreshState?.status === "success" ? "rgba(0,200,140,0.28)" : refreshState?.status === "error" ? "rgba(255,80,120,0.28)" : "rgba(87,216,255,0.14)"}`,
+                borderRadius: 14, cursor: refreshState?.status === "running" ? "wait" : "pointer", minHeight: 36,
+              }}>
+                <span style={{ color: "rgba(200,220,255,0.7)", fontSize: 10, fontFamily: mono, letterSpacing: "0.12em" }}>
+                  Refresh Newsfeed
+                </span>
+              </button>
+              <button onClick={() => onAdminRefresh("ai")} disabled={refreshState?.status === "running"} style={{
+                display: "flex", alignItems: "center", gap: 5, padding: "8px 12px",
+                background: "rgba(58,20,22,0.82)",
+                border: "1px solid rgba(255,120,88,0.2)",
+                borderRadius: 14, cursor: refreshState?.status === "running" ? "wait" : "pointer", minHeight: 36,
+              }}>
+                <span style={{ color: "#ffd4cc", fontSize: 10, fontFamily: mono, letterSpacing: "0.12em" }}>
+                  Master Refresh with AI
+                </span>
+              </button>
+            </div>
+          ) : !demoMode ? (
+            <button onClick={onAdminUnlock} style={{
+              display: "flex", alignItems: "center", gap: 5, padding: "8px 12px",
+              background: "rgba(6,15,30,0.76)",
+              border: "1px solid rgba(87,216,255,0.14)",
+              borderRadius: 14, cursor: "pointer", minHeight: 36,
+            }}>
+              <span style={{ color: "rgba(200,220,255,0.7)", fontSize: 10, fontFamily: mono, letterSpacing: "0.12em" }}>
+                Admin Unlock
+              </span>
+            </button>
+          ) : null
+        ) : null}
+
+        {!compact ? (
           <div style={{
             minWidth: 168,
             padding: "8px 12px",
@@ -2912,6 +3746,10 @@ function TopBar({ counts, bordersLoaded, activeLayers, onLayerToggle, isMobile, 
                 <div>News {formatLayerTime(systemStatus.automation.lastNewsRefreshAt)}</div>
                 <div>AI {formatLayerTime(systemStatus.automation.lastAiRefreshAt)}</div>
                 <div>AI remaining {systemStatus.aiRemainingToday}</div>
+                {layersStatus?.flights?.remainingMonthlyCalls != null ? <div>Flights left {layersStatus.flights.remainingMonthlyCalls}</div> : null}
+                {systemStatus.automation.nextEstimatedNewsRefresh ? <div>Next news {formatLayerTime(systemStatus.automation.nextEstimatedNewsRefresh)}</div> : null}
+                {systemStatus.automation.nextEstimatedAiRefresh ? <div>Next AI {formatLayerTime(systemStatus.automation.nextEstimatedAiRefresh)}</div> : null}
+                {feedState?.message ? <div>{feedState.message}</div> : null}
               </div>
             ) : null}
           </div>
@@ -2925,10 +3763,10 @@ function TopBar({ counts, bordersLoaded, activeLayers, onLayerToggle, isMobile, 
 // DESKTOP LEFT SIDEBAR
 // ═══════════════════════════════════════════════════════════════════════════════
 
-function DesktopSidebar({ events, selectedEvent, onSelect }) {
+function DesktopSidebar({ events, selectedEvent, onSelect, topOffset = TOP_BAR_HEIGHT }) {
   return (
     <div style={{
-      position: "absolute", left: 0, top: TOP_BAR_HEIGHT, bottom: 0, width: 284,
+      position: "absolute", left: 0, top: topOffset, bottom: 0, width: 284,
       background: "rgba(4,10,21,0.82)", backdropFilter: "blur(16px)",
       WebkitBackdropFilter: "blur(14px)",
       borderRight: "1px solid rgba(87,216,255,0.12)",
@@ -2976,6 +3814,7 @@ function DesktopSidebar({ events, selectedEvent, onSelect }) {
                   letterSpacing: "0.12em", textTransform: "uppercase" }}>
                   {ev.intensity} · {ev.tone}
                 </span>
+                {ev.lensMatched ? <TrafficPill level="neutral">{ev.lensLabel}</TrafficPill> : null}
                 {ev.watchlistMatch?.matched ? <TrafficPill level="amber">Watchlist</TrafficPill> : null}
               </div>
               <div style={{ color: sel ? "#c8e8ff" : "rgba(235,244,255,0.9)", fontSize: 18,
@@ -2987,18 +3826,19 @@ function DesktopSidebar({ events, selectedEvent, onSelect }) {
               </div>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                 <div style={{ color: "rgba(0,160,220,0.38)", fontSize: 10, fontFamily: mono }}>
-                  {ev.lat.toFixed(1)}°, {ev.lng.toFixed(1)}°
+                  {Number.isFinite(ev.lat) && Number.isFinite(ev.lng) ? `${ev.lat.toFixed(1)}°, ${ev.lng.toFixed(1)}°` : ev.location?.label ?? "Region under review"}
                 </div>
                 {ev.priorityScore !== undefined && (
                   <span style={{ color: pcfg.color, fontSize: 9, fontFamily: mono,
                     fontWeight: 700, background: pcfg.bg,
                     border: `1px solid ${pcfg.border}`, borderRadius: 999,
-                    padding: "4px 8px" }}>{ev.priorityScore}</span>
+                    padding: "4px 8px" }}>{Math.round(ev.lensPriorityScore ?? ev.priorityScore)}</span>
                 )}
               </div>
               <div style={{ marginTop: 10, display: "flex", justifyContent: "space-between", gap: 8, color: "rgba(150,200,240,0.5)", fontSize: 10, fontFamily: mono, flexWrap: "wrap" }}>
                 <span>CONF {ev.confidence}</span>
                 <span>{ev.sourceSignals?.sourceCount ?? 0} src / {ev.sourceSignals?.corroboratedCount ?? 0} corr</span>
+                <span>{getDataFreshness(ev.timestamp).label}</span>
               </div>
             </div>
           );
@@ -3041,8 +3881,10 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
   const [marketData,      setMarketData]      = useState(null);
   const [showPersonalize, setShowPersonalize] = useState(false);
   const [prefs,           setPrefs]           = useState({ region: "all", sectors: [], riskLevel: "all" });
+  const [selectedLens,    setSelectedLens]    = useState("global_risk");
   const [refreshState,    setRefreshState]    = useState({ status: "idle", message: "" });
   const [briefing,        setBriefing]        = useState(buildBriefing(SCORED_EVENTS));
+  const [selectedMarketKey, setSelectedMarketKey] = useState(null);
   const [timelineHours,   setTimelineHours]   = useState(24 * 7);
   const [timelineSlider,  setTimelineSlider]  = useState(100);
   const [flights,         setFlights]         = useState([]);
@@ -3054,6 +3896,8 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
     aiCallsToday: 0,
     aiRemainingToday: 0,
   });
+  const [feedState,       setFeedState]       = useState({ status: "ok", message: "" });
+  const [adminSession,    setAdminSession]    = useState({ unlocked: false, secret: "" });
   const [vesselSearch,    setVesselSearch]    = useState("");
   const [watchlist,       setWatchlist]       = useState(() => {
     if (typeof window === "undefined") return { regions: [], topics: [] };
@@ -3068,13 +3912,18 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
     }
   });
 
-  const isMobile = useIsMobile();
+  const { isMobile, isTablet } = useViewport();
+  const headerHeight = getHeaderHeight(isMobile, isTablet);
 
   const refreshData = useCallback(async () => {
-    try {
-      const md = await fetchMarketData();
-      setMarketData(md);
-    } catch {}
+    if (!DEMO_MODE) {
+      try {
+        const md = await fetchMarketData();
+        setMarketData(md);
+      } catch {}
+    } else {
+      setMarketData(null);
+    }
 
     try {
       const evs = await fetchLiveEvents();
@@ -3083,14 +3932,20 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
         const briefingRes = await fetch(resolveBackendUrl("/api/v1/briefing"), { signal: AbortSignal.timeout(8000) });
         if (briefingRes.ok) {
           const briefingData = await briefingRes.json();
-          setBriefing(briefingData.briefing ?? buildBriefing(evs));
+          setBriefing(briefingData.briefing ?? buildBriefing(evs, selectedLens));
         } else {
-          setBriefing(buildBriefing(evs));
+          setBriefing(buildBriefing(evs, selectedLens));
         }
       } catch {
-        setBriefing(buildBriefing(evs));
+        setBriefing(buildBriefing(evs, selectedLens));
       }
-    } catch {}
+      setFeedState({ status: "ok", message: "" });
+    } catch {
+      setFeedState({
+        status: "warning",
+        message: "Data feed temporarily unavailable. Last cached intelligence shown.",
+      });
+    }
 
     try {
       const status = await fetchOperationalStatus();
@@ -3104,8 +3959,13 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
         aiCallsToday: status.automation?.aiCallsToday ?? 0,
         aiRemainingToday: status.automation?.aiRemainingToday ?? 0,
       });
-    } catch {}
-  }, []);
+    } catch {
+      setFeedState({
+        status: "warning",
+        message: "Data feed temporarily unavailable. Last cached intelligence shown.",
+      });
+    }
+  }, [selectedLens]);
 
   // ── Live data fetching — runs once on mount, then every 15 min ───────────────
   useEffect(() => {
@@ -3160,13 +4020,23 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
     };
   }, [activeLayers.satellites]);
 
-  const handleAdminRefresh = useCallback(async () => {
-    const secret = window.prompt("Enter ADMIN_SECRET to refresh the pipeline.");
+  const handleAdminUnlock = useCallback(() => {
+    const secret = window.prompt("Enter ADMIN_SECRET to unlock admin controls for this session.");
     if (!secret) return;
+    setAdminSession({ unlocked: true, secret });
+  }, []);
+
+  const handleAdminRefresh = useCallback(async (mode = "full") => {
+    const secret = adminSession.secret || window.prompt("Enter ADMIN_SECRET to refresh the pipeline.");
+    if (!secret) return;
+    if (!adminSession.secret) {
+      setAdminSession({ unlocked: true, secret });
+    }
 
     setRefreshState({ status: "running", message: "Triggering pipeline..." });
     try {
-      const res = await fetch(resolveBackendUrl("/api/v1/admin/refresh"), {
+      const query = mode && mode !== "full" ? `?mode=${encodeURIComponent(mode)}` : "";
+      const res = await fetch(resolveBackendUrl(`/api/v1/admin/refresh${query}`), {
         method: "POST",
         headers: {
           "Authorization": `Bearer ${secret}`,
@@ -3184,7 +4054,7 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
     } catch (err) {
       setRefreshState({ status: "error", message: err.message });
     }
-  }, [refreshData]);
+  }, [adminSession.secret, refreshData]);
 
   const timelineEvents = useMemo(
     () => filterEventsByTimeWindow(liveEvents, timelineHours, timelineSlider),
@@ -3192,16 +4062,16 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
   );
 
   // ── Filtered event list — recalculated when prefs or live data changes ────────
-  const filteredEvents = useMemo(
-    () => filterEvents(timelineEvents, prefs).map((event) => ({
+  const filteredEvents = useMemo(() => {
+    const filtered = filterEvents(timelineEvents, prefs).map((event) => ({
       ...event,
       watchlistMatch: eventMatchesWatchlist(event, watchlist),
-    })),
-    [timelineEvents, prefs, watchlist]
-  );
+    }));
+    return applyDecisionLens(filtered, selectedLens);
+  }, [timelineEvents, prefs, watchlist, selectedLens]);
 
   const liveTopEvents = useMemo(
-    () => [...filteredEvents].sort((a, b) => (b.priorityScore || 0) - (a.priorityScore || 0)).slice(0, 5),
+    () => [...filteredEvents].sort((a, b) => (b.lensPriorityScore ?? b.priorityScore ?? 0) - (a.lensPriorityScore ?? a.priorityScore ?? 0)).slice(0, 5),
     [filteredEvents]
   );
 
@@ -3209,6 +4079,11 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
     () => aggregateMarketImpact(filteredEvents),
     [filteredEvents]
   );
+  const strategicBrief = useMemo(
+    () => buildStrategicBrief(filteredEvents, systemStatus, selectedLens),
+    [filteredEvents, systemStatus, selectedLens]
+  );
+  const selectedMarketImpact = selectedMarketKey ? marketImpact[selectedMarketKey] ?? null : null;
 
   const confidenceStats = useMemo(() => {
     const total = Math.max(filteredEvents.length, 1);
@@ -3236,6 +4111,8 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
       return false;
     });
   }, [layersStatus]);
+
+  const lensConfig = useMemo(() => DECISION_LENSES.find((lens) => lens.id === selectedLens) ?? DECISION_LENSES[0], [selectedLens]);
 
   const timelineCursorLabel = useMemo(() => {
     if (liveEvents.length === 0) return "No live events";
@@ -3265,6 +4142,14 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
     setSelectedEvent(event);
     setActiveScenario(0);
   }, [liveEvents]);
+
+  const handleReturnToGlobalView = useCallback(() => {
+    sceneRef.current.resetGlobalView?.();
+    setSelectedEvent(null);
+    setSelectedObject(null);
+    setActiveScenario(0);
+    setPanelVisibility((current) => ({ ...current, selectedObjectDetail: false }));
+  }, []);
 
   useEffect(() => {
     if (selectedEvent && !filteredEvents.some((event) => event.id === selectedEvent.id)) {
@@ -3478,7 +4363,7 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
         });
       }
 
-      interactiveEvents.forEach((ev) => {
+      interactiveEvents.filter((ev) => ev.hasRenderableLocation !== false).forEach((ev) => {
         const hs = makeHotspot(ev);
         hotspotLayer.add(hs);
       });
@@ -3490,6 +4375,7 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
       theta: 0.3, phi: 1.25, radius: initRadius,
       targetTheta: 0.3, targetPhi: 1.25, targetRadius: initRadius,
       dragging: false, lastX: 0, lastY: 0, autoSpin: true, spinTimer: null,
+      thetaVelocity: 0, phiVelocity: 0,
     };
     const DRAG_SENS = mob ? 0.007 : 0.006;
     const ZOOM_MIN  = mob ? 1.5 : 1.35;
@@ -3507,11 +4393,23 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
       camera.lookAt(0, 0, 0);
     };
 
+    function resetGlobalView() {
+      cam.targetTheta = 0.3;
+      cam.targetPhi = 1.25;
+      cam.targetRadius = initRadius;
+      cam.thetaVelocity = 0;
+      cam.phiVelocity = 0;
+      cam.autoSpin = true;
+    }
+
     function focusCameraOnEvent(ev) {
+      if (!Number.isFinite(ev.lat) || !Number.isFinite(ev.lng)) return;
       cam.targetTheta  = -ev.lng * (Math.PI / 180);
       cam.targetPhi    = Math.max(0.25, Math.min(Math.PI - 0.25, (90 - ev.lat) * (Math.PI / 180)));
       cam.targetRadius = mob ? 1.9 : 2.05;
       cam.autoSpin     = false;
+      cam.thetaVelocity = 0;
+      cam.phiVelocity = 0;
       resumeSpin();
     }
 
@@ -3534,8 +4432,10 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
       if (cam.dragging) {
         const dx = e.clientX - cam.lastX, dy = e.clientY - cam.lastY;
         cam.lastX = e.clientX; cam.lastY = e.clientY;
-        cam.targetTheta += dx * DRAG_SENS;
+        cam.targetTheta -= dx * DRAG_SENS;
         cam.targetPhi    = Math.max(0.15, Math.min(Math.PI-0.15, cam.targetPhi - dy*DRAG_SENS));
+        cam.thetaVelocity = -dx * DRAG_SENS * 0.28;
+        cam.phiVelocity = -dy * DRAG_SENS * 0.18;
         return;
       }
       // Hover tooltip (desktop)
@@ -3603,8 +4503,10 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
       if (e.touches.length === 1 && cam.dragging) {
         const dx = e.touches[0].clientX-cam.lastX, dy = e.touches[0].clientY-cam.lastY;
         cam.lastX = e.touches[0].clientX; cam.lastY = e.touches[0].clientY;
-        cam.targetTheta += dx*DRAG_SENS;
+        cam.targetTheta -= dx*DRAG_SENS;
         cam.targetPhi = Math.max(0.15, Math.min(Math.PI-0.15, cam.targetPhi - dy*DRAG_SENS));
+        cam.thetaVelocity = -dx * DRAG_SENS * 0.3;
+        cam.phiVelocity = -dy * DRAG_SENS * 0.2;
       } else if (e.touches.length === 2) {
         const d = Math.hypot(e.touches[0].clientX-e.touches[1].clientX, e.touches[0].clientY-e.touches[1].clientY);
         cam.targetRadius = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, cam.targetRadius*(lastPinchDist/d)));
@@ -3657,8 +4559,15 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
 
     // Store refs
     sceneRef.current = {
-      cam, scene, focusCameraOnEvent, hotspotLayer,
+      cam, scene, focusCameraOnEvent, hotspotLayer, resetGlobalView,
       liveLayers: { flights: flightLayer, vessels: vesselLayer, satellites: satelliteLayer },
+      setSelectedEventHighlight: (selectedId) => {
+        hotspotLayer.children.forEach((group) => {
+          const isSelected = group.userData.eventId === selectedId;
+          group.userData.isSelected = isSelected;
+          group.userData.dimmed = Boolean(selectedId) && !isSelected;
+        });
+      },
       syncVisibleEvents,
       syncObjectLayer: (type, items) => {
         if (type === "flights") rebuildSimpleLayer(flightLayer, items, "flight");
@@ -3687,21 +4596,68 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
 
       atm.material.uniforms.time.value = t;
       if (cam.autoSpin) cam.targetTheta += mob ? 0.0005 : 0.0007;
+      if (!cam.dragging && Math.abs(cam.thetaVelocity) > 0.00005) {
+        cam.targetTheta += cam.thetaVelocity;
+        cam.thetaVelocity *= 0.92;
+      }
+      if (!cam.dragging && Math.abs(cam.phiVelocity) > 0.00005) {
+        cam.targetPhi = Math.max(0.15, Math.min(Math.PI - 0.15, cam.targetPhi + cam.phiVelocity));
+        cam.phiVelocity *= 0.9;
+      }
 
       cam.theta  += (cam.targetTheta  - cam.theta)  * LERP_SPD;
       cam.phi    += (cam.targetPhi    - cam.phi)    * LERP_SPD;
       cam.radius += (cam.targetRadius - cam.radius) * LERP_SPD;
       applyCam();
 
+      const cameraDirection = camera.position.clone().normalize();
+      [hotspotLayer, flightLayer, vesselLayer, satelliteLayer].forEach((layer) => {
+        layer.children.forEach((group) => {
+          const surfaceNormal = group.userData.surfaceNormal;
+          if (!surfaceNormal) return;
+          const alpha = getMarkerVisibilityAlpha(surfaceNormal, cameraDirection);
+          group.userData.visibilityAlpha = alpha;
+          group.traverse((obj) => {
+            if (!obj.material) return;
+            const baseOpacity = obj.userData.baseOpacity ?? obj.material.opacity ?? 1;
+            if (!obj.userData.pulse) {
+              obj.material.opacity = baseOpacity * alpha;
+            }
+            obj.visible = alpha > 0.03;
+          });
+        });
+      });
+
       // Hotspot pulse
       hotspotLayer.children.forEach(group => {
+        const groupAlpha = group.userData.visibilityAlpha ?? 1;
+        const emphasis = group.userData.isSelected ? 1.18 : 1;
+        const dimAlpha = group.userData.dimmed ? 0.22 : 1;
         group.traverse(obj => {
           if (!obj.userData.pulse) return;
           const s = obj.userData;
           const beat = Math.sin(t * s.speed + (s.phase ?? 0));
-          const sc   = 1 + 0.55 * Math.max(0, beat);
+          const sc   = emphasis * (1 + 0.55 * Math.max(0, beat));
           obj.scale.set(sc, sc, 1);
-          obj.material.opacity = s.base * (0.2 + 0.8 * Math.max(0, beat));
+          obj.material.opacity = s.base * (0.2 + 0.8 * Math.max(0, beat)) * groupAlpha * dimAlpha;
+        });
+        group.traverse((obj) => {
+          if (obj.userData.pulse || !obj.material) return;
+          const baseOpacity = obj.userData.baseOpacity ?? obj.material.opacity ?? 1;
+          obj.material.opacity = baseOpacity * groupAlpha * dimAlpha;
+        });
+      });
+
+      [flightLayer, vesselLayer, satelliteLayer].forEach((layer) => {
+        layer.children.forEach((group) => {
+          const groupAlpha = group.userData.visibilityAlpha ?? 1;
+          group.traverse((obj) => {
+            if (!obj.userData.pulse) return;
+            const s = obj.userData;
+            const beat = Math.sin(t * s.speed + (s.phase ?? 0));
+            obj.scale.setScalar(1 + 0.18 * Math.max(0, beat));
+            obj.material.opacity = s.base * (0.24 + 0.76 * Math.max(0, beat)) * groupAlpha;
+          });
         });
       });
 
@@ -3743,6 +4699,10 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
   useEffect(() => {
     sceneRef.current.rebuildImpact?.(selectedEvent, activeScenario);
   }, [selectedEvent, activeScenario]);
+
+  useEffect(() => {
+    sceneRef.current.setSelectedEventHighlight?.(selectedEvent?.id ?? null);
+  }, [selectedEvent]);
 
   useEffect(() => {
     sceneRef.current.syncVisibleEvents?.(filteredEvents);
@@ -3811,6 +4771,7 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
         <TopBar counts={counts} bordersLoaded={bordersLoaded}
           activeLayers={activeLayers} onLayerToggle={handleLayerToggle}
           isMobile={isMobile}
+          isTablet={isTablet}
           onWarRoom={() => setShowWarRoom(v => !v)}
           showWarRoom={showWarRoom}
           marketData={marketData}
@@ -3821,7 +4782,14 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
           layerEntries={visibleLayerEntries}
           activeView={activeView}
           onNavigate={onNavigate}
-          systemStatus={systemStatus} />
+          systemStatus={systemStatus}
+          adminUnlocked={adminSession.unlocked}
+          onAdminUnlock={handleAdminUnlock}
+          selectedLens={selectedLens}
+          onLensChange={setSelectedLens}
+          demoMode={DEMO_MODE}
+          feedState={feedState}
+          layersStatus={layersStatus} />
 
         {!isMobile && (
           <>
@@ -3839,13 +4807,20 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
             {panelVisibility.briefing && activeLayers.intelBoard ? (
               <BriefingPanel
                 briefing={briefing}
+                strategicBrief={strategicBrief}
+                selectedLens={selectedLens}
+                onLensChange={setSelectedLens}
                 onSelect={handleBriefingSelect}
+                systemStatus={systemStatus}
+                feedState={feedState}
                 onClose={() => setPanelVisibility((current) => ({ ...current, briefing: false }))}
               />
             ) : null}
             {panelVisibility.marketImpact && activeLayers.intelBoard ? (
               <MarketImpactDashboard
                 aggregate={marketImpact}
+                emphasis={lensConfig.emphasis}
+                onSelectCategory={setSelectedMarketKey}
                 onClose={() => setPanelVisibility((current) => ({ ...current, marketImpact: false }))}
               />
             ) : null}
@@ -3881,13 +4856,16 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
                 onClose={() => setPanelVisibility((current) => ({ ...current, satellites: false }))}
               />
             ) : null}
+            {selectedMarketImpact ? (
+              <MarketImpactDetailPanel item={selectedMarketImpact} onClose={() => setSelectedMarketKey(null)} />
+            ) : null}
           </>
         )}
 
         {/* GLOBE ROW — fills all remaining space between topbar and (on mobile) bottom sheet */}
         <div style={{
           position: "absolute",
-          top: TOP_BAR_HEIGHT,
+          top: headerHeight,
           left: (!isMobile && panelVisibility.events && activeLayers.intelBoard) ? 284 : 0,
           right: (!isMobile && selectedDetail && panelVisibility.selectedObjectDetail) ? (selectedDetail.type === "event" ? 420 : 340) : 0,
           bottom: 0,
@@ -3901,7 +4879,7 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
 
           {/* Bottom hint */}
           {ready && !selectedEvent && (
-            <div style={{ position: "absolute", bottom: isMobile ? "12vh" : 18,
+            <div style={{ position: "absolute", bottom: isMobile ? "15vh" : 18,
               left: "50%", transform: "translateX(-50%)",
               color: "rgba(0,180,255,0.25)", fontSize: 10, fontFamily: mono,
               letterSpacing: "0.12em", textAlign: "center", pointerEvents: "none",
@@ -3911,9 +4889,11 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
           )}
         </div>
 
+        <GlobalViewButton onReset={handleReturnToGlobalView} mobile={isMobile} />
+
         {/* DESKTOP: Left sidebar */}
         {!isMobile && panelVisibility.events && activeLayers.intelBoard && (
-          <DesktopSidebar events={filteredEvents} selectedEvent={selectedEvent} onSelect={focusEvent} />
+          <DesktopSidebar events={filteredEvents} selectedEvent={selectedEvent} onSelect={focusEvent} topOffset={headerHeight} />
         )}
 
         {/* WAR ROOM PANEL */}
@@ -3923,8 +4903,38 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
             onSelect={ev => { focusEvent(ev); }}
             selectedEventId={selectedEvent?.id}
             onClose={() => setShowWarRoom(false)}
+            marketImpact={marketImpact}
+            systemStatus={systemStatus}
+            adminUnlocked={adminSession.unlocked}
+            onAdminUnlock={handleAdminUnlock}
+            onAdminRefresh={handleAdminRefresh}
+            onOpenIntelBoard={() => onNavigate?.("classic")}
+            refreshState={refreshState}
+            demoMode={DEMO_MODE}
           />
         )}
+
+        {showWarRoom && isMobile && (
+          <WarRoomPanel
+            topEvents={liveTopEvents}
+            onSelect={(ev) => { focusEvent(ev); setShowWarRoom(false); }}
+            selectedEventId={selectedEvent?.id}
+            onClose={() => setShowWarRoom(false)}
+            marketImpact={marketImpact}
+            systemStatus={systemStatus}
+            adminUnlocked={adminSession.unlocked}
+            onAdminUnlock={handleAdminUnlock}
+            onAdminRefresh={handleAdminRefresh}
+            onOpenIntelBoard={() => { setShowWarRoom(false); onNavigate?.("classic"); }}
+            refreshState={refreshState}
+            mobile
+            demoMode={DEMO_MODE}
+          />
+        )}
+
+        {selectedMarketImpact && isMobile ? (
+          <MarketImpactDetailPanel item={selectedMarketImpact} onClose={() => setSelectedMarketKey(null)} isMobile />
+        ) : null}
 
         {/* PERSONALIZATION PANEL */}
         {showPersonalize && !isMobile && (
@@ -3946,6 +4956,7 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
               event={selectedEvent}
               activeScenario={activeScenario}
               onScenarioChange={setActiveScenario}
+              allEvents={filteredEvents}
               onClose={() => {
                 setPanelVisibility((current) => ({ ...current, selectedObjectDetail: false }));
                 setSelectedEvent(null);
@@ -3980,6 +4991,23 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
             activeLayers={activeLayers}
             onLayerToggle={handleLayerToggle}
             layerEntries={visibleLayerEntries}
+            briefing={briefing}
+            marketImpact={marketImpact}
+            flights={flights}
+            satellites={satellites}
+            onBriefingSelect={handleBriefingSelect}
+            onOpenIntelBoard={() => onNavigate?.("classic")}
+            refreshState={refreshState}
+            adminUnlocked={adminSession.unlocked}
+            onAdminUnlock={handleAdminUnlock}
+            onSelectObject={focusExternalObject}
+            allEvents={filteredEvents}
+            onAdminRefresh={handleAdminRefresh}
+            systemStatus={systemStatus}
+            selectedLens={selectedLens}
+            onLensChange={setSelectedLens}
+            strategicBrief={strategicBrief}
+            demoMode={DEMO_MODE}
           />
         )}
 

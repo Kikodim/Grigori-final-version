@@ -10,6 +10,20 @@ const APP_VIEWS = [
   { key: "classic", label: "Intel Board" },
   { key: "reports", label: "Personalized Reports" },
 ];
+const WAITLIST_FOCUS_OPTIONS = [
+  "Investing / Markets",
+  "Energy",
+  "Shipping",
+  "Defense",
+  "Cyber",
+  "EU / Balkans",
+  "General Geopolitics",
+];
+const WAITLIST_TIER_OPTIONS = [
+  { value: "confidential", label: "Confidential Clearance" },
+  { value: "top_secret", label: "Top Secret Clearance" },
+  { value: "not_sure", label: "Not sure yet" },
+];
 
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || "";
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY || "";
@@ -200,25 +214,29 @@ function AuthField({ label, type = "text", value, onChange, placeholder }) {
 }
 
 function InterestForm({ form, setForm, onSubmit, status }) {
+  const labelStyle = { display: "grid", gap: 8 };
+  const helperStyle = { color: "#94a3b8", fontSize: 10, fontFamily: MONO_FONT, letterSpacing: "0.14em", textTransform: "uppercase" };
+
   return (
     <form onSubmit={onSubmit} style={{ display: "grid", gap: 14 }}>
       <div style={{ display: "grid", gridTemplateColumns: "1.2fr 1fr", gap: 12 }}>
         <AuthField label="Email" type="email" value={form.email} onChange={(value) => setForm((current) => ({ ...current, email: value }))} placeholder="you@company.com" />
-        <label style={{ display: "grid", gap: 8 }}>
-      <span style={{ color: "#94a3b8", fontSize: 10, fontFamily: MONO_FONT, letterSpacing: "0.14em", textTransform: "uppercase" }}>Interest Tier</span>
+        <label style={labelStyle}>
+          <span style={helperStyle}>Interested Tier</span>
           <select
             value={form.interestTier}
             onChange={(event) => setForm((current) => ({ ...current, interestTier: event.target.value }))}
             style={{ background: "rgba(2, 8, 23, 0.72)", border: "1px solid rgba(51,65,85,0.95)", color: "#e2e8f0", borderRadius: 12, padding: "12px 14px", fontSize: 14 }}
           >
-            <option value="confidential">Confidential</option>
-            <option value="top_secret">Top Secret</option>
+            {WAITLIST_TIER_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>{option.label}</option>
+            ))}
           </select>
         </label>
       </div>
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-        <label style={{ display: "grid", gap: 8 }}>
-          <span style={{ color: "#94a3b8", fontSize: 10, fontFamily: MONO_FONT, letterSpacing: "0.14em", textTransform: "uppercase" }}>Priority Region</span>
+        <label style={labelStyle}>
+          <span style={helperStyle}>Region of Interest</span>
           <select
             value={form.requestedRegion}
             onChange={(event) => setForm((current) => ({ ...current, requestedRegion: event.target.value }))}
@@ -227,11 +245,42 @@ function InterestForm({ form, setForm, onSubmit, status }) {
             {REPORT_INPUT_OPTIONS.regions.map((region) => <option key={region} value={region}>{region}</option>)}
           </select>
         </label>
-        <AuthField label="Notes" value={form.note} onChange={(value) => setForm((current) => ({ ...current, note: value }))} placeholder="Audience, industry, or region focus" />
+        <label style={labelStyle}>
+          <span style={helperStyle}>Focus Area</span>
+          <select
+            value={form.focusArea}
+            onChange={(event) => setForm((current) => ({ ...current, focusArea: event.target.value }))}
+            style={{ background: "rgba(2, 8, 23, 0.72)", border: "1px solid rgba(51,65,85,0.95)", color: "#e2e8f0", borderRadius: 12, padding: "12px 14px", fontSize: 14 }}
+          >
+            {WAITLIST_FOCUS_OPTIONS.map((focus) => <option key={focus} value={focus}>{focus}</option>)}
+          </select>
+        </label>
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+        <AuthField label="Intended Use Case" value={form.intendedUseCase} onChange={(value) => setForm((current) => ({ ...current, intendedUseCase: value }))} placeholder="Board briefings, investing, security planning..." />
+        <AuthField label="LinkedIn Profile (Optional)" value={form.linkedinProfile} onChange={(value) => setForm((current) => ({ ...current, linkedinProfile: value }))} placeholder="https://linkedin.com/in/..." />
+      </div>
+      <div style={{ display: "grid", gap: 8 }}>
+        <span style={helperStyle}>Additional Context</span>
+        <textarea
+          value={form.note}
+          onChange={(event) => setForm((current) => ({ ...current, note: event.target.value }))}
+          placeholder="Tell us which regions, sectors, or strategic questions matter most to you."
+          rows={4}
+          style={{
+            background: "rgba(2, 8, 23, 0.72)",
+            border: "1px solid rgba(51,65,85,0.95)",
+            color: "#e2e8f0",
+            borderRadius: 12,
+            padding: "12px 14px",
+            fontSize: 14,
+            resize: "vertical",
+          }}
+        />
       </div>
       <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
         <button type="submit" style={{ border: "1px solid rgba(125,211,252,0.28)", borderRadius: 999, background: "rgba(56,189,248,0.16)", color: "#f8fafc", padding: "11px 16px", cursor: "pointer", fontFamily: MONO_FONT, letterSpacing: "0.12em", textTransform: "uppercase" }}>
-          Join Waitlist
+          Request Early Access
         </button>
         {status ? (
           <span style={{ color: status.type === "error" ? "#fda4af" : "#93c5fd", fontSize: 12, fontFamily: MONO_FONT }}>
@@ -375,7 +424,7 @@ function WaitlistAdminPanel({ entries, status, onLoad }) {
                 {new Date(entry.created_at).toLocaleString("en-GB", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" })}
               </div>
               {entry.note ? (
-                <div style={{ color: "#cbd5e1", lineHeight: 1.7, marginTop: 10 }}>
+                <div style={{ color: "#cbd5e1", lineHeight: 1.7, marginTop: 10, whiteSpace: "pre-wrap" }}>
                   {entry.note}
                 </div>
               ) : null}
@@ -461,10 +510,19 @@ export default function ReportsApp({ activeView = "reports", onNavigate }) {
   const [subscription, setSubscription] = useState(null);
   const [history, setHistory] = useState([]);
   const [historyState, setHistoryState] = useState({ status: "idle", message: "" });
-  const [waitlistForm, setWaitlistForm] = useState({ email: "", interestTier: "confidential", requestedRegion: "Global", note: "" });
+  const [waitlistForm, setWaitlistForm] = useState({
+    email: "",
+    interestTier: "confidential",
+    requestedRegion: "Global",
+    focusArea: "General Geopolitics",
+    intendedUseCase: "",
+    linkedinProfile: "",
+    note: "",
+  });
   const [waitlistStatus, setWaitlistStatus] = useState(null);
   const [waitlistEntries, setWaitlistEntries] = useState([]);
   const [adminWaitlistStatus, setAdminWaitlistStatus] = useState(null);
+  const [showAdminWaitlist, setShowAdminWaitlist] = useState(false);
   const [previewStatus, setPreviewStatus] = useState(null);
   const [reportForm, setReportForm] = useState({
     region: REPORT_INPUT_OPTIONS.regions[0],
@@ -557,8 +615,15 @@ export default function ReportsApp({ activeView = "reports", onNavigate }) {
         body: JSON.stringify(waitlistForm),
       });
       setWaitlistStatus({ type: "success", message: data.message || "Waitlist saved." });
+      setWaitlistForm((current) => ({
+        ...current,
+        email: "",
+        intendedUseCase: "",
+        linkedinProfile: "",
+        note: "",
+      }));
     } catch (error) {
-      setWaitlistStatus({ type: "error", message: error.message || "Unable to save waitlist interest." });
+      setWaitlistStatus({ type: "error", message: "We couldn't save your request just now. Please try again shortly." });
     }
   }, [waitlistForm]);
 
@@ -644,6 +709,7 @@ export default function ReportsApp({ activeView = "reports", onNavigate }) {
             <HeaderNav activeView={activeView} onNavigate={onNavigate} />
             <div style={{ display: "flex", gap: 10, flexWrap: "wrap", justifyContent: "flex-end" }}>
               <PremiumBadge tone="warning">Work in Progress</PremiumBadge>
+              <PremiumBadge>Public Preview</PremiumBadge>
               <PremiumBadge tone="success">Operational</PremiumBadge>
             </div>
           </div>
@@ -692,7 +758,7 @@ export default function ReportsApp({ activeView = "reports", onNavigate }) {
 
           <ShellCard title="Early Access Waitlist" eyebrow="Stay in the loop">
             <div style={{ color: "#cbd5e1", lineHeight: 1.8, marginBottom: 18 }}>
-              Share your priority region and preferred tier. We’ll use this to shape the launch order for premium reporting.
+              Share your focus area, region of interest, and intended use case. We’ll use this to shape the early-access rollout for Grigori Reports.
             </div>
             <InterestForm form={waitlistForm} setForm={setWaitlistForm} onSubmit={handleWaitlist} status={waitlistStatus} />
           </ShellCard>
@@ -765,11 +831,32 @@ export default function ReportsApp({ activeView = "reports", onNavigate }) {
           </ShellCard>
         </div>
 
-        <WaitlistAdminPanel
-          entries={waitlistEntries}
-          status={adminWaitlistStatus}
-          onLoad={handleLoadWaitlist}
-        />
+        <div style={{ display: "grid", gap: 12, justifyItems: "start" }}>
+          <button
+            onClick={() => setShowAdminWaitlist((current) => !current)}
+            style={{
+              border: "1px solid rgba(71,85,105,0.82)",
+              borderRadius: 999,
+              background: "rgba(15,23,42,0.82)",
+              color: "#cbd5e1",
+              padding: "10px 14px",
+              cursor: "pointer",
+              fontFamily: MONO_FONT,
+              textTransform: "uppercase",
+              letterSpacing: "0.12em",
+              fontSize: 10,
+            }}
+          >
+            {showAdminWaitlist ? "Hide Admin Waitlist" : "Admin Waitlist Tools"}
+          </button>
+          {showAdminWaitlist ? (
+            <WaitlistAdminPanel
+              entries={waitlistEntries}
+              status={adminWaitlistStatus}
+              onLoad={handleLoadWaitlist}
+            />
+          ) : null}
+        </div>
       </div>
     </div>
   );

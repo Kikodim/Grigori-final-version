@@ -49,9 +49,19 @@ function validateSupabaseUrl(rawUrl) {
 
 function normalizeEvent(row) {
   if (!row) return null;
+  const location = row.location ?? {};
+  const normalizedLocationLabel = String(location.label ?? "").trim().toLowerCase() === "unknown region"
+    ? "Region under review"
+    : (location.label ?? "Region under review");
 
   return {
     ...row,
+    location: {
+      ...location,
+      label: normalizedLocationLabel,
+      confidence: location.confidence ?? (normalizedLocationLabel === "Region under review" ? "Low" : undefined),
+      reason: location.reason ?? (normalizedLocationLabel === "Region under review" ? "Location signals remain under review." : undefined),
+    },
     articleIds: row.articleIds ?? row.article_ids ?? [],
     aiStatus: row.aiStatus ?? row.ai_status ?? "fallback",
     aiUpdatedAt: row.aiUpdatedAt ?? row.ai_updated_at ?? null,
@@ -693,7 +703,7 @@ export async function saveWaitlistEntry(entry) {
     return { persisted: true, mode: "supabase" };
   } catch (err) {
     log.warn(`Supabase waitlist insert failed: ${err.message}`);
-    return { persisted: false, mode: "memory", error: err.message };
+    return { persisted: false, mode: "supabase", error: err.message };
   }
 }
 

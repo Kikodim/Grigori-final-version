@@ -99,7 +99,7 @@ function Shell() {
         border: "1px solid rgba(86, 146, 180, 0.18)",
         backdropFilter: "blur(14px)",
       }}>
-        Built by oryth.io
+        Built by oryth.io · Open-source intelligence signals. Not financial advice.
       </div>
     </div>
   );

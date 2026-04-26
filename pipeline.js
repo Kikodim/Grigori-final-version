@@ -2,6 +2,7 @@ import { createHash } from "crypto";
 import { ingest } from "./ingest.js";
 import { cluster } from "./cluster.js";
 import { cacheHas, cachePrune, getAIStatus, makeClusterKey, processCluster } from "./ai.js";
+import { inferLocationDetails } from "./event-insights.js";
 import { getAllArticles } from "./store.js";
 import { buildRuleBasedBriefing } from "./rule-based-briefing.js";
 import { deleteOldEvents, getRecentEvents, insertEvent } from "./supabase.js";
@@ -64,7 +65,7 @@ function findExistingEvent(preEvent, previousEvents) {
 
   return previousEvents.find((event) => {
     const sameTitle = normalizeText(event.title) === normalizeText(preEvent.title);
-    const sameLocation = normalizeText(event.location?.label) === normalizeText(preEvent.region?.label ?? "Unknown Region");
+    const sameLocation = normalizeText(event.location?.label) === normalizeText(preEvent.region?.label ?? "Region under review");
     const delta = Math.abs(new Date(event.timestamp).getTime() - new Date(preEvent.timestamp).getTime());
     return sameTitle && sameLocation && delta <= 24 * 60 * 60 * 1000;
   }) ?? null;
@@ -223,6 +224,7 @@ async function runAiOnlyRefresh({ source, noAi, startedAt }) {
   await insertEvent({
     ...target.event,
     title: result.title,
+    location: result.location ?? target.event.location,
     summary: result.summary,
     developments: result.developments,
     tone: result.tone,
@@ -396,11 +398,22 @@ export async function runPipeline({ source = "manual", noAi = false, mode = "ful
   for (const preEvent of preEvents) {
     const result = results.get(preEvent._clusterId);
     if (!result) continue;
+    const articles = preEvent.articleIds
+      .map((id) => articleStore.get(id))
+      .filter(Boolean);
+    const resolvedLocation = result.location ?? inferLocationDetails({
+      ...preEvent,
+      location: preEvent.region,
+      summary: result.summary,
+      sources: preEvent.sources,
+      keywords: preEvent.keywords,
+      articleIds: preEvent.articleIds,
+    }, articles);
 
     await insertEvent({
       id: makeEventId(preEvent),
       title: result.title,
-      location: preEvent.region ?? { label: "Unknown Region", lat: null, lng: null },
+      location: resolvedLocation ?? { label: "Region under review", lat: null, lng: null, confidence: "Low", reason: "Location signals remain under review." },
       timestamp: preEvent.timestamp,
       summary: result.summary,
       developments: result.developments,

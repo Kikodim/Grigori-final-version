@@ -211,9 +211,15 @@ Schema:
   "developments": ["string","string","string"],
   "tone": "Escalating|Stable|De-escalating",
   "confidence": "Low|Medium|High",
+  "locationLabel": "string",
+  "locationLat": 0,
+  "locationLng": 0,
+  "locationConfidence": "Low|Medium|High",
+  "locationReason": "string",
   "confidenceReasoning": "string",
   "sourceSignalReasoning": "string",
   "watchIndicators72h": ["string","string","string"],
+  "whyThisMatters": "string",
   "scenarios": [
     {
       "name": "string",
@@ -246,6 +252,7 @@ Rules:
 - each scenario description should include market impact, sector impact, and trade route implications when relevant
 - include 72h watch indicators grounded in source signals
 - include concise confidence reasoning and source signal reasoning
+- if location is uncertain, keep locationLabel conservative and set locationConfidence to Low
 - scenario probabilities must sum to 100
 - sectors allowed: Energy, Defense, Tech, Shipping, Food, Finance, Trade, Semiconductors`;
 
@@ -402,6 +409,9 @@ function _validate(raw, fb) {
         oil:     V_OIL.has(s.impact?.oil)     ? s.impact.oil     : "Neutral",
         markets: V_MKT.has(s.impact?.markets) ? s.impact.markets : "Neutral",
         sectors: (Array.isArray(s.impact?.sectors) ? s.impact.sectors : []).filter((x) => V_SEC.has(x)),
+        tradeRoutes: ["Open", "Stressed", "Disrupted", "Neutral"].includes(s.impact?.tradeRoutes)
+          ? s.impact.tradeRoutes
+          : "Neutral",
       },
     }));
     const tot = scenarios.reduce((s, x) => s + x.probability, 0);
@@ -417,6 +427,20 @@ function _validate(raw, fb) {
     developments: Array.isArray(raw.developments) ? raw.developments.filter((d) => typeof d === "string").slice(0, 3) : [],
     tone:         V_TONE.has(raw.tone)  ? raw.tone        : "Stable",
     confidence:   V_CONF.has(raw.confidence) ? raw.confidence : fb.confidence,
+    location: {
+      ...(fb.location ?? {}),
+      label: String(raw.locationLabel ?? fb.location?.label ?? "Region under review"),
+      lat: Number.isFinite(Number(raw.locationLat)) ? Number(raw.locationLat) : fb.location?.lat ?? null,
+      lng: Number.isFinite(Number(raw.locationLng)) ? Number(raw.locationLng) : fb.location?.lng ?? null,
+      confidence: V_CONF.has(raw.locationConfidence) ? raw.locationConfidence : fb.location?.confidence ?? "Low",
+      reason: String(raw.locationReason ?? fb.location?.reason ?? "Location derived from source signals."),
+    },
+    whyThisMatters: String(raw.whyThisMatters ?? fb.whyThisMatters ?? ""),
+    watchIndicators72h: Array.isArray(raw.watchIndicators72h)
+      ? raw.watchIndicators72h.filter((item) => typeof item === "string").slice(0, 5)
+      : (fb.watchIndicators72h ?? []),
+    confidenceReasoning: String(raw.confidenceReasoning ?? ""),
+    sourceSignalReasoning: String(raw.sourceSignalReasoning ?? ""),
     scenarios:    scenarios.slice(0, 3),
   };
 }

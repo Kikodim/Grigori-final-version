@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
+  buildEventBrief,
   deriveImportance,
   deriveRiskLevel,
   explainConfidence,
   getEventSourceSignals,
   getMarketImpactTags,
+  inferLocationDetails,
 } from "./event-insights.js";
 
 const EVENTS_ENDPOINT = "/api/v1/events?limit=50";
@@ -71,7 +73,7 @@ function mapEvent(event) {
 
   return {
     ...event,
-    location: event.location ?? { label: "Unknown Region", lat: null, lng: null },
+    location: inferLocationDetails({ ...event, location: event.location ?? { label: "Region under review", lat: null, lng: null } }),
     summary: event.summary ?? "Rule-based briefing generated from source signals.",
     developments: Array.isArray(event.developments) ? event.developments : [],
     tone: event.tone ?? "Stable",
@@ -176,6 +178,7 @@ function EmptyState({ title, body, action }) {
 
 function IntelCard({ event }) {
   const toneColor = mapToneColor(event.tone);
+  const brief = buildEventBrief(event);
 
   return (
     <article style={{
@@ -218,7 +221,7 @@ function IntelCard({ event }) {
       </div>
 
       <div style={{ color: "#c6d5e3", fontSize: 15, lineHeight: 1.8, fontFamily: BODY_FONT }}>
-        {event.summary}
+        {brief.whatHappened}
       </div>
 
       <div style={{ display: "grid", gridTemplateColumns: "1.3fr 1fr", gap: 18 }}>
@@ -241,13 +244,13 @@ function IntelCard({ event }) {
             Confidence & Sources
           </div>
           <div style={{ color: "#cbd5e1", lineHeight: 1.7, marginBottom: 12, fontFamily: BODY_FONT }}>
-            {event.confidenceExplanation}
+            {brief.confidenceExplanation}
           </div>
           <div style={{ color: "#94a3b8", fontFamily: MONO_FONT, fontSize: 11, marginBottom: 8 }}>
-            Sources: {event.sourceSignals.uniqueSources.slice(0, 3).join(", ") || "No named sources"}
+            Sources: {brief.sourceTrace.domains.slice(0, 3).join(", ") || "No named sources"}
           </div>
           <div style={{ color: "#94a3b8", fontFamily: MONO_FONT, fontSize: 11 }}>
-            Signals: {event.sourceSignals.sourceCount} sources / {event.sourceSignals.corroboratedCount} corroborated
+            Signals: {brief.sourceTrace.sourceCount} sources / {brief.sourceTrace.independentDomainCount} domains / {brief.sourceTrace.corroborationLabel}
           </div>
         </section>
       </div>
@@ -286,7 +289,7 @@ function IntelCard({ event }) {
             Sectors Impacted
           </div>
           <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-            {(event.sectorsImpacted.length > 0 ? event.sectorsImpacted : event.marketImpactTags).map((sector) => (
+            {(brief.sectorImpact.length > 0 ? brief.sectorImpact : event.marketImpactTags).map((sector) => (
               <SourcePill key={sector}>{sector}</SourcePill>
             ))}
           </div>
@@ -296,9 +299,9 @@ function IntelCard({ event }) {
             Sources
           </div>
           <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-            {event.sourceSignals.uniqueSources.map((source) => (
-              <SourcePill key={source}>{source}</SourcePill>
-            ))}
+            {brief.sourceTrace.links.length > 0 ? brief.sourceTrace.links.slice(0, 4).map((link) => (
+              <a key={link} href={link} target="_blank" rel="noreferrer" style={{ color: "#8ddfff", fontSize: 11, lineHeight: 1.6, wordBreak: "break-all" }}>{link}</a>
+            )) : brief.sourceTrace.domains.map((source) => <SourcePill key={source}>{source}</SourcePill>)}
           </div>
         </div>
       </section>
