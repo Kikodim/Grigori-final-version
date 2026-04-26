@@ -42,6 +42,8 @@ export function getIntegrationConfigStatus() {
   const supabaseUrl = describeEnvVar("SUPABASE_URL");
   const supabaseServiceRoleKey = describeEnvVar("SUPABASE_SERVICE_ROLE_KEY");
   const adminSecret = describeEnvVar("ADMIN_SECRET");
+  const aviationstack = describeEnvVar("AVIATIONSTACK_API_KEY");
+  const aishub = describeEnvVar("AISHUB_API_KEY");
 
   return {
     newsApi,
@@ -56,6 +58,8 @@ export function getIntegrationConfigStatus() {
       serviceRoleKey: supabaseServiceRoleKey,
     },
     adminSecret,
+    aviationstack,
+    aishub,
   };
 }
 
@@ -96,5 +100,20 @@ export function getConfig() {
     aiDailyLimit:           parseInt(process.env.AI_DAILY_LIMIT       ?? "20",  10),
     aiReservedCalls:        parseInt(process.env.AI_RESERVED_CALLS    ?? "2",   10),
     maxAiCallsPerRun:       parseInt(process.env.MAX_AI_CALLS_PER_RUN ?? "1",   10),
+    enableFlights:          String(process.env.ENABLE_FLIGHTS ?? "true").toLowerCase() !== "false",
+    aviationstackApiKey:    process.env.AVIATIONSTACK_API_KEY ?? "",
+    flightRefreshIntervalHours: parseInt(process.env.FLIGHT_REFRESH_INTERVAL_HOURS ?? "8", 10),
+    flightMonthlyLimit:     parseInt(process.env.FLIGHT_MONTHLY_LIMIT ?? "90", 10),
+    enableVessels:          String(process.env.ENABLE_VESSELS ?? "false").toLowerCase() === "true",
+    aisProvider:            process.env.AIS_PROVIDER ?? "aishub",
+    aishubApiKey:           process.env.AISHUB_API_KEY ?? "",
+    vesselRefreshIntervalHours: parseInt(process.env.VESSEL_REFRESH_INTERVAL_HOURS ?? "8", 10),
+    vesselMonthlyLimit:     parseInt(process.env.VESSEL_MONTHLY_LIMIT ?? "90", 10),
+    enableSatellites:       String(process.env.ENABLE_SATELLITES ?? "true").toLowerCase() !== "false",
+    satelliteSource:        process.env.SATELLITE_SOURCE ?? "celestrak",
+    satelliteRefreshIntervalHours: parseInt(process.env.SATELLITE_REFRESH_INTERVAL_HOURS ?? "12", 10),
+    maxFlightsRendered:     parseInt(process.env.MAX_FLIGHTS_RENDERED ?? "100", 10),
+    maxVesselsRendered:     parseInt(process.env.MAX_VESSELS_RENDERED ?? "100", 10),
+    maxSatellitesRendered:  parseInt(process.env.MAX_SATELLITES_RENDERED ?? "150", 10),
   };
 }

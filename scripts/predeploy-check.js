@@ -18,12 +18,17 @@ const requiredFiles = [
   "api/v1/health.js",
   "api/v1/admin/refresh.js",
   "api/v1/briefing.js",
+  "api/v1/flights/live.js",
+  "api/v1/vessels/live.js",
+  "api/v1/satellites/live.js",
+  "api/v1/layers/status.js",
   "api/v1/events/index.js",
   "api/v1/events/[id].js",
   "api/v1/events/stats.js",
   "api/v1/pipeline/run.js",
   "schema.sql",
   "supabase_migration_grigori_ai_fields.sql",
+  "supabase_migration_grigori_live_layers.sql",
 ];
 
 let hasError = false;

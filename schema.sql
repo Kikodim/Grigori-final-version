@@ -46,6 +46,25 @@ create table if not exists ai_usage_logs (
 
 create index if not exists ai_usage_logs_created_at on ai_usage_logs (created_at desc);
 
+create table if not exists external_layer_cache (
+  layer_key     text primary key,
+  payload       jsonb not null default '[]'::jsonb,
+  metadata      jsonb not null default '{}'::jsonb,
+  last_refresh  timestamptz,
+  next_refresh  timestamptz,
+  updated_at    timestamptz not null default now()
+);
+
+create table if not exists external_layer_usage (
+  id            bigint generated always as identity primary key,
+  layer_key     text not null,
+  source        text not null default 'api',
+  created_at    timestamptz not null default now()
+);
+
+create index if not exists external_layer_usage_layer_created_at
+  on external_layer_usage (layer_key, created_at desc);
+
 alter table events enable row level security;
 
 do $$

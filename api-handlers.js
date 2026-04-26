@@ -1,6 +1,7 @@
 import { getAIStatus } from "./ai.js";
 import { describeEnvVar, getConfig, getIntegrationConfigStatus } from "./config.js";
 import { buildBriefing } from "./event-insights.js";
+import { getFlightsLayer, getLayersStatus, getSatellitesLayer, getVesselsLayer } from "./layers.js";
 import { createLogger } from "./logger.js";
 import { runPipeline } from "./pipeline.js";
 import {
@@ -145,6 +146,28 @@ export async function handleBriefing(req, res) {
 
 export async function handleAIStatus(_req, res) {
   return res.status(200).json({ ok: true, ...(await getAIStatus()) });
+}
+
+export async function handleFlightsLive(_req, res) {
+  const result = await getFlightsLayer();
+  return res.status(200).json(result);
+}
+
+export async function handleVesselsLive(_req, res) {
+  const result = await getVesselsLayer();
+  return res.status(200).json(result);
+}
+
+export async function handleSatellitesLive(_req, res) {
+  const result = await getSatellitesLayer();
+  return res.status(200).json(result);
+}
+
+export async function handleLayersStatus(_req, res) {
+  return res.status(200).json({
+    ok: true,
+    ...(await getLayersStatus()),
+  });
 }
 
 export async function handlePipelineRun(req, res) {

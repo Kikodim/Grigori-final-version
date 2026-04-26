@@ -11,6 +11,8 @@ import {
 const log = createLogger("storage");
 const EQUIVALENT_EVENT_WINDOW_MS = 24 * 60 * 60 * 1000;
 const memoryAIUsageLog = [];
+const memoryLayerCache = new Map();
+const memoryLayerUsageLog = [];
 
 let clientPromise = null;
 let clientDisabled = false;
@@ -132,6 +134,13 @@ function utcDayStartIso(now = Date.now()) {
   return date.toISOString();
 }
 
+function utcMonthStartIso(now = Date.now()) {
+  const date = new Date(now);
+  date.setUTCDate(1);
+  date.setUTCHours(0, 0, 0, 0);
+  return date.toISOString();
+}
+
 function getMemoryAIUsageSnapshot() {
   const start = Date.parse(utcDayStartIso());
   const today = memoryAIUsageLog.filter((entry) => Date.parse(entry.created_at) >= start);
@@ -141,6 +150,22 @@ function getMemoryAIUsageSnapshot() {
     totalCalls: today.length,
     automationCalls: today.filter((entry) => entry.source === "automation").length,
   };
+}
+
+function getMemoryLayerUsageSnapshot(layerKey) {
+  const dayStart = Date.parse(utcDayStartIso());
+  const monthStart = Date.parse(utcMonthStartIso());
+  const rows = memoryLayerUsageLog.filter((entry) => entry.layer_key === layerKey);
+
+  return {
+    mode: "memory",
+    callsToday: rows.filter((entry) => Date.parse(entry.created_at) >= dayStart).length,
+    callsThisMonth: rows.filter((entry) => Date.parse(entry.created_at) >= monthStart).length,
+  };
+}
+
+function getMemoryLayerCacheRecord(layerKey) {
+  return memoryLayerCache.get(layerKey) ?? null;
 }
 
 function findEquivalentMemoryEvent(event) {
@@ -542,5 +567,134 @@ export async function healthCheck() {
       mode: "memory",
       detail: err.message,
     };
+  }
+}
+
+export async function getLayerCache(layerKey) {
+  const memoryRecord = getMemoryLayerCacheRecord(layerKey);
+  const db = await getClient();
+
+  if (!db) {
+    return { record: memoryRecord, mode: "memory" };
+  }
+
+  try {
+    const { data, error } = await db
+      .from("external_layer_cache")
+      .select("*")
+      .eq("layer_key", layerKey)
+      .maybeSingle();
+
+    if (error) {
+      throw error;
+    }
+
+    const record = data ? {
+      layerKey: data.layer_key,
+      payload: data.payload ?? [],
+      metadata: data.metadata ?? {},
+      lastRefresh: data.last_refresh ?? null,
+      nextRefresh: data.next_refresh ?? null,
+      updatedAt: data.updated_at ?? null,
+    } : null;
+
+    return { record: record ?? memoryRecord, mode: record ? "supabase" : "memory" };
+  } catch (err) {
+    log.warn(`Supabase layer cache lookup failed for ${layerKey} — using memory fallback (${err.message})`);
+    return { record: memoryRecord, mode: "memory" };
+  }
+}
+
+export async function setLayerCache(layerKey, payload, metadata = {}, nextRefresh = null) {
+  const now = new Date().toISOString();
+  const record = {
+    layerKey,
+    payload,
+    metadata,
+    lastRefresh: now,
+    nextRefresh,
+    updatedAt: now,
+  };
+  memoryLayerCache.set(layerKey, record);
+
+  const db = await getClient();
+  if (!db) {
+    return { persisted: false, mode: "memory", record };
+  }
+
+  try {
+    const row = {
+      layer_key: layerKey,
+      payload,
+      metadata,
+      last_refresh: now,
+      next_refresh: nextRefresh,
+      updated_at: now,
+    };
+    const { error } = await db.from("external_layer_cache").upsert(row);
+    if (error) {
+      throw error;
+    }
+    return { persisted: true, mode: "supabase", record };
+  } catch (err) {
+    log.warn(`Supabase layer cache upsert failed for ${layerKey}: ${err.message}`);
+    return { persisted: false, mode: "memory", error: err.message, record };
+  }
+}
+
+export async function recordLayerUsage(layerKey, source = "api") {
+  const entry = {
+    layer_key: layerKey,
+    source,
+    created_at: new Date().toISOString(),
+  };
+  memoryLayerUsageLog.push(entry);
+
+  const db = await getClient();
+  if (!db) {
+    return { persisted: false, mode: "memory" };
+  }
+
+  try {
+    const { error } = await db.from("external_layer_usage").insert(entry);
+    if (error) {
+      throw error;
+    }
+    return { persisted: true, mode: "supabase" };
+  } catch (err) {
+    log.warn(`Supabase layer usage insert failed for ${layerKey}: ${err.message}`);
+    return { persisted: false, mode: "memory", error: err.message };
+  }
+}
+
+export async function getLayerUsageStats(layerKey) {
+  const db = await getClient();
+  const dayStart = utcDayStartIso();
+  const monthStart = utcMonthStartIso();
+
+  if (!db) {
+    return getMemoryLayerUsageSnapshot(layerKey);
+  }
+
+  try {
+    const { data, error } = await db
+      .from("external_layer_usage")
+      .select("created_at")
+      .eq("layer_key", layerKey)
+      .gte("created_at", monthStart);
+
+    if (error) {
+      throw error;
+    }
+
+    const rows = data ?? [];
+    return {
+      mode: "supabase",
+      callsToday: rows.filter((entry) => entry.created_at >= dayStart).length,
+      callsThisMonth: rows.length,
+    };
+  } catch (err) {
+    log.warn(`Supabase layer usage lookup failed for ${layerKey} — using memory fallback (${err.message})`);
+    return getMemoryLayerUsageSnapshot(layerKey);
   }
 }

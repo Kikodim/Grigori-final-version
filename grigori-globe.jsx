@@ -398,45 +398,61 @@ function makeGlobeTex() {
   cv.width = W; cv.height = H;
   const ctx = cv.getContext("2d");
 
-  // ── Brighter ocean base — PART 1 FIX: opacity 1.0, clearly visible ──────
+  // Muted defense-tech ocean base
   const g = ctx.createLinearGradient(0, 0, 0, H);
-  g.addColorStop(0,   "#0d1e3f");   // brighter deep blue
-  g.addColorStop(0.5, "#0a1832");
-  g.addColorStop(1,   "#071022");
+  g.addColorStop(0,   "#10233e");
+  g.addColorStop(0.5, "#0a1728");
+  g.addColorStop(1,   "#060d18");
   ctx.fillStyle = g;
   ctx.fillRect(0, 0, W, H);
 
-  // Continental shelf suggestion — more visible tint
-  ctx.fillStyle = "rgba(18,45,85,0.28)";
+  // Continental shelf suggestion
+  ctx.fillStyle = "rgba(20,46,73,0.22)";
   [[0.12, 0.30], [0.35, 0.55], [0.60, 0.78]].forEach(([y0, y1]) => {
     ctx.fillRect(0, y0 * H, W, (y1 - y0) * H);
   });
 
-  // Ocean shimmer — brighter sparkles
-  for (let i = 0; i < 7000; i++) {
+  // Terrain-style grain for restrained topography
+  for (let i = 0; i < 9500; i++) {
     ctx.beginPath();
-    ctx.arc(Math.random() * W, Math.random() * H, Math.random() * 1.4, 0, Math.PI * 2);
-    ctx.fillStyle = `rgba(30,100,220,${Math.random() * 0.09})`;
+    ctx.arc(Math.random() * W, Math.random() * H, Math.random() * 1.2, 0, Math.PI * 2);
+    ctx.fillStyle = `rgba(${18 + Math.floor(Math.random() * 32)},${52 + Math.floor(Math.random() * 48)},${68 + Math.floor(Math.random() * 52)},${0.02 + Math.random() * 0.06})`;
     ctx.fill();
+  }
+
+  // Subtle mountain-range streaks
+  ctx.lineWidth = 1.1;
+  for (let i = 0; i < 48; i++) {
+    const y = Math.random() * H;
+    const amp = 6 + Math.random() * 14;
+    const phase = Math.random() * Math.PI * 2;
+    ctx.beginPath();
+    for (let x = 0; x <= W; x += 18) {
+      const offset = Math.sin((x / W) * Math.PI * (2 + Math.random() * 3) + phase) * amp;
+      if (x === 0) ctx.moveTo(x, y + offset);
+      else ctx.lineTo(x, y + offset);
+    }
+    ctx.strokeStyle = `rgba(118,148,128,${0.02 + Math.random() * 0.03})`;
+    ctx.stroke();
   }
 
   // Latitude grid
   ctx.lineWidth = 0.6;
   for (let lat = -90; lat <= 90; lat += 15) {
     const y = ((90 - lat) / 180) * H;
-    ctx.strokeStyle = lat === 0 ? "rgba(0,200,255,0.14)" : "rgba(0,140,220,0.05)";
+    ctx.strokeStyle = lat === 0 ? "rgba(0,200,255,0.12)" : "rgba(92,132,175,0.04)";
     ctx.lineWidth   = lat === 0 ? 1.2 : 0.6;
     ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke();
   }
   // Longitude grid
   ctx.lineWidth = 0.6;
-  ctx.strokeStyle = "rgba(0,140,220,0.04)";
+  ctx.strokeStyle = "rgba(86,120,165,0.035)";
   for (let lng = -180; lng <= 180; lng += 15) {
     const x = ((lng + 180) / 360) * W;
     ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke();
   }
   // Prime meridian
-  ctx.strokeStyle = "rgba(0,180,255,0.09)";
+  ctx.strokeStyle = "rgba(0,180,255,0.07)";
   ctx.lineWidth = 1;
   const pmX = (180 / 360) * W;
   ctx.beginPath(); ctx.moveTo(pmX, 0); ctx.lineTo(pmX, H); ctx.stroke();
@@ -600,7 +616,7 @@ function makeHotspot(ev) {
 
   // White core dot
   const core = addDisc(0, 0.007, 0xffffff, 1.0);
-  core.userData = { clickable: true, eventId: ev.id };
+  core.userData = { clickable: true, eventId: ev.id, objectType: "event", objectData: ev };
 
   // Coloured inner ring
   const ring1 = addDisc(0.009, 0.017, color, 0.85);
@@ -692,6 +708,60 @@ function buildImpactLayer(event, scenarioIndex) {
   return group;
 }
 
+function makeObjectMarker(item, type) {
+  const colorMap = {
+    flight: "#7ad0ff",
+    vessel: "#8cf0c9",
+    satellite: "#c68dff",
+  };
+  const liftMap = {
+    flight: 0.1,
+    vessel: 0.02,
+    satellite: 0.18,
+  };
+  const pos = geoToVec3(item.lat, item.lng, R + (liftMap[type] ?? 0.05));
+  const outward = geoToVec3(item.lat, item.lng, 1.0).normalize();
+  const color = new THREE.Color(colorMap[type] ?? "#ffffff");
+  const group = new THREE.Group();
+  group.userData = { objectType: type, objectData: item };
+
+  const shape = type === "flight"
+    ? new THREE.ConeGeometry(0.01, 0.035, 4)
+    : type === "vessel"
+      ? new THREE.BoxGeometry(0.022, 0.01, 0.04)
+      : new THREE.OctahedronGeometry(0.015, 0);
+  const mesh = new THREE.Mesh(shape, new THREE.MeshBasicMaterial({
+    color,
+    transparent: true,
+    opacity: 0.95,
+    depthWrite: false,
+  }));
+  mesh.userData = { clickable: true, objectType: type, objectData: item };
+  mesh.rotation.x = Math.PI / 2;
+
+  if (type !== "satellite" && Number.isFinite(item.heading)) {
+    mesh.rotation.z = -(item.heading * Math.PI / 180);
+  }
+
+  const halo = new THREE.Mesh(
+    new THREE.RingGeometry(0.018, 0.024, 18),
+    new THREE.MeshBasicMaterial({
+      color,
+      transparent: true,
+      opacity: 0.24,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+    })
+  );
+  halo.userData = { pulse: true, speed: 1.4, base: 0.22, phase: Math.random() * Math.PI };
+
+  group.add(mesh, halo);
+  group.position.copy(pos);
+  group.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), outward);
+  return group;
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 
 
@@ -711,120 +781,6 @@ function cacheGet(key) {
 }
 function cacheSet(key, data, ttlMs = 15 * 60 * 1000) {
   _dataCache.set(key, { data, expiresAt: Date.now() + ttlMs });
-}
-
-// ── Gemini AI request queue + SHA-256 cache ───────────────────────────────────
-const _aiCache     = new Map();  // sha256(prompt) → result
-const _aiQueue     = [];
-let   _aiRunning   = false;
-const AI_RPM_LIMIT = 14;          // stay under Gemini 15 RPM free tier
-let   _aiCallsThisMinute = 0;
-let   _aiWindowStart     = Date.now();
-
-async function _sha256(str) {
-  const buf  = new TextEncoder().encode(str);
-  const hash = await crypto.subtle.digest("SHA-256", buf);
-  return Array.from(new Uint8Array(hash)).map(b => b.toString(16).padStart(2,"0")).join("");
-}
-
-async function callGemini(prompt, systemPrompt) {
-  const cacheKey = await _sha256(systemPrompt + prompt);
-  if (_aiCache.has(cacheKey)) return _aiCache.get(cacheKey);
-
-  return new Promise((resolve, reject) => {
-    _aiQueue.push({ prompt, systemPrompt, cacheKey, resolve, reject });
-    _drainAIQueue();
-  });
-}
-
-async function _drainAIQueue() {
-  if (_aiRunning || _aiQueue.length === 0) return;
-  _aiRunning = true;
-
-  while (_aiQueue.length > 0) {
-    // Reset RPM window every 60 seconds
-    if (Date.now() - _aiWindowStart > 60_000) {
-      _aiCallsThisMinute = 0;
-      _aiWindowStart     = Date.now();
-    }
-
-    if (_aiCallsThisMinute >= AI_RPM_LIMIT) {
-      // Wait until window resets
-      await new Promise(r => setTimeout(r, 61_000 - (Date.now() - _aiWindowStart)));
-      _aiCallsThisMinute = 0;
-      _aiWindowStart     = Date.now();
-    }
-
-    const job = _aiQueue.shift();
-    try {
-      const result = await _geminiCall(job.prompt, job.systemPrompt);
-      _aiCache.set(job.cacheKey, result);
-      _aiCallsThisMinute++;
-      job.resolve(result);
-    } catch (err) {
-      job.reject(err);
-    }
-
-    // Enforce minimum spacing: 60s / 14 = ~4.3s between calls
-    if (_aiQueue.length > 0) await new Promise(r => setTimeout(r, 4400));
-  }
-
-  _aiRunning = false;
-}
-
-async function _geminiCall(userPrompt, systemPrompt) {
-  // Uses the Gemini REST API directly (no SDK)
-  // API key must be set via window.GEMINI_API_KEY or env injection
-  const apiKey = window.__GRIGORI_GEMINI_KEY || "";
-  if (!apiKey) throw new Error("No Gemini API key configured");
-
-  const body = {
-    system_instruction: { parts: [{ text: systemPrompt }] },
-    contents: [{ role: "user", parts: [{ text: userPrompt }] }],
-    generationConfig: {
-      maxOutputTokens: 1200,
-      temperature:     0.2,
-      responseMimeType: "application/json",
-    },
-  };
-
-  const res = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`,
-    { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }
-  );
-  if (!res.ok) throw new Error(`Gemini ${res.status}: ${await res.text()}`);
-  const data = await res.json();
-  const text = data.candidates?.[0]?.content?.parts?.map(p => p.text).join("") ?? "";
-  const clean = text.replace(/```json|```/g, "").trim();
-  return JSON.parse(clean);
-}
-
-// ── AI Scenario generation prompt ──────────────────────────────────────────────
-const SCENARIO_SYSTEM_PROMPT = `You are Grigori, a senior geopolitical intelligence analyst.
-Given a news cluster, generate 2-3 scenarios as a JSON array.
-Respond ONLY with a JSON array, no markdown, no preamble.
-Schema: [{ "name": string, "probability": number, "description": string,
-  "impact": { "oil": "Up"|"Neutral"|"Down", "markets": "Risk-on"|"Risk-off"|"Stable",
-    "tradeRoutes": "Disrupted"|"Stable", "sectors": string[], "regionalEffects": string[] }}]
-Probabilities must sum to 100. sectors from: Energy,Defense,Tech,Shipping,Food,Finance.`;
-
-async function generateScenarios(eventData) {
-  const prompt = `Event: ${eventData.title}
-Region: ${eventData.region || "Unknown"}
-Summary: ${eventData.summary}
-Tone: ${eventData.tone || "Unknown"}
-Developments: ${(eventData.developments || []).join("; ")}
-
-Generate 2-3 geopolitical scenarios for this event.`;
-
-  try {
-    const scenarios = await callGemini(prompt, SCENARIO_SYSTEM_PROMPT);
-    if (Array.isArray(scenarios)) return scenarios;
-    return null;
-  } catch (err) {
-    console.warn("[Grigori] Gemini scenario gen failed:", err.message);
-    return null;
-  }
 }
 
 // ── GDELT news fetcher ─────────────────────────────────────────────────────────
@@ -1061,6 +1017,102 @@ async function fetchLiveEvents() {
   return [...SCORED_EVENTS, ...enriched].map(decorateEventForUi);
 }
 
+const MAX_FLIGHTS_RENDERED = 100;
+const MAX_VESSELS_RENDERED = 100;
+const MAX_SATELLITES_RENDERED = 150;
+
+function normalizeFlightObject(item) {
+  return {
+    id: item.id ?? item.flightNumber,
+    type: "flight",
+    title: item.flightNumber ?? "Flight",
+    lat: Number(item.lat ?? 0),
+    lng: Number(item.lng ?? 0),
+    flightNumber: item.flightNumber ?? "Unknown",
+    airline: item.airline ?? "Unknown Airline",
+    departureAirport: item.departureAirport ?? "Unknown",
+    arrivalAirport: item.arrivalAirport ?? "Unknown",
+    departureCity: item.departureCity ?? "Unknown",
+    arrivalCity: item.arrivalCity ?? "Unknown",
+    altitude: item.altitude ?? null,
+    speed: item.speed ?? null,
+    heading: item.heading ?? null,
+    status: item.status ?? "unknown",
+    updatedAt: item.updatedAt ?? null,
+  };
+}
+
+function normalizeVesselObject(item) {
+  return {
+    id: item.id ?? item.mmsi,
+    type: "vessel",
+    title: item.name ?? "Vessel",
+    lat: Number(item.lat ?? 0),
+    lng: Number(item.lng ?? 0),
+    mmsi: item.mmsi ?? "Unknown",
+    name: item.name ?? "Unknown Vessel",
+    vesselType: item.vesselType ?? "Unknown",
+    speed: item.speed ?? null,
+    heading: item.heading ?? null,
+    destination: item.destination ?? "Unknown",
+    eta: item.eta ?? null,
+    flag: item.flag ?? null,
+    updatedAt: item.updatedAt ?? null,
+  };
+}
+
+function normalizeSatelliteObject(item) {
+  return {
+    id: item.id ?? item.noradId,
+    type: "satellite",
+    title: item.name ?? "Satellite",
+    lat: Number(item.lat ?? 0),
+    lng: Number(item.lng ?? 0),
+    name: item.name ?? "Unknown Satellite",
+    noradId: item.noradId ?? "Unknown",
+    satelliteType: item.type ?? "Satellite",
+    altitudeKm: item.altitudeKm ?? null,
+    inclination: item.inclination ?? null,
+    updatedAt: item.updatedAt ?? null,
+  };
+}
+
+async function fetchLayerStatus() {
+  const res = await fetch(resolveBackendUrl("/api/v1/layers/status"), { signal: AbortSignal.timeout(8000) });
+  if (!res.ok) throw new Error(`layers ${res.status}`);
+  return res.json();
+}
+
+async function fetchFlightsLive() {
+  const res = await fetch(resolveBackendUrl("/api/v1/flights/live"), { signal: AbortSignal.timeout(12000) });
+  if (!res.ok) throw new Error(`flights ${res.status}`);
+  const data = await res.json();
+  return {
+    ...data,
+    data: Array.isArray(data.data) ? data.data.slice(0, MAX_FLIGHTS_RENDERED).map(normalizeFlightObject) : [],
+  };
+}
+
+async function fetchVesselsLive() {
+  const res = await fetch(resolveBackendUrl("/api/v1/vessels/live"), { signal: AbortSignal.timeout(12000) });
+  if (!res.ok) throw new Error(`vessels ${res.status}`);
+  const data = await res.json();
+  return {
+    ...data,
+    data: Array.isArray(data.data) ? data.data.slice(0, MAX_VESSELS_RENDERED).map(normalizeVesselObject) : [],
+  };
+}
+
+async function fetchSatellitesLive() {
+  const res = await fetch(resolveBackendUrl("/api/v1/satellites/live"), { signal: AbortSignal.timeout(12000) });
+  if (!res.ok) throw new Error(`satellites ${res.status}`);
+  const data = await res.json();
+  return {
+    ...data,
+    data: Array.isArray(data.data) ? data.data.slice(0, MAX_SATELLITES_RENDERED).map(normalizeSatelliteObject) : [],
+  };
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // PERSONALIZATION SYSTEM  (PART 6)
 // User preferences for region / sector / risk filtering
@@ -1259,9 +1311,9 @@ function WatchlistPanel({ watchlist, selectedEvent, onToggleRegion, onToggleTopi
   );
 }
 
-function BriefingPanel({ briefing, onSelect }) {
+function BriefingPanel({ briefing, onSelect, onClose }) {
   return (
-    <FloatingPanel title="Today's Briefing" subtitle="Top 5 by importance and freshness" top={56} left={560} width={320}>
+    <FloatingPanel title="Today's Briefing" subtitle="Top 5 by importance and freshness" top={56} left={560} width={320} onClose={onClose}>
       {briefing.items.length === 0 ? (
         <div style={{ color: "rgba(130,185,230,0.62)", fontSize: 11, fontFamily: mono }}>No briefing items available yet.</div>
       ) : (
@@ -1302,10 +1354,10 @@ function BriefingPanel({ briefing, onSelect }) {
   );
 }
 
-function MarketImpactDashboard({ aggregate }) {
+function MarketImpactDashboard({ aggregate, onClose }) {
   const items = [aggregate.oil, aggregate.shipping, aggregate.defense, aggregate.tech, aggregate.equities];
   return (
-    <FloatingPanel title="Market Impact" subtitle="Scenario-weighted dashboard" top={56} right={16} width={240}>
+    <FloatingPanel title="Market Impact" subtitle="Scenario-weighted dashboard" top={56} right={16} width={240} onClose={onClose}>
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
         {items.map((item) => (
           <div key={item.label} style={{ background: "rgba(0,24,54,0.42)", border: "1px solid rgba(0,180,255,0.08)", borderRadius: 7, padding: "9px 10px" }}>
@@ -1323,7 +1375,7 @@ function MarketImpactDashboard({ aggregate }) {
   );
 }
 
-function TimelinePanel({ modeHours, onModeChange, sliderPercent, onSliderChange, cursorLabel, visibleCount }) {
+function TimelinePanel({ modeHours, onModeChange, sliderPercent, onSliderChange, cursorLabel, visibleCount, onClose }) {
   const options = [
     { label: "24h", value: 24 },
     { label: "7d", value: 24 * 7 },
@@ -1331,7 +1383,7 @@ function TimelinePanel({ modeHours, onModeChange, sliderPercent, onSliderChange,
   ];
 
   return (
-    <FloatingPanel title="Timeline" subtitle={`${visibleCount} events visible`} top={56} left={272} width={272}>
+    <FloatingPanel title="Timeline" subtitle={`${visibleCount} events visible`} top={56} left={272} width={272} onClose={onClose}>
       <div style={{ display: "flex", gap: 6, marginBottom: 12 }}>
         {options.map((option) => (
           <button key={option.value} onClick={() => onModeChange(option.value)} style={{
@@ -1355,6 +1407,130 @@ function TimelinePanel({ modeHours, onModeChange, sliderPercent, onSliderChange,
         <span style={{ color: "rgba(150,205,245,0.5)", fontSize: 10, fontFamily: mono }}>Range start</span>
         <span style={{ color: "rgba(200,230,255,0.78)", fontSize: 10, fontFamily: mono }}>{cursorLabel}</span>
       </div>
+    </FloatingPanel>
+  );
+}
+
+function formatLayerTime(value) {
+  if (!value) return "n/a";
+  try {
+    return new Date(value).toISOString().slice(0, 16).replace("T", " ");
+  } catch {
+    return "n/a";
+  }
+}
+
+function LayerStatusMeta({ status, remainingLabel = "remaining" }) {
+  if (!status) return null;
+  const lastRefresh = status.lastRefresh ?? status.lastRefreshAt ?? null;
+  const nextRefresh = status.nextRefresh ?? status.nextRefreshAt ?? null;
+  const remaining = status.remaining ?? status.remainingMonthlyCalls;
+  return (
+    <div style={{ marginTop: 10, display: "grid", gap: 4, color: "rgba(150,205,245,0.6)", fontSize: 10, fontFamily: mono }}>
+      <div>Last refresh: {formatLayerTime(lastRefresh)}</div>
+      <div>Next refresh: {formatLayerTime(nextRefresh)}</div>
+      {remaining !== undefined ? <div>{remainingLabel}: {remaining}</div> : null}
+    </div>
+  );
+}
+
+function ObjectRowButton({ item, subtitle, onClick }) {
+  return (
+    <button onClick={onClick} style={{
+      background: "rgba(0,24,54,0.42)",
+      border: "1px solid rgba(0,180,255,0.12)",
+      borderRadius: 7,
+      padding: "10px 11px",
+      textAlign: "left",
+      cursor: "pointer",
+      width: "100%",
+    }}>
+      <div style={{ color: "#d6ebff", fontSize: 12, fontFamily: display, fontWeight: 700, lineHeight: 1.3 }}>
+        {item.title}
+      </div>
+      <div style={{ color: "rgba(150,205,245,0.62)", fontSize: 10, lineHeight: 1.5, marginTop: 4 }}>
+        {subtitle}
+      </div>
+    </button>
+  );
+}
+
+function FlightsPanel({ flights, status, onSelect, onClose }) {
+  return (
+    <FloatingPanel title="Flights" subtitle={`${flights.length} tracked aircraft`} top={56} right={264} width={280} onClose={onClose}>
+      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        {flights.length === 0 ? (
+          <div style={{ color: "rgba(130,185,230,0.62)", fontSize: 11, fontFamily: mono }}>No cached flights available yet.</div>
+        ) : flights.map((flight) => (
+          <ObjectRowButton
+            key={flight.id}
+            item={flight}
+            subtitle={`${flight.airline} · ${flight.departureAirport} → ${flight.arrivalAirport}`}
+            onClick={() => onSelect({ type: "flight", data: flight })}
+          />
+        ))}
+      </div>
+      <LayerStatusMeta status={status} remainingLabel="Monthly calls left" />
+    </FloatingPanel>
+  );
+}
+
+function VesselsPanel({ vessels, status, search, onSearchChange, onSelect, onClose }) {
+  const filtered = vessels.filter((vessel) => {
+    if (!search.trim()) return true;
+    const needle = search.trim().toLowerCase();
+    return String(vessel.name ?? "").toLowerCase().includes(needle) || String(vessel.mmsi ?? "").includes(needle);
+  });
+
+  return (
+    <FloatingPanel title="Vessels" subtitle={`${filtered.length} tracked vessels`} top={56} right={264} width={280} onClose={onClose}>
+      <input
+        value={search}
+        onChange={(e) => onSearchChange(e.target.value)}
+        placeholder="Search vessel or MMSI"
+        style={{
+          width: "100%",
+          background: "rgba(0,16,40,0.8)",
+          color: "#d6ebff",
+          border: "1px solid rgba(0,180,255,0.14)",
+          borderRadius: 6,
+          padding: "8px 10px",
+          marginBottom: 10,
+        }}
+      />
+      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        {filtered.length === 0 ? (
+          <div style={{ color: "rgba(130,185,230,0.62)", fontSize: 11, fontFamily: mono }}>No vessels match the current search.</div>
+        ) : filtered.map((vessel) => (
+          <ObjectRowButton
+            key={vessel.id}
+            item={{ ...vessel, title: vessel.name }}
+            subtitle={`${vessel.vesselType} · ${vessel.destination ?? "Destination unavailable"}`}
+            onClick={() => onSelect({ type: "vessel", data: vessel })}
+          />
+        ))}
+      </div>
+      <LayerStatusMeta status={status} remainingLabel="Monthly calls left" />
+    </FloatingPanel>
+  );
+}
+
+function SatellitesPanel({ satellites, status, onSelect, onClose }) {
+  return (
+    <FloatingPanel title="Satellites" subtitle={`${satellites.length} orbital objects`} top={56} right={264} width={280} onClose={onClose}>
+      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        {satellites.length === 0 ? (
+          <div style={{ color: "rgba(130,185,230,0.62)", fontSize: 11, fontFamily: mono }}>No satellite cache available yet.</div>
+        ) : satellites.map((satellite) => (
+          <ObjectRowButton
+            key={satellite.id}
+            item={{ ...satellite, title: satellite.name }}
+            subtitle={`${satellite.satelliteType} · NORAD ${satellite.noradId}`}
+            onClick={() => onSelect({ type: "satellite", data: satellite })}
+          />
+        ))}
+      </div>
+      <LayerStatusMeta status={status} remainingLabel="Refresh window" />
     </FloatingPanel>
   );
 }
@@ -1485,7 +1661,7 @@ function TrafficPill({ level, children }) {
   );
 }
 
-function FloatingPanel({ title, subtitle, children, top, left, right, width = 300 }) {
+function FloatingPanel({ title, subtitle, children, top, left, right, width = 300, onClose }) {
   return (
     <div style={{
       position: "absolute",
@@ -1501,12 +1677,26 @@ function FloatingPanel({ title, subtitle, children, top, left, right, width = 30
       overflow: "hidden",
       backdropFilter: "blur(14px)",
     }}>
-      <div style={{ padding: "11px 14px 9px", borderBottom: "1px solid rgba(0,180,255,0.08)" }}>
-        <div style={{ color: "rgba(0,200,255,0.36)", fontSize: 9, fontFamily: mono, letterSpacing: "0.16em", textTransform: "uppercase" }}>{title}</div>
-        {subtitle ? (
-          <div style={{ color: "rgba(200,230,255,0.86)", fontFamily: display, fontSize: 13, fontWeight: 700, marginTop: 3 }}>
-            {subtitle}
-          </div>
+      <div style={{ padding: "11px 14px 9px", borderBottom: "1px solid rgba(0,180,255,0.08)", display: "flex", justifyContent: "space-between", gap: 8 }}>
+        <div>
+          <div style={{ color: "rgba(0,200,255,0.36)", fontSize: 9, fontFamily: mono, letterSpacing: "0.16em", textTransform: "uppercase" }}>{title}</div>
+          {subtitle ? (
+            <div style={{ color: "rgba(200,230,255,0.86)", fontFamily: display, fontSize: 13, fontWeight: 700, marginTop: 3 }}>
+              {subtitle}
+            </div>
+          ) : null}
+        </div>
+        {onClose ? (
+          <button onClick={onClose} style={{
+            background: "none",
+            border: "1px solid rgba(0,180,255,0.16)",
+            color: "rgba(140,210,255,0.68)",
+            borderRadius: 4,
+            width: 24,
+            height: 24,
+            cursor: "pointer",
+            flexShrink: 0,
+          }}>✕</button>
         ) : null}
       </div>
       <div style={{ padding: "12px 14px" }}>
@@ -1888,6 +2078,125 @@ function DesktopEventPanel({ event, activeScenario, onScenarioChange, onClose })
   );
 }
 
+function SelectedObjectCard({ selected, onClose, onZoom, onClearSelection, mobile = false }) {
+  if (!selected?.data) return null;
+
+  const { type, data } = selected;
+
+  if (type === "event") {
+    return mobile ? (
+      <div style={{
+        position: "fixed",
+        left: 12,
+        right: 12,
+        bottom: 12,
+        zIndex: 65,
+        background: "linear-gradient(180deg, rgba(3,10,24,0.97) 0%, rgba(3,8,20,0.99) 100%)",
+        border: "1px solid rgba(0,180,255,0.22)",
+        borderRadius: 14,
+        padding: 14,
+      }}>
+        <div style={{ display: "flex", justifyContent: "space-between", gap: 8, marginBottom: 10 }}>
+          <div>
+            <div style={{ color: "rgba(0,200,255,0.42)", fontSize: 9, fontFamily: mono, letterSpacing: "0.14em" }}>SELECTED EVENT</div>
+            <div style={{ color: "#d6ebff", fontFamily: display, fontWeight: 700 }}>{data.title}</div>
+          </div>
+          <button onClick={onClose} style={{ background: "none", border: "1px solid rgba(0,180,255,0.22)", color: "rgba(0,180,255,0.55)", borderRadius: 5, width: 28, height: 28 }}>✕</button>
+        </div>
+        <div style={{ display: "flex", gap: 8 }}>
+          <button onClick={onZoom} style={{ flex: 1, padding: "8px 10px", borderRadius: 6, border: "1px solid rgba(0,180,255,0.22)", background: "rgba(0,36,82,0.55)", color: "#d6ebff" }}>Zoom to object</button>
+          <button onClick={onClearSelection} style={{ flex: 1, padding: "8px 10px", borderRadius: 6, border: "1px solid rgba(255,90,120,0.22)", background: "rgba(60,16,28,0.55)", color: "#ffd6df" }}>Clear selection</button>
+        </div>
+      </div>
+    ) : null;
+  }
+
+  const rows = type === "flight"
+    ? [
+        ["Flight", data.flightNumber],
+        ["Airline", data.airline],
+        ["Route", `${data.departureAirport} / ${data.departureCity} → ${data.arrivalAirport} / ${data.arrivalCity}`],
+        ["Altitude", data.altitude ?? "n/a"],
+        ["Speed", data.speed ?? "n/a"],
+        ["Status", data.status],
+        ["Updated", formatLayerTime(data.updatedAt)],
+      ]
+    : type === "vessel"
+      ? [
+          ["Ship", data.name],
+          ["MMSI", data.mmsi],
+          ["Type", data.vesselType],
+          ["Speed", data.speed ?? "n/a"],
+          ["Heading", data.heading ?? "n/a"],
+          ["Destination", data.destination ?? "n/a"],
+          ["ETA", data.eta ?? "n/a"],
+          ["Flag", data.flag ?? "n/a"],
+        ]
+      : [
+          ["Satellite", data.name],
+          ["NORAD", data.noradId],
+          ["Type", data.satelliteType],
+          ["Altitude", data.altitudeKm ? `${data.altitudeKm} km` : "n/a"],
+          ["Inclination", data.inclination ? `${data.inclination}°` : "n/a"],
+          ["Updated", formatLayerTime(data.updatedAt)],
+        ];
+
+  const shellStyle = mobile
+    ? {
+        position: "fixed",
+        left: 12,
+        right: 12,
+        bottom: 12,
+        zIndex: 65,
+        borderRadius: 14,
+      }
+    : {
+        position: "fixed",
+        right: 0,
+        top: 48,
+        bottom: 0,
+        width: 340,
+        zIndex: 60,
+        borderLeft: "1px solid rgba(0,180,255,0.2)",
+      };
+
+  return (
+    <div style={{
+      ...shellStyle,
+      background: "linear-gradient(168deg, #030b1c 0%, #050f24 100%)",
+      display: "flex",
+      flexDirection: "column",
+      padding: 16,
+      gap: 12,
+      boxShadow: "0 8px 32px rgba(0,0,0,0.5)",
+    }}>
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
+        <div>
+          <div style={{ color: "rgba(0,200,255,0.42)", fontSize: 9, fontFamily: mono, letterSpacing: "0.14em", textTransform: "uppercase" }}>
+            Selected {type}
+          </div>
+          <div style={{ color: "#d6ebff", fontFamily: display, fontWeight: 700, fontSize: 18 }}>
+            {data.title ?? data.name}
+          </div>
+        </div>
+        <button onClick={onClose} style={{ background: "none", border: "1px solid rgba(0,180,255,0.22)", color: "rgba(0,180,255,0.55)", borderRadius: 5, width: 30, height: 30, flexShrink: 0 }}>✕</button>
+      </div>
+      <div style={{ display: "grid", gap: 8 }}>
+        {rows.map(([label, value]) => (
+          <div key={label} style={{ display: "grid", gridTemplateColumns: "84px 1fr", gap: 8 }}>
+            <span style={{ color: "rgba(0,200,255,0.36)", fontSize: 10, fontFamily: mono, letterSpacing: "0.08em", textTransform: "uppercase" }}>{label}</span>
+            <span style={{ color: "rgba(214,235,255,0.88)", fontSize: 12, lineHeight: 1.45 }}>{String(value ?? "n/a")}</span>
+          </div>
+        ))}
+      </div>
+      <div style={{ display: "flex", gap: 8 }}>
+        <button onClick={onZoom} style={{ flex: 1, padding: "8px 10px", borderRadius: 6, border: "1px solid rgba(0,180,255,0.22)", background: "rgba(0,36,82,0.55)", color: "#d6ebff" }}>Zoom to object</button>
+        <button onClick={onClearSelection} style={{ flex: 1, padding: "8px 10px", borderRadius: 6, border: "1px solid rgba(255,90,120,0.22)", background: "rgba(60,16,28,0.55)", color: "#ffd6df" }}>Clear selection</button>
+      </div>
+    </div>
+  );
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // MOBILE BOTTOM SHEET  (3 states: peek → half → full)
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -2084,10 +2393,11 @@ function MobileBottomSheet({ events, selectedEvent, activeScenario, onScenarioCh
 // ═══════════════════════════════════════════════════════════════════════════════
 
 const LAYER_DEFS = {
-  satellites: { label: "SAT",      icon: "◉", color: "#44ddff", desc: "Satellite orbits" },
-  maritime:   { label: "MARITIME", icon: "⛵", color: "#44aaff", desc: "Shipping routes" },
-  conflict:   { label: "CONFLICT", icon: "⚡", color: "#ff4444", desc: "Conflict zones" },
-  connections:{ label: "INTEL",    icon: "⟳", color: "#aa44ff", desc: "Influence arcs" },
+  events: { label: "EVENTS", icon: "✦", color: "#ff6b7d", desc: "Event hotspots" },
+  flights: { label: "FLIGHTS", icon: "✈", color: "#7ad0ff", desc: "Live aviation layer" },
+  vessels: { label: "VESSELS", icon: "◫", color: "#8cf0c9", desc: "Live vessel layer" },
+  satellites: { label: "SATELLITES", icon: "◉", color: "#c68dff", desc: "Orbital layer" },
+  intelBoard: { label: "INTEL BOARD", icon: "▣", color: "#ffd166", desc: "Intel panels" },
 };
 
 function LayerToggleChip({ layerKey, def, active, onToggle }) {
@@ -2546,12 +2856,23 @@ export default function GlobeApp() {
   const sceneRef = useRef({});
 
   const [selectedEvent,  setSelectedEvent]  = useState(null);
+  const [selectedObject, setSelectedObject] = useState(null);
   const [activeScenario, setActiveScenario] = useState(0);
   const [tooltip,        setTooltip]        = useState({ text: null, x: 0, y: 0 });
   const [bordersLoaded,  setBordersLoaded]  = useState(false);
   const [ready,          setReady]          = useState(false);
   const [activeLayers,   setActiveLayers]   = useState({
-    satellites: true, maritime: true, conflict: true, connections: false,
+    events: true, flights: false, vessels: false, satellites: false, intelBoard: true,
+  });
+  const [panelVisibility, setPanelVisibility] = useState({
+    events: true,
+    briefing: true,
+    marketImpact: true,
+    flights: false,
+    vessels: false,
+    satellites: false,
+    selectedObjectDetail: true,
+    timeline: true,
   });
   const [showWarRoom,     setShowWarRoom]     = useState(false);
   const [liveEvents,      setLiveEvents]      = useState(SCORED_EVENTS);
@@ -2562,6 +2883,11 @@ export default function GlobeApp() {
   const [briefing,        setBriefing]        = useState(buildBriefing(SCORED_EVENTS));
   const [timelineHours,   setTimelineHours]   = useState(24 * 7);
   const [timelineSlider,  setTimelineSlider]  = useState(100);
+  const [flights,         setFlights]         = useState([]);
+  const [vessels,         setVessels]         = useState([]);
+  const [satellites,      setSatellites]      = useState([]);
+  const [layersStatus,    setLayersStatus]    = useState({ flights: null, vessels: null, satellites: null });
+  const [vesselSearch,    setVesselSearch]    = useState("");
   const [watchlist,       setWatchlist]       = useState(() => {
     if (typeof window === "undefined") return { regions: [], topics: [] };
     try {
@@ -2598,6 +2924,15 @@ export default function GlobeApp() {
         setBriefing(buildBriefing(evs));
       }
     } catch {}
+
+    try {
+      const status = await fetchLayerStatus();
+      setLayersStatus({
+        flights: status.flights ?? null,
+        vessels: status.vessels ?? null,
+        satellites: status.satellites ?? null,
+      });
+    } catch {}
   }, []);
 
   // ── Live data fetching — runs once on mount, then every 15 min ───────────────
@@ -2611,6 +2946,57 @@ export default function GlobeApp() {
     if (typeof window === "undefined") return;
     window.localStorage.setItem(WATCHLIST_STORAGE_KEY, JSON.stringify(watchlist));
   }, [watchlist]);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!activeLayers.flights) return undefined;
+
+    fetchFlightsLive()
+      .then((result) => {
+        if (cancelled) return;
+        setFlights(result.data ?? []);
+        setLayersStatus((current) => ({ ...current, flights: result.quota ?? current.flights }));
+      })
+      .catch(() => {});
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeLayers.flights]);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!activeLayers.vessels) return undefined;
+
+    fetchVesselsLive()
+      .then((result) => {
+        if (cancelled) return;
+        setVessels(result.data ?? []);
+        setLayersStatus((current) => ({ ...current, vessels: result.quota ?? current.vessels }));
+      })
+      .catch(() => {});
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeLayers.vessels]);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!activeLayers.satellites) return undefined;
+
+    fetchSatellitesLive()
+      .then((result) => {
+        if (cancelled) return;
+        setSatellites(result.data ?? []);
+        setLayersStatus((current) => ({ ...current, satellites: result.quota ?? current.satellites }));
+      })
+      .catch(() => {});
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeLayers.satellites]);
 
   const handleAdminRefresh = useCallback(async () => {
     const secret = window.prompt("Enter ADMIN_SECRET to refresh the pipeline.");
@@ -2685,6 +3071,8 @@ export default function GlobeApp() {
     if (!event) return;
     setTimelineSlider(100);
     sceneRef.current.focusCameraOnEvent?.(event);
+    setSelectedObject(null);
+    setPanelVisibility((current) => ({ ...current, selectedObjectDetail: true }));
     setSelectedEvent(event);
     setActiveScenario(0);
   }, [liveEvents]);
@@ -2696,11 +3084,36 @@ export default function GlobeApp() {
     }
   }, [filteredEvents, selectedEvent]);
 
+  useEffect(() => {
+    if (!selectedObject) return;
+    if (selectedObject.type === "flight" && !activeLayers.flights) setSelectedObject(null);
+    if (selectedObject.type === "vessel" && !activeLayers.vessels) setSelectedObject(null);
+    if (selectedObject.type === "satellite" && !activeLayers.satellites) setSelectedObject(null);
+  }, [activeLayers.flights, activeLayers.satellites, activeLayers.vessels, selectedObject]);
+
   // ── Toggle a live layer ──────────────────────────────────────────────────────
   const handleLayerToggle = useCallback(key => {
     setActiveLayers(prev => {
       const next = { ...prev, [key]: !prev[key] };
-      // Update Three.js layer visibility immediately
+      if (key === "intelBoard") {
+        setPanelVisibility((current) => ({
+          ...current,
+          events: next[key],
+          briefing: next[key],
+          marketImpact: next[key],
+          timeline: next[key],
+        }));
+        return next;
+      }
+
+      if (key === "events") {
+        setPanelVisibility((current) => ({ ...current, events: next[key] }));
+      }
+
+      if (key === "flights" || key === "vessels" || key === "satellites") {
+        setPanelVisibility((current) => ({ ...current, [key]: next[key] }));
+      }
+
       const layers = sceneRef.current.liveLayers;
       if (layers && layers[key]) layers[key].visible = next[key];
       return next;
@@ -2824,22 +3237,40 @@ export default function GlobeApp() {
       }
     })();
 
-    // ── Live Intelligence Layers ─────────────────────────────────────────────
-    const satLayer     = buildSatelliteLayer();
-    const maritimeLayer= buildMaritimeLayer();
-    let conflictLayer  = buildConflictLayer(filteredEvents);
-    const connLayer    = buildConnectionLayer();
+    const flightLayer = new THREE.Group();
+    const vesselLayer = new THREE.Group();
+    const satelliteLayer = new THREE.Group();
+    flightLayer.visible = false;
+    vesselLayer.visible = false;
+    satelliteLayer.visible = false;
+    scene.add(flightLayer, vesselLayer, satelliteLayer);
 
-    satLayer.visible      = true;
-    maritimeLayer.visible = true;
-    conflictLayer.visible = true;
-    connLayer.visible     = false;
+    function rebuildSimpleLayer(layer, items, type) {
+      while (layer.children.length > 0) {
+        const child = layer.children[0];
+        layer.remove(child);
+        child.traverse((obj) => {
+          obj.geometry?.dispose?.();
+          obj.material?.dispose?.();
+        });
+      }
 
-    scene.add(satLayer, maritimeLayer, conflictLayer, connLayer);
+      items.forEach((item) => {
+        layer.add(makeObjectMarker(item, type));
+      });
+    }
+
+    function collectClickableObjects() {
+      clickableObjects = [];
+      [hotspotLayer, flightLayer, vesselLayer, satelliteLayer].forEach((layer) => {
+        layer.traverse((obj) => {
+          if (obj.userData.clickable) clickableObjects.push(obj);
+        });
+      });
+    }
 
     function syncVisibleEvents(events) {
       interactiveEvents = events;
-      clickableObjects = [];
 
       while (hotspotLayer.children.length > 0) {
         const child = hotspotLayer.children[0];
@@ -2853,20 +3284,8 @@ export default function GlobeApp() {
       interactiveEvents.forEach((ev) => {
         const hs = makeHotspot(ev);
         hotspotLayer.add(hs);
-        hs.traverse((obj) => {
-          if (obj.userData.clickable) clickableObjects.push(obj);
-        });
       });
-
-      scene.remove(conflictLayer);
-      conflictLayer.traverse((obj) => {
-        obj.geometry?.dispose?.();
-        obj.material?.dispose?.();
-      });
-      conflictLayer = buildConflictLayer(interactiveEvents);
-      conflictLayer.visible = activeLayers.conflict;
-      scene.add(conflictLayer);
-      sceneRef.current.liveLayers.conflict = conflictLayer;
+      collectClickableObjects();
     }
 
     // ── Camera state ─────────────────────────────────────────────────────────
@@ -2926,8 +3345,11 @@ export default function GlobeApp() {
       raycaster.setFromCamera(getNDC(e.clientX, e.clientY), camera);
       const hits = raycaster.intersectObjects(clickableObjects, false);
       if (hits.length > 0) {
-        const ev2 = interactiveEvents.find(ev => ev.id === hits[0].object.userData.eventId);
-        setTooltip({ text: ev2?.title ?? null, x: e.clientX, y: e.clientY });
+        const hit = hits[0].object.userData;
+        const ev2 = hit.objectType === "event"
+          ? interactiveEvents.find(ev => ev.id === hit.eventId)
+          : hit.objectData;
+        setTooltip({ text: ev2?.title ?? ev2?.name ?? ev2?.flightNumber ?? null, x: e.clientX, y: e.clientY });
         container.style.cursor = "pointer";
       } else {
         setTooltip({ text: null, x: 0, y: 0 });
@@ -2943,8 +3365,22 @@ export default function GlobeApp() {
       raycaster.setFromCamera(getNDC(e.clientX, e.clientY), camera);
       const hits = raycaster.intersectObjects(clickableObjects, false);
       if (hits.length > 0) {
-        const ev2 = interactiveEvents.find(ev => ev.id === hits[0].object.userData.eventId);
-        if (ev2) { setSelectedEvent(ev2); setActiveScenario(0); focusCameraOnEvent(ev2); }
+        const hit = hits[0].object.userData;
+        if (hit.objectType === "event") {
+          const ev2 = interactiveEvents.find(ev => ev.id === hit.eventId);
+          if (ev2) {
+            setSelectedObject(null);
+            setPanelVisibility((current) => ({ ...current, selectedObjectDetail: true }));
+            setSelectedEvent(ev2);
+            setActiveScenario(0);
+            focusCameraOnEvent(ev2);
+          }
+        } else if (hit.objectData) {
+          setSelectedEvent(null);
+          setPanelVisibility((current) => ({ ...current, selectedObjectDetail: true }));
+          setSelectedObject({ type: hit.objectType, data: hit.objectData });
+          focusCameraOnEvent(hit.objectData);
+        }
       }
     };
     const onWheel = e => {
@@ -2986,8 +3422,22 @@ export default function GlobeApp() {
           raycaster.setFromCamera(getNDC(t.clientX, t.clientY), camera);
           const hits = raycaster.intersectObjects(clickableObjects, false);
           if (hits.length > 0) {
-            const ev2 = interactiveEvents.find(ev => ev.id === hits[0].object.userData.eventId);
-            if (ev2) { setSelectedEvent(ev2); setActiveScenario(0); focusCameraOnEvent(ev2); }
+            const hit = hits[0].object.userData;
+            if (hit.objectType === "event") {
+              const ev2 = interactiveEvents.find(ev => ev.id === hit.eventId);
+              if (ev2) {
+                setSelectedObject(null);
+                setPanelVisibility((current) => ({ ...current, selectedObjectDetail: true }));
+                setSelectedEvent(ev2);
+                setActiveScenario(0);
+                focusCameraOnEvent(ev2);
+              }
+            } else if (hit.objectData) {
+              setSelectedEvent(null);
+              setPanelVisibility((current) => ({ ...current, selectedObjectDetail: true }));
+              setSelectedObject({ type: hit.objectType, data: hit.objectData });
+              focusCameraOnEvent(hit.objectData);
+            }
           }
         }
       }
@@ -3010,9 +3460,15 @@ export default function GlobeApp() {
 
     // Store refs
     sceneRef.current = {
-      cam, scene, focusCameraOnEvent,
-      liveLayers: { satellites: satLayer, maritime: maritimeLayer, conflict: conflictLayer, connections: connLayer },
+      cam, scene, focusCameraOnEvent, hotspotLayer,
+      liveLayers: { flights: flightLayer, vessels: vesselLayer, satellites: satelliteLayer },
       syncVisibleEvents,
+      syncObjectLayer: (type, items) => {
+        if (type === "flights") rebuildSimpleLayer(flightLayer, items, "flight");
+        if (type === "vessels") rebuildSimpleLayer(vesselLayer, items, "vessel");
+        if (type === "satellites") rebuildSimpleLayer(satelliteLayer, items, "satellite");
+        collectClickableObjects();
+      },
       rebuildImpact: (event, scenarioIdx) => {
         scene.remove(impactLayer);
         impactLayer.traverse(o => { o.geometry?.dispose(); o.material?.dispose(); });
@@ -3065,60 +3521,10 @@ export default function GlobeApp() {
         }
       });
 
-      // Satellite animation
-      if (satLayer.visible) {
-        satLayer.children.forEach(obj => {
-          if (!obj.userData.isSatellite) return;
-          const { incRad, lanRad, alt, phase, speed } = obj.userData;
-          const a = t * speed + phase;
-          const x = Math.cos(a);
-          const y = Math.sin(a) * Math.cos(incRad);
-          const z = Math.sin(a) * Math.sin(incRad);
-          const xr = x * Math.cos(lanRad) - z * Math.sin(lanRad);
-          const zr = x * Math.sin(lanRad) + z * Math.cos(lanRad);
-          obj.position.set(xr*(R+alt), y*(R+alt), zr*(R+alt));
-        });
-      }
-
-      // Maritime & connection arc dot animation
-      [maritimeLayer, connLayer].forEach(layer => {
-        if (!layer.visible) return;
-        layer.traverse(obj => {
-          if (!obj.userData.arcPts) return;
-          obj.userData.arcT = (obj.userData.arcT + obj.userData.arcSpeed * 0.01) % 1;
-          const pts = obj.userData.arcPts;
-          const idx = Math.min(Math.floor(obj.userData.arcT * pts.length), pts.length - 1);
-          obj.position.copy(pts[idx]);
-        });
-      });
-
-      // Maritime chokepoint pulse
-      if (maritimeLayer.visible) {
-        maritimeLayer.traverse(obj => {
-          if (obj.userData.chokepoint) {
-            obj.material.opacity = obj.userData.baseOpacity * (0.6 + 0.4 * Math.sin(t * 1.8));
-          }
-        });
-      }
-
-      // Conflict zone pulse
-      if (conflictLayer.visible) {
-        conflictLayer.traverse(obj => {
-          if (obj.userData.conflictPulse) {
-            obj.material.opacity = obj.userData.baseOpacity * (0.5 + 0.5 * Math.abs(Math.sin(t * obj.userData.speed + obj.userData.phase)));
-          }
-        });
-      }
-
       renderer.render(scene, camera);
     };
     tick();
     setReady(true);
-    // Developer: set your Gemini key in browser console:
-    // window.__GRIGORI_GEMINI_KEY = "your-key"
-    if (typeof window !== "undefined" && !window.__GRIGORI_GEMINI_KEY) {
-      window.__GRIGORI_GEMINI_KEY = "";  // set via console or env injection
-    }
 
     return () => {
       cancelAnimationFrame(rafId);
@@ -3145,11 +3551,41 @@ export default function GlobeApp() {
     sceneRef.current.syncVisibleEvents?.(filteredEvents);
   }, [filteredEvents]);
 
+  useEffect(() => {
+    if (sceneRef.current.hotspotLayer) {
+      sceneRef.current.hotspotLayer.visible = activeLayers.events;
+    }
+  }, [activeLayers.events]);
+
+  useEffect(() => {
+    sceneRef.current.syncObjectLayer?.("flights", activeLayers.flights ? flights : []);
+  }, [flights, activeLayers.flights]);
+
+  useEffect(() => {
+    sceneRef.current.syncObjectLayer?.("vessels", activeLayers.vessels ? vessels : []);
+  }, [vessels, activeLayers.vessels]);
+
+  useEffect(() => {
+    sceneRef.current.syncObjectLayer?.("satellites", activeLayers.satellites ? satellites : []);
+  }, [satellites, activeLayers.satellites]);
+
   // Focus camera from sidebar click
   const focusEvent = useCallback(ev => {
     sceneRef.current.focusCameraOnEvent?.(ev);
+    setSelectedObject(null);
+    setPanelVisibility((current) => ({ ...current, selectedObjectDetail: true }));
     setSelectedEvent(ev);
     setActiveScenario(0);
+  }, []);
+
+  const selectedDetail = selectedObject ?? (selectedEvent ? { type: "event", data: selectedEvent } : null);
+
+  const focusExternalObject = useCallback((selection) => {
+    if (!selection?.data) return;
+    setSelectedEvent(null);
+    setPanelVisibility((current) => ({ ...current, selectedObjectDetail: true }));
+    setSelectedObject(selection);
+    sceneRef.current.focusCameraOnEvent?.(selection.data);
   }, []);
 
   const counts = useMemo(() => ({
@@ -3189,16 +3625,56 @@ export default function GlobeApp() {
 
         {!isMobile && (
           <>
-            <TimelinePanel
-              modeHours={timelineHours}
-              onModeChange={setTimelineHours}
-              sliderPercent={timelineSlider}
-              onSliderChange={setTimelineSlider}
-              cursorLabel={timelineCursorLabel}
-              visibleCount={filteredEvents.length}
-            />
-            <BriefingPanel briefing={briefing} onSelect={handleBriefingSelect} />
-            <MarketImpactDashboard aggregate={marketImpact} />
+            {panelVisibility.timeline && activeLayers.intelBoard ? (
+              <TimelinePanel
+                modeHours={timelineHours}
+                onModeChange={setTimelineHours}
+                sliderPercent={timelineSlider}
+                onSliderChange={setTimelineSlider}
+                cursorLabel={timelineCursorLabel}
+                visibleCount={filteredEvents.length}
+                onClose={() => setPanelVisibility((current) => ({ ...current, timeline: false }))}
+              />
+            ) : null}
+            {panelVisibility.briefing && activeLayers.intelBoard ? (
+              <BriefingPanel
+                briefing={briefing}
+                onSelect={handleBriefingSelect}
+                onClose={() => setPanelVisibility((current) => ({ ...current, briefing: false }))}
+              />
+            ) : null}
+            {panelVisibility.marketImpact && activeLayers.intelBoard ? (
+              <MarketImpactDashboard
+                aggregate={marketImpact}
+                onClose={() => setPanelVisibility((current) => ({ ...current, marketImpact: false }))}
+              />
+            ) : null}
+            {panelVisibility.flights && activeLayers.flights ? (
+              <FlightsPanel
+                flights={flights}
+                status={layersStatus.flights}
+                onSelect={focusExternalObject}
+                onClose={() => setPanelVisibility((current) => ({ ...current, flights: false }))}
+              />
+            ) : null}
+            {panelVisibility.vessels && activeLayers.vessels ? (
+              <VesselsPanel
+                vessels={vessels}
+                status={layersStatus.vessels}
+                search={vesselSearch}
+                onSearchChange={setVesselSearch}
+                onSelect={focusExternalObject}
+                onClose={() => setPanelVisibility((current) => ({ ...current, vessels: false }))}
+              />
+            ) : null}
+            {panelVisibility.satellites && activeLayers.satellites ? (
+              <SatellitesPanel
+                satellites={satellites}
+                status={layersStatus.satellites}
+                onSelect={focusExternalObject}
+                onClose={() => setPanelVisibility((current) => ({ ...current, satellites: false }))}
+              />
+            ) : null}
           </>
         )}
 
@@ -3206,8 +3682,8 @@ export default function GlobeApp() {
         <div style={{
           position: "absolute",
           top: 48,
-          left: (!isMobile) ? 264 : 0,
-          right: (!isMobile && selectedEvent) ? 420 : 0,
+          left: (!isMobile && panelVisibility.events && activeLayers.intelBoard) ? 264 : 0,
+          right: (!isMobile && selectedDetail && panelVisibility.selectedObjectDetail) ? (selectedDetail.type === "event" ? 420 : 340) : 0,
           bottom: 0,
           transition: "left 0.3s ease, right 0.3s ease",
         }}>
@@ -3230,7 +3706,7 @@ export default function GlobeApp() {
         </div>
 
         {/* DESKTOP: Left sidebar */}
-        {!isMobile && (
+        {!isMobile && panelVisibility.events && activeLayers.intelBoard && (
           <DesktopSidebar events={filteredEvents} selectedEvent={selectedEvent} onSelect={focusEvent} />
         )}
 
@@ -3258,13 +3734,32 @@ export default function GlobeApp() {
         )}
 
         {/* DESKTOP: Right detail panel */}
-        {!isMobile && selectedEvent && (
-          <DesktopEventPanel
-            event={selectedEvent}
-            activeScenario={activeScenario}
-            onScenarioChange={setActiveScenario}
-            onClose={() => { setSelectedEvent(null); setActiveScenario(0); }}
-          />
+        {!isMobile && selectedDetail && panelVisibility.selectedObjectDetail && (
+          selectedDetail.type === "event" ? (
+            <DesktopEventPanel
+              event={selectedEvent}
+              activeScenario={activeScenario}
+              onScenarioChange={setActiveScenario}
+              onClose={() => {
+                setPanelVisibility((current) => ({ ...current, selectedObjectDetail: false }));
+                setSelectedEvent(null);
+                setActiveScenario(0);
+              }}
+            />
+          ) : (
+            <SelectedObjectCard
+              selected={selectedDetail}
+              onClose={() => {
+                setPanelVisibility((current) => ({ ...current, selectedObjectDetail: false }));
+                setSelectedObject(null);
+              }}
+              onZoom={() => sceneRef.current.focusCameraOnEvent?.(selectedDetail.data)}
+              onClearSelection={() => {
+                setPanelVisibility((current) => ({ ...current, selectedObjectDetail: false }));
+                setSelectedObject(null);
+              }}
+            />
+          )
         )}
 
         {/* MOBILE: Bottom sheet */}
@@ -3280,6 +3775,22 @@ export default function GlobeApp() {
             onLayerToggle={handleLayerToggle}
           />
         )}
+
+        {isMobile && selectedObject && panelVisibility.selectedObjectDetail ? (
+          <SelectedObjectCard
+            selected={selectedObject}
+            mobile
+            onClose={() => {
+              setPanelVisibility((current) => ({ ...current, selectedObjectDetail: false }));
+              setSelectedObject(null);
+            }}
+            onZoom={() => sceneRef.current.focusCameraOnEvent?.(selectedObject.data)}
+            onClearSelection={() => {
+              setPanelVisibility((current) => ({ ...current, selectedObjectDetail: false }));
+              setSelectedObject(null);
+            }}
+          />
+        ) : null}
 
         {/* Tooltip (desktop only) */}
         {!isMobile && <Tooltip text={tooltip.text} x={tooltip.x} y={tooltip.y} />}
