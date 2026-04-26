@@ -1,8 +1,7 @@
 {
   "version": 2,
   "functions": {
-    "api/v1/pipeline/run.js": { "maxDuration": 60 },
-    "api/v1/**/*.js": { "maxDuration": 10 }
+    "api/v1/[...path].js": { "maxDuration": 60 }
   },
   "crons": [
     {
