@@ -20,10 +20,13 @@ import {
 loadEnv();
 
 function normalizePath(req) {
-  const pathParts = Array.isArray(req.query?.path)
-    ? req.query.path
-    : typeof req.query?.path === "string"
-      ? [req.query.path]
+  const rawPath = req.query?.path;
+  const pathParts = Array.isArray(rawPath)
+    ? rawPath
+        .flatMap((part) => String(part ?? "").split("/"))
+        .filter(Boolean)
+    : typeof rawPath === "string"
+      ? rawPath.split("/").filter(Boolean)
       : [];
 
   if (pathParts.length > 0) {
