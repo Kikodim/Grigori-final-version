@@ -14,15 +14,42 @@ jobs:
           GRIGORI_ADMIN_SECRET: ${{ secrets.GRIGORI_ADMIN_SECRET }}
           GRIGORI_REFRESH_URL: https://grigori.oryth.io/api/v1/admin/refresh?mode=ai
         run: |
-          HTTP_BODY=$(mktemp)
-          HTTP_CODE=$(curl -sS -o "$HTTP_BODY" -w "%{http_code}" \
-            -X POST "$GRIGORI_REFRESH_URL" \
-            -H "Authorization: Bearer $GRIGORI_ADMIN_SECRET" \
-            -H "Content-Type: application/json")
-          cat "$HTTP_BODY"
-          echo
-          if [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -ge 300 ]; then
-            echo "AI refresh failed with HTTP $HTTP_CODE" >&2
+          set -eu
+          echo "Endpoint: $GRIGORI_REFRESH_URL"
+
+          ATTEMPT=1
+          MAX_ATTEMPTS=2
+          SUCCESS=0
+
+          while [ "$ATTEMPT" -le "$MAX_ATTEMPTS" ]; do
+            echo "Attempt $ATTEMPT of $MAX_ATTEMPTS"
+            HTTP_BODY=$(mktemp)
+            HTTP_CODE=$(curl -sS --max-time 60 --connect-timeout 20 -o "$HTTP_BODY" -w "%{http_code}" \
+              -X POST "$GRIGORI_REFRESH_URL" \
+              -H "Authorization: Bearer $GRIGORI_ADMIN_SECRET" \
+              -H "Content-Type: application/json")
+
+            echo "HTTP status: $HTTP_CODE"
+            echo "Response body:"
+            cat "$HTTP_BODY"
+            echo
+
+            if [ "$HTTP_CODE" -ge 200 ] && [ "$HTTP_CODE" -lt 300 ]; then
+              SUCCESS=1
+              break
+            fi
+
+            if [ "$ATTEMPT" -lt "$MAX_ATTEMPTS" ]; then
+              echo "Non-2xx response received. Retrying once..."
+              sleep 5
+            fi
+
+            ATTEMPT=$((ATTEMPT + 1))
+          done
+
+          if [ "$SUCCESS" -ne 1 ]; then
+            echo "AI refresh failed after $MAX_ATTEMPTS attempts." >&2
             exit 1
           fi
-          echo "AI refresh completed with HTTP $HTTP_CODE"
+
+          echo "AI refresh completed successfully."
