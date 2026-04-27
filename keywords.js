@@ -26,6 +26,8 @@ const STOP_WORDS = new Set([
   "next","early","old","young","public","private","local","national",
   "according","report","reported","reports","amid","against","us","they",
   "their","them","he","she","we","our","you","your","i","my","his","her",
+  "paid","plans","available","only","email","internal","newsletter",
+  "morning","evening","update","updates","live","blog","briefing",
 ]);
 
 // ─── Geopolitical lexicon weights ─────────────────────────────────────────────
@@ -94,14 +96,17 @@ export const REGION_MAP = [
   { keywords: ["iraq","baghdad","mosul","erbil"], label: "Iraq", lat: 33.3, lng: 44.4 },
   { keywords: ["yemen","houthi","aden","sanaa","red sea"], label: "Yemen / Red Sea", lat: 15.6, lng: 48.5 },
   { keywords: ["saudi","riyadh","aramco","opec"], label: "Saudi Arabia", lat: 24.0, lng: 45.0 },
+  { keywords: ["colombia","bogota","cauca","medellin","farc"], label: "Colombia", lat: 4.7, lng: -74.1 },
+  { keywords: ["venezuela","maduro","guyana","essequibo","caracas"], label: "Venezuela–Guyana", lat: 6.8, lng: -61.2 },
   { keywords: ["kashmir","line of control","pakistan","india","loc","islamabad","new delhi"], label: "Kashmir", lat: 34.5, lng: 74.3 },
+  { keywords: ["pakistan","islamabad","karachi","lahore"], label: "Pakistan", lat: 30.4, lng: 69.3 },
+  { keywords: ["india","new delhi","mumbai","modi"], label: "India", lat: 22.6, lng: 79.0 },
   { keywords: ["myanmar","burmese","junta","tatmadaw","mandalay","naypyidaw"], label: "Myanmar", lat: 21.9, lng: 96.1 },
   { keywords: ["north korea","pyongyang","kim jong","icbm","dprk"], label: "Korean Peninsula", lat: 39.0, lng: 127.5 },
   { keywords: ["mali","niger","burkina","sahel","jnim","gao","timbuktu"], label: "Sahel, West Africa", lat: 15.5, lng: 2.1 },
   { keywords: ["sudan","khartoum","darfur","rsf","saf"], label: "Sudan", lat: 15.6, lng: 32.5 },
   { keywords: ["ethiopia","tigray","amhara","addis ababa"], label: "Ethiopia", lat: 9.0, lng: 40.5 },
   { keywords: ["somalia","mogadishu","al-shabaab","horn of africa"], label: "Somalia", lat: 5.2, lng: 46.2 },
-  { keywords: ["venezuela","maduro","guyana","essequibo","caracas"], label: "Venezuela–Guyana", lat: 6.8, lng: -61.2 },
   { keywords: ["black sea","bosphorus","kerch","sevastopol"], label: "Black Sea", lat: 43.0, lng: 34.0 },
   { keywords: ["baltic","finland","estonia","latvia","lithuania","poland"], label: "Baltic Region", lat: 57.0, lng: 24.0 },
   { keywords: ["serbia","kosovo","belgrade","pristina","balkans"], label: "Balkans", lat: 44.0, lng: 21.0 },
@@ -114,24 +119,36 @@ export const REGION_MAP = [
  * @param {string} text
  * @returns {{ label: string, lat: number, lng: number }|null}
  */
-export function detectRegion(text) {
-  const lower = text.toLowerCase();
+export function detectRegion(input) {
+  const title = typeof input === "string" ? input : String(input?.title ?? "");
+  const summary = typeof input === "string" ? "" : String(input?.summary ?? input?.description ?? "");
+  const content = typeof input === "string" ? "" : String(input?.content ?? "");
+  const lower = `${title} ${summary} ${content}`.toLowerCase();
+  const titleLower = title.toLowerCase();
+  const summaryLower = summary.toLowerCase();
 
   let best = null;
   let bestScore = 0;
+  let secondBestScore = 0;
 
   for (const region of REGION_MAP) {
     let score = 0;
     for (const kw of region.keywords) {
-      if (lower.includes(kw)) score++;
+      if (titleLower.includes(kw)) score += 3;
+      else if (summaryLower.includes(kw)) score += 2;
+      else if (lower.includes(kw)) score += 1;
     }
     if (score > bestScore) {
+      secondBestScore = bestScore;
       bestScore = score;
       best = region;
+    } else if (score > secondBestScore) {
+      secondBestScore = score;
     }
   }
 
-  if (!best || bestScore === 0) return null;
+  if (!best || bestScore < 2) return null;
+  if (secondBestScore > 0 && bestScore - secondBestScore < 2) return null;
 
   return { label: best.label, lat: best.lat, lng: best.lng };
 }

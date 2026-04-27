@@ -423,16 +423,17 @@ function makeGlobeTex() {
     [[-54, 59], [-42, 76], [-25, 80], [-18, 70], [-31, 60]],
   ];
 
-  // Muted defense-tech ocean base
+  // Dark ocean base with clear land/sea separation
   const g = ctx.createLinearGradient(0, 0, 0, H);
-  g.addColorStop(0,   "#10233e");
-  g.addColorStop(0.5, "#0a1728");
-  g.addColorStop(1,   "#060d18");
+  g.addColorStop(0,   "#0a1320");
+  g.addColorStop(0.38,"#08101a");
+  g.addColorStop(0.72,"#040a12");
+  g.addColorStop(1,   "#02060d");
   ctx.fillStyle = g;
   ctx.fillRect(0, 0, W, H);
 
   // Continental shelf suggestion
-  ctx.fillStyle = "rgba(20,46,73,0.18)";
+  ctx.fillStyle = "rgba(22,38,58,0.16)";
   [[0.12, 0.30], [0.35, 0.55], [0.60, 0.78]].forEach(([y0, y1]) => {
     ctx.fillRect(0, y0 * H, W, (y1 - y0) * H);
   });
@@ -446,7 +447,7 @@ function makeGlobeTex() {
       if (x === 0) ctx.moveTo(x, y + wave);
       else ctx.lineTo(x, y + wave);
     }
-    ctx.strokeStyle = `rgba(36,74,110,${0.03 + i * 0.003})`;
+    ctx.strokeStyle = `rgba(24,48,74,${0.028 + i * 0.003})`;
     ctx.lineWidth = 1;
     ctx.stroke();
   }
@@ -455,7 +456,7 @@ function makeGlobeTex() {
   for (let i = 0; i < 9500; i++) {
     ctx.beginPath();
     ctx.arc(Math.random() * W, Math.random() * H, Math.random() * 1.2, 0, Math.PI * 2);
-    ctx.fillStyle = `rgba(${18 + Math.floor(Math.random() * 32)},${52 + Math.floor(Math.random() * 48)},${68 + Math.floor(Math.random() * 52)},${0.02 + Math.random() * 0.06})`;
+    ctx.fillStyle = `rgba(${12 + Math.floor(Math.random() * 18)},${24 + Math.floor(Math.random() * 22)},${38 + Math.floor(Math.random() * 30)},${0.02 + Math.random() * 0.05})`;
     ctx.fill();
   }
 
@@ -477,11 +478,11 @@ function makeGlobeTex() {
     }
   };
 
-  drawContourField(W * 0.66, H * 0.32, 130, 58, 10, "rgba(175,182,140,0.08)", 0.9);
-  drawContourField(W * 0.56, H * 0.44, 120, 52, 9, "rgba(154,170,132,0.07)", 0.85);
-  drawContourField(W * 0.28, H * 0.42, 100, 44, 8, "rgba(148,164,128,0.06)", 0.8);
-  drawContourField(W * 0.79, H * 0.47, 92, 42, 8, "rgba(145,166,132,0.06)", 0.8);
-  drawContourField(W * 0.22, H * 0.64, 72, 38, 6, "rgba(146,160,130,0.055)", 0.75);
+  drawContourField(W * 0.66, H * 0.32, 130, 58, 11, "rgba(188,194,160,0.1)", 1.0);
+  drawContourField(W * 0.56, H * 0.44, 120, 52, 10, "rgba(170,182,148,0.085)", 0.95);
+  drawContourField(W * 0.28, H * 0.42, 100, 44, 8, "rgba(166,176,146,0.075)", 0.9);
+  drawContourField(W * 0.79, H * 0.47, 92, 42, 8, "rgba(160,178,146,0.074)", 0.9);
+  drawContourField(W * 0.22, H * 0.64, 72, 38, 6, "rgba(160,172,146,0.065)", 0.8);
 
   // Subtle mountain-range streaks
   ctx.lineWidth = 1;
@@ -495,7 +496,7 @@ function makeGlobeTex() {
       if (x === 0) ctx.moveTo(x, y + offset);
       else ctx.lineTo(x, y + offset);
     }
-    ctx.strokeStyle = `rgba(118,148,128,${0.015 + Math.random() * 0.025})`;
+    ctx.strokeStyle = `rgba(140,164,146,${0.022 + Math.random() * 0.03})`;
     ctx.stroke();
   }
 
@@ -503,32 +504,32 @@ function makeGlobeTex() {
   ctx.lineWidth = 0.6;
   for (let lat = -90; lat <= 90; lat += 15) {
     const y = ((90 - lat) / 180) * H;
-    ctx.strokeStyle = lat === 0 ? "rgba(0,200,255,0.12)" : "rgba(92,132,175,0.04)";
-    ctx.lineWidth   = lat === 0 ? 1.2 : 0.6;
+    ctx.strokeStyle = lat === 0 ? "rgba(76,166,214,0.08)" : "rgba(62,98,132,0.02)";
+    ctx.lineWidth   = lat === 0 ? 0.8 : 0.45;
     ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke();
   }
   // Longitude grid
   ctx.lineWidth = 0.6;
-  ctx.strokeStyle = "rgba(86,120,165,0.035)";
+  ctx.strokeStyle = "rgba(52,80,108,0.02)";
   for (let lng = -180; lng <= 180; lng += 15) {
     const x = ((lng + 180) / 360) * W;
     ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke();
   }
   // Prime meridian
-  ctx.strokeStyle = "rgba(0,180,255,0.07)";
+  ctx.strokeStyle = "rgba(74,152,198,0.05)";
   ctx.lineWidth = 1;
   const pmX = (180 / 360) * W;
   ctx.beginPath(); ctx.moveTo(pmX, 0); ctx.lineTo(pmX, H); ctx.stroke();
 
   // Polar vignettes to reduce flatness
   const northGlow = ctx.createRadialGradient(W * 0.52, H * 0.08, 0, W * 0.52, H * 0.08, H * 0.36);
-  northGlow.addColorStop(0, "rgba(132,166,182,0.12)");
+  northGlow.addColorStop(0, "rgba(118,142,160,0.08)");
   northGlow.addColorStop(1, "rgba(0,0,0,0)");
   ctx.fillStyle = northGlow;
   ctx.fillRect(0, 0, W, H);
 
   const southGlow = ctx.createRadialGradient(W * 0.42, H * 0.92, 0, W * 0.42, H * 0.92, H * 0.32);
-  southGlow.addColorStop(0, "rgba(102,128,150,0.1)");
+  southGlow.addColorStop(0, "rgba(86,108,126,0.08)");
   southGlow.addColorStop(1, "rgba(0,0,0,0)");
   ctx.fillStyle = southGlow;
   ctx.fillRect(0, 0, W, H);
@@ -539,12 +540,12 @@ function makeGlobeTex() {
     ctx.beginPath();
     tracePolygon(polygon);
     const landGradient = ctx.createLinearGradient(0, project(0, 70)[1], 0, project(0, -55)[1]);
-    landGradient.addColorStop(0, "rgba(86,104,104,0.88)");
-    landGradient.addColorStop(0.45, "rgba(64,86,82,0.9)");
-    landGradient.addColorStop(1, "rgba(48,66,70,0.94)");
+    landGradient.addColorStop(0, "rgba(88,96,88,0.95)");
+    landGradient.addColorStop(0.42, "rgba(60,72,68,0.98)");
+    landGradient.addColorStop(1, "rgba(34,42,44,0.98)");
     ctx.fillStyle = landGradient;
     ctx.fill();
-    ctx.strokeStyle = "rgba(184,206,196,0.18)";
+    ctx.strokeStyle = "rgba(196,212,204,0.15)";
     ctx.lineWidth = 1.4;
     ctx.stroke();
     ctx.clip();
@@ -557,29 +558,68 @@ function makeGlobeTex() {
         if (x === 0) ctx.moveTo(x, y + offset);
         else ctx.lineTo(x, y + offset);
       }
-      ctx.strokeStyle = `rgba(210,220,205,${0.025 + (i % 5) * 0.006})`;
+      ctx.strokeStyle = `rgba(208,214,196,${0.032 + (i % 5) * 0.008})`;
       ctx.lineWidth = 0.6;
       ctx.stroke();
     }
     for (let i = 0; i < 650; i++) {
       const px = Math.random() * W;
       const py = Math.random() * H;
-      ctx.fillStyle = `rgba(${122 + Math.floor(Math.random() * 26)},${132 + Math.floor(Math.random() * 30)},${118 + Math.floor(Math.random() * 18)},${0.025 + Math.random() * 0.05})`;
+      ctx.fillStyle = `rgba(${96 + Math.floor(Math.random() * 26)},${104 + Math.floor(Math.random() * 28)},${88 + Math.floor(Math.random() * 18)},${0.025 + Math.random() * 0.05})`;
       ctx.fillRect(px, py, 1.2, 1.2);
     }
     ctx.restore();
+  });
+
+  // Obvious ridge belts to hint at global mountain systems
+  const ridgeBelts = [
+    [[73, 34], [78, 33], [84, 31], [91, 30], [98, 29], [104, 27]],
+    [[5, 45], [11, 46], [17, 46], [23, 45]],
+    [[41, 43], [48, 43], [54, 42]],
+    [[45, 33], [50, 31], [55, 29], [60, 27]],
+    [[-76, -6], [-73, -16], [-70, -26], [-68, -36], [-70, -45]],
+    [[-124, 49], [-118, 45], [-112, 40], [-108, 36], [-104, 31]],
+    [[36, 12], [39, 9], [41, 6], [39, 2]],
+  ];
+  ridgeBelts.forEach((belt) => {
+    ctx.beginPath();
+    belt.forEach(([lon, lat], idx) => {
+      const [x, y] = project(lon, lat);
+      if (idx === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    });
+    ctx.strokeStyle = "rgba(228,234,220,0.11)";
+    ctx.lineWidth = 1.4;
+    ctx.stroke();
+    ctx.strokeStyle = "rgba(248,250,244,0.045)";
+    ctx.lineWidth = 2.6;
+    ctx.stroke();
   });
 
   // Coastline highlight
   continents.forEach((polygon) => {
     ctx.beginPath();
     tracePolygon(polygon);
-    ctx.strokeStyle = "rgba(218,232,226,0.16)";
+    ctx.strokeStyle = "rgba(198,220,228,0.2)";
     ctx.lineWidth = 1;
     ctx.stroke();
   });
 
-  return new THREE.CanvasTexture(cv);
+  // restrained warm night-light clusters
+  [[10, 50], [77, 23], [116, 39], [139, 35], [31, 30], [-74, 41], [-118, 34], [28, -26], [72, 19]].forEach(([lon, lat]) => {
+    const [x, y] = project(lon, lat);
+    const glow = ctx.createRadialGradient(x, y, 0, x, y, 26);
+    glow.addColorStop(0, "rgba(255,184,112,0.06)");
+    glow.addColorStop(0.55, "rgba(255,170,96,0.025)");
+    glow.addColorStop(1, "rgba(0,0,0,0)");
+    ctx.fillStyle = glow;
+    ctx.fillRect(x - 28, y - 28, 56, 56);
+  });
+
+  const tex = new THREE.CanvasTexture(cv);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = 4;
+  return tex;
 }
 
 function makeReliefTex() {
@@ -588,24 +628,64 @@ function makeReliefTex() {
   cv.width = W;
   cv.height = H;
   const ctx = cv.getContext("2d");
-  ctx.fillStyle = "#202020";
+  ctx.fillStyle = "#171717";
   ctx.fillRect(0, 0, W, H);
 
   for (let y = 0; y < H; y += 3) {
-    ctx.strokeStyle = `rgba(150,150,150,${0.02 + (y / H) * 0.015})`;
+    ctx.strokeStyle = `rgba(168,168,168,${0.03 + (y / H) * 0.02})`;
     ctx.beginPath();
-    ctx.moveTo(0, y);
+    ctx.moveTo(0, y + Math.sin(y * 0.03) * 2);
     ctx.lineTo(W, y + Math.sin(y * 0.04) * 2);
     ctx.stroke();
   }
 
-  for (let i = 0; i < 2600; i++) {
-    const shade = 90 + Math.floor(Math.random() * 90);
-    ctx.fillStyle = `rgba(${shade},${shade},${shade},0.09)`;
-    ctx.fillRect(Math.random() * W, Math.random() * H, 1.4, 1.4);
+  for (let i = 0; i < 5200; i++) {
+    const shade = 88 + Math.floor(Math.random() * 110);
+    ctx.fillStyle = `rgba(${shade},${shade},${shade},0.11)`;
+    ctx.fillRect(Math.random() * W, Math.random() * H, 1.5, 1.5);
   }
 
-  return new THREE.CanvasTexture(cv);
+  const tex = new THREE.CanvasTexture(cv);
+  tex.anisotropy = 4;
+  return tex;
+}
+
+function makeCloudTex() {
+  const W = 1024, H = 512;
+  const cv = document.createElement("canvas");
+  cv.width = W;
+  cv.height = H;
+  const ctx = cv.getContext("2d");
+  ctx.clearRect(0, 0, W, H);
+
+  const bands = [
+    { y: 0.24, amp: 16, alpha: 0.08 },
+    { y: 0.49, amp: 20, alpha: 0.095 },
+    { y: 0.72, amp: 14, alpha: 0.07 },
+  ];
+  bands.forEach((band, index) => {
+    ctx.beginPath();
+    const y = band.y * H;
+    for (let x = 0; x <= W; x += 10) {
+      const offset = Math.sin((x / W) * Math.PI * (3.4 + index * 0.5)) * band.amp
+        + Math.cos((x / W) * Math.PI * (6.6 + index * 0.35)) * (band.amp * 0.22);
+      if (x === 0) ctx.moveTo(x, y + offset);
+      else ctx.lineTo(x, y + offset);
+    }
+    ctx.strokeStyle = `rgba(214,224,235,${band.alpha})`;
+    ctx.lineWidth = 10;
+    ctx.stroke();
+  });
+  for (let i = 0; i < 3200; i++) {
+    ctx.beginPath();
+    ctx.arc(Math.random() * W, Math.random() * H, 0.7 + Math.random() * 1.8, 0, Math.PI * 2);
+    ctx.fillStyle = `rgba(224,232,240,${0.01 + Math.random() * 0.03})`;
+    ctx.fill();
+  }
+  const tex = new THREE.CanvasTexture(cv);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = 2;
+  return tex;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -614,7 +694,7 @@ function makeReliefTex() {
 
 function makeAtmosphere() {
   const atmSegs = IS_MOBILE ? 32 : 64;
-  const geo = new THREE.SphereGeometry(R * 1.09, atmSegs, atmSegs);
+  const geo = new THREE.SphereGeometry(R * 1.045, atmSegs, atmSegs);
   const mat = new THREE.ShaderMaterial({
     uniforms: { time: { value: 0.0 } },
     vertexShader: `
@@ -627,14 +707,13 @@ function makeAtmosphere() {
       varying vec3 vNormal;
       uniform float time;
       void main() {
-        // Fresnel rim — bright at grazing angle
         float rim = 1.0 - abs(dot(vNormal, vec3(0.0, 0.0, 1.0)));
-        float intensity = pow(rim, 3.2);
-        vec3 col = mix(vec3(0.0, 0.25, 0.72), vec3(0.0, 0.65, 1.0), intensity);
-        float pulse = 0.93 + 0.07 * sin(time * 0.35);
-        gl_FragColor = vec4(col * pulse, intensity * 0.42);
+        float intensity = pow(rim, 4.6);
+        vec3 col = mix(vec3(0.06, 0.16, 0.28), vec3(0.18, 0.38, 0.54), intensity);
+        float pulse = 0.97 + 0.03 * sin(time * 0.28);
+        gl_FragColor = vec4(col * pulse, intensity * 0.22);
       }`,
-    side:        THREE.FrontSide,
+    side:        THREE.BackSide,
     blending:    THREE.AdditiveBlending,
     transparent: true,
     depthWrite:  false,
@@ -769,6 +848,11 @@ function makeHotspot(ev) {
   core.userData = { clickable: true, eventId: ev.id, objectType: "event", objectData: ev };
   core.userData.markerGroup = group;
 
+  // Surface anchor glow to visually pin the marker to the terrain
+  const groundGlow = addDisc(0.024, 0.044, color, 0.16, { depthTest: true });
+  groundGlow.position.z = -0.002;
+  groundGlow.userData.baseOpacity = 0.16;
+
   // Coloured inner ring
   const ring1 = addDisc(0.009, 0.017, color, 0.85);
   if (ev.lensMatched) {
@@ -782,7 +866,7 @@ function makeHotspot(ev) {
   const pulse2 = addDisc(0.030, 0.034, color, 0.25);
   pulse2.userData = { pulse: true, speed: cfg.pulseSpeed, base: 0.25, phase: 1.1 };
 
-  group.add(core, ring1, pulse1, pulse2);
+  group.add(groundGlow, core, ring1, pulse1, pulse2);
 
   // Position on sphere and orient outward
   group.position.copy(surfacePos);
@@ -4508,32 +4592,52 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
     camera.position.set(0, 0, initRadius);
 
     // Lights
-    scene.add(new THREE.AmbientLight(0x112244, 3.2));
-    const sun = new THREE.DirectionalLight(0x3377cc, 2.4);
-    sun.position.set(5, 3, 4);
+    scene.add(new THREE.HemisphereLight(0x21354a, 0x06090f, 1.5));
+    scene.add(new THREE.AmbientLight(0x0b1220, 0.75));
+    const sun = new THREE.DirectionalLight(0xe6edf6, 1.95);
+    sun.position.set(5.8, 2.6, 4.4);
     scene.add(sun);
-    const rim = new THREE.DirectionalLight(0x001133, 1.0);
-    rim.position.set(-4, -2, -3);
-    scene.add(rim);
+    const fill = new THREE.DirectionalLight(0x39536f, 0.65);
+    fill.position.set(-4.2, -1.4, -2.8);
+    scene.add(fill);
 
     // Globe
     const segs = mob ? 48 : 96;
+    const globeMap = makeGlobeTex();
+    const globeRelief = makeReliefTex();
     const globeMesh = new THREE.Mesh(
       new THREE.SphereGeometry(R, segs, segs),
-      new THREE.MeshPhongMaterial({
-        map: makeGlobeTex(),
-        bumpMap: makeReliefTex(),
-        bumpScale: mob ? 0.02 : 0.028,
-        specular: new THREE.Color(0x08131f),
-        shininess: 5,
-        emissive: new THREE.Color(0x02070e),
-        emissiveIntensity: 0.16,
+      new THREE.MeshStandardMaterial({
+        map: globeMap,
+        bumpMap: globeRelief,
+        roughnessMap: globeRelief,
+        bumpScale: mob ? 0.05 : 0.075,
+        roughness: 0.96,
+        metalness: 0.03,
+        color: new THREE.Color(0xe8f0f4),
+        emissive: new THREE.Color(0x010203),
+        emissiveIntensity: 0.035,
         transparent: false,
-        opacity: 1,
+        opacity: 1.0,
       })
     );
     globeMesh.renderOrder = 0;
     scene.add(globeMesh);
+
+    const cloudLayer = new THREE.Mesh(
+      new THREE.SphereGeometry(R * 1.012, mob ? 36 : 72, mob ? 36 : 72),
+      new THREE.MeshStandardMaterial({
+        map: makeCloudTex(),
+        transparent: true,
+        opacity: 0.18,
+        depthWrite: false,
+        roughness: 1,
+        metalness: 0,
+        color: new THREE.Color(0xe9f1fb),
+      })
+    );
+    cloudLayer.renderOrder = 0.5;
+    scene.add(cloudLayer);
 
     // Atmosphere
     const atm = makeAtmosphere();
@@ -4556,7 +4660,7 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
     const borderLayer = new THREE.Group();
     scene.add(borderLayer);
     const borderMat = new THREE.LineBasicMaterial({
-      color: 0x00e5ff, transparent: true, opacity: 0.7,
+      color: 0x69b8d6, transparent: true, opacity: 0.28,
       depthTest: false, depthWrite: false,
     });
     const GEOJSON_URLS = [
@@ -4897,6 +5001,7 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
       const t = clock.getElapsedTime();
 
       atm.material.uniforms.time.value = t;
+      cloudLayer.rotation.y += mob ? 0.00008 : 0.00011;
       if (cam.autoSpin) cam.targetTheta += mob ? 0.0005 : 0.0007;
       if (!cam.dragging && Math.abs(cam.thetaVelocity) > 0.00005) {
         cam.targetTheta += cam.thetaVelocity;

@@ -21,7 +21,7 @@ import {
   sanitizeRegion,
   sendError,
 } from "./security.js";
-import { getEventById, getEvents, getRefreshState, getStats, healthCheck, setRefreshState } from "./supabase.js";
+import { getEventById, getEvents, getRefreshState, getRefreshUsageStats, getStats, healthCheck, setRefreshState } from "./supabase.js";
 
 const log = createLogger("api");
 
@@ -49,11 +49,13 @@ function missingProductionSecret() {
 export async function handleHealth(_req, res) {
   const config = getConfig();
   const integrations = getIntegrationConfigStatus();
-  const [layers, ai, newsRefresh, aiRefresh] = await Promise.all([
+  const [layers, ai, newsRefresh, aiRefresh, newsRefreshUsage, aiRefreshUsage] = await Promise.all([
     getLayersStatus(),
     getAIStatus(),
     getRefreshState("news"),
     getRefreshState("ai"),
+    getRefreshUsageStats("news"),
+    getRefreshUsageStats("ai"),
   ]);
   const missing = [
     ["NEWS_API_KEY", integrations.newsApi],
@@ -103,6 +105,8 @@ export async function handleHealth(_req, res) {
       lastAiRefreshAt: aiRefresh.record?.lastRefresh ?? null,
       nextEstimatedNewsRefresh: newsRefresh.record?.nextRefresh ?? null,
       nextEstimatedAiRefresh: aiRefresh.record?.nextRefresh ?? null,
+      newsRefreshesToday: newsRefreshUsage.callsToday ?? 0,
+      aiRefreshesToday: aiRefreshUsage.callsToday ?? 0,
     },
     timestamp: new Date().toISOString(),
   });
@@ -151,8 +155,27 @@ export async function handleEventById(req, res) {
 }
 
 export async function handleEventStats(_req, res) {
-  const stats = await getStats();
-  return res.status(200).json({ ok: true, stats, ai: await getAIStatus() });
+  const [stats, ai, newsRefresh, aiRefresh, newsRefreshUsage, aiRefreshUsage] = await Promise.all([
+    getStats(),
+    getAIStatus(),
+    getRefreshState("news"),
+    getRefreshState("ai"),
+    getRefreshUsageStats("news"),
+    getRefreshUsageStats("ai"),
+  ]);
+  return res.status(200).json({
+    ok: true,
+    stats,
+    ai,
+    automation: {
+      lastNewsRefreshAt: newsRefresh.record?.lastRefresh ?? null,
+      lastAiRefreshAt: aiRefresh.record?.lastRefresh ?? null,
+      nextEstimatedNewsRefresh: newsRefresh.record?.nextRefresh ?? null,
+      nextEstimatedAiRefresh: aiRefresh.record?.nextRefresh ?? null,
+      newsRefreshesToday: newsRefreshUsage.callsToday ?? 0,
+      aiRefreshesToday: aiRefreshUsage.callsToday ?? 0,
+    },
+  });
 }
 
 export async function handleBriefing(req, res) {

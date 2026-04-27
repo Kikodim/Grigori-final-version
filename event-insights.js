@@ -251,9 +251,37 @@ export function inferLocationDetails(input, articles = []) {
   const existing = eventLike.location ?? eventLike.region ?? {};
   const existingLabel = String(existing.label ?? "").trim();
   const corpus = buildCorpus(eventLike, articles);
+  const ranked = STRATEGIC_REGIONS
+    .map((region) => ({
+      region,
+      hits: region.keywords.filter((keyword) => corpus.includes(keyword)).length,
+    }))
+    .filter((entry) => entry.hits > 0)
+    .sort((a, b) => b.hits - a.hits);
 
   if (existingLabel && !UNKNOWN_LABELS.has(existingLabel.toLowerCase())) {
     const matchingRegion = STRATEGIC_REGIONS.find((region) => region.label.toLowerCase() === existingLabel.toLowerCase());
+    const bestInferred = ranked[0] ?? null;
+    const existingHits = matchingRegion
+      ? matchingRegion.keywords.filter((keyword) => corpus.includes(keyword)).length
+      : 0;
+    const shouldOverrideExisting = Boolean(
+      bestInferred &&
+      bestInferred.region.label.toLowerCase() !== existingLabel.toLowerCase() &&
+      bestInferred.hits >= Math.max(2, existingHits + 1) &&
+      String(existing.confidence ?? "Low") !== "High"
+    );
+
+    if (shouldOverrideExisting) {
+      return {
+        label: bestInferred.region.label,
+        lat: bestInferred.region.lat,
+        lng: bestInferred.region.lng,
+        confidence: bestInferred.hits >= 3 ? "High" : "Medium",
+        reason: `Location refined from stronger repeated context keywords: ${bestInferred.region.keywords.filter((keyword) => corpus.includes(keyword)).slice(0, 3).join(", ")}.`,
+      };
+    }
+
     return {
       label: existingLabel,
       lat: existing.lat ?? matchingRegion?.lat ?? null,
@@ -262,14 +290,6 @@ export function inferLocationDetails(input, articles = []) {
       reason: existing.reason ?? "Location carried forward from clustered source signals.",
     };
   }
-
-  const ranked = STRATEGIC_REGIONS
-    .map((region) => ({
-      region,
-      hits: region.keywords.filter((keyword) => corpus.includes(keyword)).length,
-    }))
-    .filter((entry) => entry.hits > 0)
-    .sort((a, b) => b.hits - a.hits);
 
   if (ranked.length > 0) {
     const best = ranked[0];

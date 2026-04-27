@@ -988,13 +988,36 @@ export async function getRefreshState(key) {
       throw error;
     }
 
-    const record = data ? {
+    let record = data ? {
       key,
       metadata: data.metadata ?? {},
       lastRefresh: data.last_refresh ?? null,
       nextRefresh: data.next_refresh ?? null,
       updatedAt: data.updated_at ?? null,
     } : null;
+
+    if (!record && key === "news") {
+      const { data: latestEvent, error: latestError } = await db
+        .from("events")
+        .select("timestamp, created_at")
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (!latestError && latestEvent?.created_at) {
+        const derivedNextRefresh = new Date(new Date(latestEvent.created_at).getTime() + 60 * 60 * 1000).toISOString();
+        record = {
+          key,
+          metadata: {
+            derived: true,
+            reason: "No explicit refresh_news row found; derived from latest event insert timestamp.",
+          },
+          lastRefresh: latestEvent.created_at,
+          nextRefresh: derivedNextRefresh,
+          updatedAt: latestEvent.created_at,
+        };
+      }
+    }
 
     return { record: record ?? memoryRecord, mode: record ? "supabase" : "memory" };
   } catch (err) {
@@ -1028,13 +1051,21 @@ export async function setRefreshState(key, metadata = {}, nextRefresh = null) {
       next_refresh: nextRefresh,
       updated_at: now,
     };
-    const { error } = await db.from("external_layer_cache").upsert(row);
+    const { error } = await db.from("external_layer_cache").upsert(row, {
+      onConflict: "layer_key",
+      ignoreDuplicates: false,
+    });
     if (error) {
       throw error;
     }
+    await recordLayerUsage(`refresh_${key}`, metadata.source ?? "api");
     return { persisted: true, mode: "supabase", record };
   } catch (err) {
     log.warn(`Supabase refresh state upsert failed for ${key}: ${err.message}`);
     return { persisted: false, mode: "memory", error: err.message, record };
   }
+}
+
+export async function getRefreshUsageStats(key) {
+  return getLayerUsageStats(`refresh_${key}`);
 }

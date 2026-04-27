@@ -87,6 +87,21 @@ const SOURCE_QUALITY = {
 };
 
 const SOURCE_PRIORITY = ["gdelt", "rss", "newsdata", "currents", "newsapi"];
+const STRATEGIC_SIGNAL_PATTERNS = [
+  /\b(war|conflict|strike|missile|drone|attack|military|naval|troops|ceasefire|sanctions|nuclear|diplomacy|talks|summit|election|coup|insurgency|rebel|militia)\b/i,
+  /\b(hormuz|red sea|black sea|taiwan|ukraine|russia|iran|israel|gaza|hezbollah|nato|eu|balkans|syria|lebanon|sudan|sahel|kashmir|china|semiconductor|shipping|tanker|pipeline|grain corridor)\b/i,
+  /\b(oil|gas|lng|freight|port|sanction|trade route|insurance premium|export control|airspace|escort|convoy)\b/i,
+];
+const NOISE_TITLE_PATTERNS = [
+  /\b(marathon|football|soccer|tennis|cricket|olympic|formula 1|f1|championship|boxing)\b/i,
+  /\b(movie|tv|show|series|celebrity|fashion|music|album|trailer|netflix|streaming)\b/i,
+  /\b(morning update|evening update|live blog update|daily briefing|best .* every year)\b/i,
+  /\b(cyberfraud|lottery|horoscope|recipe|travel tips|luxury resort)\b/i,
+];
+const MIN_RELEVANCE_SCORE = 3;
+const DOWNRANKED_SOURCE_PATTERNS = [
+  /einnews|menafn|naturalnews|dailymail|latestly|chronicleonline|citizentribune/i,
+];
 
 function isSourceEnabled(name) {
   const raw = process.env[`ENABLE_${name.toUpperCase()}`];
@@ -128,9 +143,9 @@ function normalise(raw) {
   // Drop articles with no usable text or removed content
   if (!title || title === "[Removed]" || content === "[Removed]") return null;
 
-  const text = `${title} ${content}`;
+  const text = `${title} ${summary} ${content}`;
   const keywords = extractKeywords(text);
-  const region = detectRegion(text);
+  const region = detectRegion({ title, summary, content });
 
   return {
     id: raw.url,                          // stable dedup key
@@ -143,7 +158,45 @@ function normalise(raw) {
     keywords,
     region,
     sourceQuality: raw.sourceQuality ?? 0.5,
+    relevanceScore: raw.relevanceScore ?? 0,
+    sourceDomains: raw.sourceDomains ?? [],
   };
+}
+
+function computeRelevanceScore(article) {
+  const title = String(article.title ?? "");
+  const summary = String(article.summary ?? article.description ?? "");
+  const content = String(article.content ?? "");
+  const text = `${title} ${summary} ${content}`;
+  const region = detectRegion(text);
+  const keywords = extractKeywords(text, 12);
+
+  let score = 0;
+  for (const pattern of STRATEGIC_SIGNAL_PATTERNS) {
+    if (pattern.test(title)) score += 2;
+    else if (pattern.test(text)) score += 1;
+  }
+
+  if (region) score += 1;
+  if (keywords.length >= 4) score += 1;
+  if ((article.sourceQuality ?? 0.5) >= 0.8) score += 1;
+  if (DOWNRANKED_SOURCE_PATTERNS.some((pattern) => pattern.test(String(article.source ?? "")))) {
+    score -= 2;
+  }
+
+  for (const pattern of NOISE_TITLE_PATTERNS) {
+    if (pattern.test(title)) score -= 4;
+  }
+
+  return { score, region, keywords };
+}
+
+function isRelevantArticle(article) {
+  const title = String(article.title ?? "").trim();
+  if (!title) return false;
+
+  const { score } = computeRelevanceScore(article);
+  return score >= MIN_RELEVANCE_SCORE;
 }
 
 function seedArticles(maxPerRun) {
@@ -186,6 +239,7 @@ async function fetchFromSource(sourceName, fetcher) {
     return articles.map((article) => ({
       ...article,
       sourceQuality: article.sourceQuality ?? SOURCE_QUALITY[sourceName] ?? 0.5,
+      sourceDomains: article.sourceDomains ?? (article.url ? [new URL(article.url).hostname.replace(/^www\./, "")] : []),
     }));
   } catch (err) {
     const message = err.response?.data
@@ -258,20 +312,38 @@ export async function ingest({ apiKey, maxPerRun = 40 }) {
 
   const fetchedBySource = (await Promise.all(sourceResults)).flat();
   const deduped = dedupeArticles(fetchedBySource);
+  const scored = deduped.map((article) => {
+    const { score } = computeRelevanceScore(article);
+    return { ...article, relevanceScore: score };
+  });
+  const relevant = scored.filter((article) => isRelevantArticle(article));
 
-  const normalised = deduped
+  const normalised = relevant
+    .sort((a, b) => {
+      const scoreDelta = (b.relevanceScore ?? 0) - (a.relevanceScore ?? 0);
+      if (scoreDelta !== 0) return scoreDelta;
+      return (b.sourceQuality ?? 0) - (a.sourceQuality ?? 0);
+    })
     .slice(0, maxPerRun)
     .map(normalise)
     .filter(Boolean);
+
+  log.info(`[ingest] Filtered ${deduped.length - relevant.length} low-relevance articles; kept ${relevant.length}`);
 
   if (normalised.length === 0) {
     const seeded = seedArticles(maxPerRun);
     saveArticles(seeded);
     log.warn("[ingest] All external sources unavailable or empty — loaded local seed articles");
-    return { fetched: seeded.length, saved: seeded.length, mode: "seed" };
+    return { fetched: seeded.length, saved: seeded.length, mode: "seed", filteredOutCount: 0, lowRelevanceCount: 0 };
   }
 
   saveArticles(normalised);
   log.info(`[ingest] Saved ${normalised.length} normalised articles`);
-  return { fetched: fetchedBySource.length, saved: normalised.length, mode: "live" };
+  return {
+    fetched: fetchedBySource.length,
+    saved: normalised.length,
+    mode: "live",
+    filteredOutCount: Math.max(0, deduped.length - normalised.length),
+    lowRelevanceCount: Math.max(0, deduped.length - relevant.length),
+  };
 }

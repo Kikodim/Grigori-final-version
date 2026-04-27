@@ -132,6 +132,19 @@ function getElapsed(startedAt) {
   return `${((Date.now() - startedAt) / 1000).toFixed(1)}s`;
 }
 
+function shouldPublishPreEvent(preEvent, articles = []) {
+  const relevanceScore = Number(preEvent.relevanceScore ?? 0);
+  const sourceCount = new Set(preEvent.sources ?? []).size;
+  const title = String(preEvent.title ?? "").toLowerCase();
+  const lowValueTitle = /\b(morning update|evening update|daily briefing|marathon|celebrity|luxury resort)\b/i.test(title);
+  const underReview = String(preEvent.region?.label ?? "").toLowerCase() === "region under review";
+
+  if (lowValueTitle) return false;
+  if (sourceCount <= 1 && relevanceScore < 4 && underReview) return false;
+  if ((articles?.length ?? 0) <= 1 && relevanceScore < 3) return false;
+  return true;
+}
+
 function buildAiDiagnostics(aiStatus, overrides = {}) {
   const config = getConfig();
   const geminiConfigured = describeEnvVar("GEMINI_API_KEY").usable;
@@ -447,10 +460,16 @@ export async function runPipeline({ source = "manual", noAi = false, mode = "ful
   const automatedAiEnabled = mode !== "news" && !noAi && String(process.env.ENABLE_AUTOMATED_AI ?? "true").toLowerCase() !== "false";
   const preEvents = cluster({ threshold });
   const articleStore = new Map(getAllArticles().map((article) => [article.id, article]));
-  const cachedCount = preEvents.filter((preEvent) => cacheHas(makeClusterKey(preEvent))).length;
+  const publishablePreEvents = preEvents.filter((preEvent) => {
+    const articles = preEvent.articleIds
+      .map((id) => articleStore.get(id))
+      .filter(Boolean);
+    return shouldPublishPreEvent(preEvent, articles);
+  });
+  const cachedCount = publishablePreEvents.filter((preEvent) => cacheHas(makeClusterKey(preEvent))).length;
   const previousEvents = await getRecentEvents(24);
 
-  if (preEvents.length === 0) {
+  if (publishablePreEvents.length === 0) {
     const purged = await deleteOldEvents(parseInt(process.env.EVENT_MAX_AGE_HOURS ?? "24", 10));
     cachePrune();
     return {
@@ -463,12 +482,16 @@ export async function runPipeline({ source = "manual", noAi = false, mode = "ful
       purged,
       mode: mode === "news" ? "news" : ingestResult.mode,
       refreshMode: mode,
+      filteredOutCount: ingestResult.filteredOutCount ?? 0,
+      lowRelevanceCount: ingestResult.lowRelevanceCount ?? 0,
+      regionUnderReviewCount: 0,
+      suppressedClusterCount: preEvents.length,
       elapsed: getElapsed(startedAt),
     };
   }
 
   const results = new Map();
-  const enrichedCandidates = preEvents
+  const enrichedCandidates = publishablePreEvents
     .map((preEvent) => {
       const clusterSignature = makeClusterKey(preEvent);
       const articles = preEvent.articleIds
@@ -554,7 +577,7 @@ export async function runPipeline({ source = "manual", noAi = false, mode = "ful
   }
 
   let created = 0;
-  for (const preEvent of preEvents) {
+  for (const preEvent of publishablePreEvents) {
     const result = results.get(preEvent._clusterId);
     if (!result) continue;
     const articles = preEvent.articleIds
@@ -592,12 +615,16 @@ export async function runPipeline({ source = "manual", noAi = false, mode = "ful
 
   const purged = await deleteOldEvents(parseInt(process.env.EVENT_MAX_AGE_HOURS ?? "24", 10));
   cachePrune();
+  const regionUnderReviewCount = publishablePreEvents.filter((event) => {
+    const label = String(event.region?.label ?? "").trim().toLowerCase();
+    return !label || label === "region under review" || label === "unknown region";
+  }).length;
 
   const summary = {
     ok: true,
     events: created,
     articles: ingestResult.saved,
-    clusters: preEvents.length,
+    clusters: publishablePreEvents.length,
     cached: cachedCount,
     aiCalls: actualAiCalls,
     purged,
@@ -605,6 +632,10 @@ export async function runPipeline({ source = "manual", noAi = false, mode = "ful
     refreshMode: mode,
     automatedAiEnabled,
     noAi,
+    filteredOutCount: ingestResult.filteredOutCount ?? 0,
+    lowRelevanceCount: ingestResult.lowRelevanceCount ?? 0,
+    regionUnderReviewCount,
+    suppressedClusterCount: Math.max(0, preEvents.length - publishablePreEvents.length),
     elapsed: getElapsed(startedAt),
   };
 

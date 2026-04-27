@@ -52,12 +52,14 @@ function similarity(a, b) {
 
   const regionBonus =
     a.region && b.region && a.region.label === b.region.label ? 0.15 : 0;
+  const regionPenalty =
+    a.region && b.region && a.region.label !== b.region.label ? 0.15 : 0;
 
   const dtA = new Date(a.publishedAt).getTime();
   const dtB = new Date(b.publishedAt).getTime();
   const timeBonus = Math.abs(dtA - dtB) < TIME_WINDOW_MS ? 0.05 : 0;
 
-  return kwScore + regionBonus + timeBonus;
+  return kwScore + regionBonus + timeBonus - regionPenalty;
 }
 
 /**
@@ -74,11 +76,20 @@ function clusterRegion(articles) {
   }
 
   const sorted = Object.entries(counts).sort((a, b) => b[1] - a[1]);
-  if (!sorted.length) return { label: "Unknown Region", lat: null, lng: null };
+  if (!sorted.length) return { label: "Region under review", lat: null, lng: null, confidence: "Low", reason: "No reliable region signals found in clustered articles." };
+  if (sorted.length > 1 && sorted[0][1] === sorted[1][1]) {
+    return { label: "Region under review", lat: null, lng: null, confidence: "Low", reason: "Cluster contains competing region signals." };
+  }
 
   const winner = sorted[0][0];
   const ref = articles.find((a) => a.region?.label === winner);
-  return ref.region;
+  return {
+    ...ref.region,
+    confidence: sorted[0][1] >= 3 ? "High" : sorted[0][1] >= 2 ? "Medium" : "Low",
+    reason: sorted[0][1] >= 2
+      ? "Location supported by repeated article region matches."
+      : "Location supported by a single article region match.",
+  };
 }
 
 /**
@@ -95,7 +106,9 @@ function representativeTitle(articles, clusterKeywords) {
   let bestScore = 0;
 
   for (const a of articles) {
-    const score = a.keywords.filter((k) => kwSet.has(k)).length;
+    const score = a.keywords.filter((k) => kwSet.has(k)).length
+      + ((a.sourceQuality ?? 0.5) * 4)
+      + ((a.relevanceScore ?? 0) / 4);
     if (score > bestScore) { bestScore = score; best = a; }
   }
 
@@ -196,6 +209,8 @@ export function cluster({ threshold = 0.18 } = {}) {
       confidence: inferConfidence(c.articles),
       articleIds: c.articles.map((a) => a.id),
       sources: [...new Set(c.articles.map((a) => a.source))],
+      sourceDomains: [...new Set(c.articles.flatMap((a) => a.sourceDomains ?? []))],
+      relevanceScore: Math.round(c.articles.reduce((sum, article) => sum + Number(article.relevanceScore ?? 0), 0) / Math.max(c.articles.length, 1)),
       // Raw text passed to the AI summarizer
       articlesText: c.articles
         .map((a) => `TITLE: ${a.title}\nCONTENT: ${a.content}`)
