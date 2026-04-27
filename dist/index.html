@@ -4,6 +4,9 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Grigori by oryth.io | Strategic Intelligence Dashboard</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Rajdhani:wght@500;600;700&family=Share+Tech+Mono&family=Space+Grotesk:wght@400;500;700&display=swap" rel="stylesheet" />
     <meta name="title" content="Grigori by oryth.io | Strategic Intelligence Dashboard" />
     <meta
       name="description"
@@ -12,17 +15,46 @@
     <meta property="og:title" content="Grigori by oryth.io | Strategic Intelligence Dashboard" />
     <meta property="og:description" content="Real-time geopolitical intelligence, strategic risk monitoring, live situational awareness, and personalized executive reports." />
     <style>
+      :root {
+        --grigori-bg: #030812;
+        --grigori-bg-soft: #07101f;
+        --grigori-panel: rgba(8, 16, 30, 0.82);
+        --grigori-panel-strong: rgba(5, 12, 24, 0.94);
+        --grigori-border: rgba(84, 153, 190, 0.22);
+        --grigori-border-strong: rgba(88, 193, 233, 0.28);
+        --grigori-text: #edf6ff;
+        --grigori-text-muted: #8ca4bd;
+        --grigori-accent: #57d8ff;
+        --grigori-success: #4ed69f;
+        --grigori-warning: #ffb648;
+        --grigori-risk: #ff6b72;
+        font-synthesis-weight: none;
+      }
       html, body, #root {
         margin: 0;
         width: 100%;
         height: 100%;
-        background: #020810;
+        background: radial-gradient(circle at top, rgba(47, 110, 149, 0.12), transparent 22%), var(--grigori-bg);
       }
       body {
         overflow: hidden;
+        color: var(--grigori-text);
+        font-family: "Inter", "Space Grotesk", system-ui, sans-serif;
+        text-rendering: optimizeLegibility;
+        -webkit-font-smoothing: antialiased;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      button, input, select, textarea {
+        font: inherit;
+      }
+      a {
+        color: inherit;
+        text-decoration: none;
       }
     </style>
-    <script type="module" crossorigin src="/assets/index-VpddmAqU.js"></script>
+    <script type="module" crossorigin src="/assets/index-BLDYsjT2.js"></script>
   </head>
   <body>
     <div id="root"></div>
