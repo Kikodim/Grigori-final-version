@@ -688,6 +688,24 @@ function makeCloudTex() {
   return tex;
 }
 
+function loadTextureIntoMaterial(loader, url, material, key, fallbackTexture, options = {}) {
+  loader.load(
+    url,
+    (texture) => {
+      if (options.colorSpace) texture.colorSpace = options.colorSpace;
+      if (options.anisotropy) texture.anisotropy = options.anisotropy;
+      texture.needsUpdate = true;
+      material[key] = texture;
+      material.needsUpdate = true;
+    },
+    undefined,
+    () => {
+      material[key] = fallbackTexture;
+      material.needsUpdate = true;
+    }
+  );
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // ATMOSPHERE GLOW SHADER
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -844,29 +862,26 @@ function makeHotspot(ev) {
   };
 
   // White core dot
-  const core = addDisc(0, 0.007, 0xffffff, 1.0);
+  const core = addDisc(0, 0.0046, 0xffffff, 0.98);
   core.userData = { clickable: true, eventId: ev.id, objectType: "event", objectData: ev };
   core.userData.markerGroup = group;
 
   // Surface anchor glow to visually pin the marker to the terrain
-  const groundGlow = addDisc(0.024, 0.044, color, 0.16, { depthTest: true });
+  const groundGlow = addDisc(0.013, 0.024, color, 0.14, { depthTest: true });
   groundGlow.position.z = -0.002;
-  groundGlow.userData.baseOpacity = 0.16;
+  groundGlow.userData.baseOpacity = 0.14;
 
   // Coloured inner ring
-  const ring1 = addDisc(0.009, 0.017, color, 0.85);
+  const ring1 = addDisc(0.0055, 0.0105, color, 0.82);
   if (ev.lensMatched) {
     ring1.userData.baseOpacity = 0.96;
   }
 
   // Animated pulse rings
-  const pulse1 = addDisc(0.020, 0.026, color, 0.5);
-  pulse1.userData = { pulse: true, speed: cfg.pulseSpeed, base: 0.5, phase: 0 };
+  const pulse1 = addDisc(0.0115, 0.0155, color, 0.36);
+  pulse1.userData = { pulse: true, speed: cfg.pulseSpeed, base: 0.36, phase: 0 };
 
-  const pulse2 = addDisc(0.030, 0.034, color, 0.25);
-  pulse2.userData = { pulse: true, speed: cfg.pulseSpeed, base: 0.25, phase: 1.1 };
-
-  group.add(groundGlow, core, ring1, pulse1, pulse2);
+  group.add(groundGlow, core, ring1, pulse1);
 
   // Position on sphere and orient outward
   group.position.copy(surfacePos);
@@ -4605,39 +4620,79 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
     const segs = mob ? 48 : 96;
     const globeMap = makeGlobeTex();
     const globeRelief = makeReliefTex();
+    const cloudMap = makeCloudTex();
     const globeMesh = new THREE.Mesh(
       new THREE.SphereGeometry(R, segs, segs),
       new THREE.MeshStandardMaterial({
         map: globeMap,
         bumpMap: globeRelief,
         roughnessMap: globeRelief,
-        bumpScale: mob ? 0.05 : 0.075,
-        roughness: 0.96,
-        metalness: 0.03,
-        color: new THREE.Color(0xe8f0f4),
+        bumpScale: mob ? 0.045 : 0.068,
+        roughness: 0.985,
+        metalness: 0.015,
+        color: new THREE.Color(0xffffff),
         emissive: new THREE.Color(0x010203),
-        emissiveIntensity: 0.035,
+        emissiveIntensity: 0.02,
         transparent: false,
         opacity: 1.0,
       })
     );
+    globeMesh.material.map.anisotropy = Math.min(renderer.capabilities.getMaxAnisotropy(), mob ? 4 : 8);
+    globeMesh.material.bumpMap.anisotropy = Math.min(renderer.capabilities.getMaxAnisotropy(), 4);
+    globeMesh.material.roughnessMap.anisotropy = Math.min(renderer.capabilities.getMaxAnisotropy(), 4);
     globeMesh.renderOrder = 0;
     scene.add(globeMesh);
 
     const cloudLayer = new THREE.Mesh(
       new THREE.SphereGeometry(R * 1.012, mob ? 36 : 72, mob ? 36 : 72),
       new THREE.MeshStandardMaterial({
-        map: makeCloudTex(),
+        map: cloudMap,
         transparent: true,
-        opacity: 0.18,
+        opacity: 0.11,
         depthWrite: false,
         roughness: 1,
         metalness: 0,
-        color: new THREE.Color(0xe9f1fb),
+        color: new THREE.Color(0xdbe7f4),
       })
     );
+    cloudLayer.material.map.anisotropy = Math.min(renderer.capabilities.getMaxAnisotropy(), 2);
     cloudLayer.renderOrder = 0.5;
     scene.add(cloudLayer);
+
+    const textureLoader = new THREE.TextureLoader();
+    const maxAnisotropy = renderer.capabilities.getMaxAnisotropy();
+    loadTextureIntoMaterial(
+      textureLoader,
+      "/assets/globe/earth-dark-base.png",
+      globeMesh.material,
+      "map",
+      globeMap,
+      { colorSpace: THREE.SRGBColorSpace, anisotropy: Math.min(maxAnisotropy, mob ? 4 : 8) }
+    );
+    loadTextureIntoMaterial(
+      textureLoader,
+      "/assets/globe/earth-dark-bump.png",
+      globeMesh.material,
+      "bumpMap",
+      globeRelief,
+      { anisotropy: Math.min(maxAnisotropy, 4) }
+    );
+    loadTextureIntoMaterial(
+      textureLoader,
+      "/assets/globe/earth-dark-bump.png",
+      globeMesh.material,
+      "roughnessMap",
+      globeRelief,
+      { anisotropy: Math.min(maxAnisotropy, 4) }
+    );
+    loadTextureIntoMaterial(
+      textureLoader,
+      "/assets/globe/earth-dark-clouds.png",
+      cloudLayer.material,
+      "map",
+      cloudMap,
+      { colorSpace: THREE.SRGBColorSpace, anisotropy: Math.min(maxAnisotropy, 2) }
+    );
 
     // Atmosphere
     const atm = makeAtmosphere();
