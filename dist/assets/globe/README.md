@@ -1,14 +1,17 @@
-These globe textures are generated locally by:
+Local globe assets for Grigori.
 
-`node scripts/generate-globe-texture.js`
+Primary source:
+- User-provided free Earth textures from `/Users/kirildimitrov/Downloads/59-earth/textures/`
 
-Files:
-- `earth-dark-base.png`
-- `earth-dark-bump.png`
-- `earth-dark-clouds.png`
+Active files used by the globe material:
+- `earth-albedo.jpg`
+- `earth-bump.jpg`
+- `earth-clouds.jpg`
+- `earth-land-ocean-mask.jpg`
+- `earth-night-lights.jpg`
 
-Generation notes:
-- Deterministic procedural generation
+Usage notes:
+- Loaded locally by the Grigori globe renderer
 - No remote texture dependency
-- No paid APIs
-- Intended for dark tactical Earth rendering in Grigori
+- Intended for dark tactical Earth rendering
+- Assets were resized/compressed for web delivery

@@ -706,6 +706,129 @@ function loadTextureIntoMaterial(loader, url, material, key, fallbackTexture, op
   );
 }
 
+function makeSolidEarthFallbackTexture() {
+  const cv = document.createElement("canvas");
+  cv.width = 8;
+  cv.height = 4;
+  const ctx = cv.getContext("2d");
+  const gradient = ctx.createLinearGradient(0, 0, 0, cv.height);
+  gradient.addColorStop(0, "#122030");
+  gradient.addColorStop(1, "#08111a");
+  ctx.fillStyle = gradient;
+  ctx.fillRect(0, 0, cv.width, cv.height);
+  const tex = new THREE.CanvasTexture(cv);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+
+function makeFlatScalarTexture(value) {
+  const data = new Uint8Array([value, value, value, value, value, value]);
+  const tex = new THREE.DataTexture(data, 2, 1, THREE.RGBFormat);
+  tex.needsUpdate = true;
+  return tex;
+}
+
+function makeTransparentTexture() {
+  const data = new Uint8Array([255, 255, 255, 0]);
+  const tex = new THREE.DataTexture(data, 1, 1, THREE.RGBAFormat);
+  tex.needsUpdate = true;
+  return tex;
+}
+
+function loadTextureAsync(loader, url, options = {}) {
+  return new Promise((resolve, reject) => {
+    loader.load(
+      url,
+      (texture) => {
+        if (options.colorSpace) texture.colorSpace = options.colorSpace;
+        if (options.anisotropy) texture.anisotropy = options.anisotropy;
+        texture.needsUpdate = true;
+        resolve(texture);
+      },
+      undefined,
+      reject
+    );
+  });
+}
+
+function buildDarkEarthCompositeTexture(albedoImage, maskImage, anisotropy = 4) {
+  const W = albedoImage.width;
+  const H = albedoImage.height;
+  const canvas = document.createElement("canvas");
+  canvas.width = W;
+  canvas.height = H;
+  const ctx = canvas.getContext("2d", { willReadFrequently: true });
+  ctx.drawImage(albedoImage, 0, 0, W, H);
+  const albedo = ctx.getImageData(0, 0, W, H);
+
+  const maskCanvas = document.createElement("canvas");
+  maskCanvas.width = W;
+  maskCanvas.height = H;
+  const maskCtx = maskCanvas.getContext("2d", { willReadFrequently: true });
+  maskCtx.drawImage(maskImage, 0, 0, W, H);
+  const mask = maskCtx.getImageData(0, 0, W, H);
+
+  const mix = (a, b, t) => a + (b - a) * t;
+  const smoothstep = (edge0, edge1, x) => {
+    const t = Math.max(0, Math.min(1, (x - edge0) / (edge1 - edge0)));
+    return t * t * (3 - 2 * t);
+  };
+
+  const pixels = albedo.data;
+  const maskPixels = mask.data;
+
+  for (let i = 0; i < pixels.length; i += 4) {
+    const r = pixels[i] / 255;
+    const g = pixels[i + 1] / 255;
+    const b = pixels[i + 2] / 255;
+    const luminance = (0.2126 * r) + (0.7152 * g) + (0.0722 * b);
+    const grayscale = (r + g + b) / 3;
+    const landMask = smoothstep(0.35, 0.62, maskPixels[i] / 255);
+    const oceanMask = 1 - landMask;
+
+    const oceanLift = Math.pow(Math.min(1, luminance * 1.1), 0.88);
+    const landLift = Math.pow(Math.min(1, luminance * 1.02), 0.92);
+
+    const ocean = [
+      mix(0.012, 0.058, oceanLift),
+      mix(0.022, 0.108, oceanLift),
+      mix(0.042, 0.165, oceanLift),
+    ];
+    const land = [
+      mix(0.105, 0.315, landLift),
+      mix(0.112, 0.33, landLift),
+      mix(0.116, 0.305, landLift),
+    ];
+    const cooledGray = [
+      grayscale * 0.46,
+      grayscale * 0.48,
+      grayscale * 0.5,
+    ];
+
+    const landRgb = [
+      mix(land[0], cooledGray[0], 0.24),
+      mix(land[1], cooledGray[1], 0.24),
+      mix(land[2], cooledGray[2], 0.24),
+    ];
+
+    const outR = mix(ocean[0], landRgb[0], landMask);
+    const outG = mix(ocean[1], landRgb[1], landMask);
+    const outB = mix(ocean[2], landRgb[2], landMask);
+
+    pixels[i] = Math.max(0, Math.min(255, Math.round((outR + (oceanMask * 0.01)) * 255)));
+    pixels[i + 1] = Math.max(0, Math.min(255, Math.round((outG + (oceanMask * 0.01)) * 255)));
+    pixels[i + 2] = Math.max(0, Math.min(255, Math.round((outB + (oceanMask * 0.014)) * 255)));
+    pixels[i + 3] = 255;
+  }
+
+  ctx.putImageData(albedo, 0, 0);
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  texture.anisotropy = anisotropy;
+  texture.needsUpdate = true;
+  return texture;
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // ATMOSPHERE GLOW SHADER
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -4618,21 +4741,22 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
 
     // Globe
     const segs = mob ? 48 : 96;
-    const globeMap = makeGlobeTex();
-    const globeRelief = makeReliefTex();
-    const cloudMap = makeCloudTex();
+    const globeMap = makeSolidEarthFallbackTexture();
+    const globeRelief = makeFlatScalarTexture(118);
+    const globeRoughness = makeFlatScalarTexture(214);
+    const cloudMap = makeTransparentTexture();
     const globeMesh = new THREE.Mesh(
       new THREE.SphereGeometry(R, segs, segs),
       new THREE.MeshStandardMaterial({
         map: globeMap,
         bumpMap: globeRelief,
-        roughnessMap: globeRelief,
-        bumpScale: mob ? 0.045 : 0.068,
-        roughness: 0.985,
-        metalness: 0.015,
+        roughnessMap: globeRoughness,
+        bumpScale: mob ? 0.03 : 0.048,
+        roughness: 0.94,
+        metalness: 0.0,
         color: new THREE.Color(0xffffff),
         emissive: new THREE.Color(0x010203),
-        emissiveIntensity: 0.02,
+        emissiveIntensity: 0.012,
         transparent: false,
         opacity: 1.0,
       })
@@ -4648,7 +4772,7 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
       new THREE.MeshStandardMaterial({
         map: cloudMap,
         transparent: true,
-        opacity: 0.11,
+        opacity: 0.0,
         depthWrite: false,
         roughness: 1,
         metalness: 0,
@@ -4661,38 +4785,56 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
 
     const textureLoader = new THREE.TextureLoader();
     const maxAnisotropy = renderer.capabilities.getMaxAnisotropy();
-    loadTextureIntoMaterial(
-      textureLoader,
-      "/assets/globe/earth-dark-base.png",
-      globeMesh.material,
-      "map",
-      globeMap,
-      { colorSpace: THREE.SRGBColorSpace, anisotropy: Math.min(maxAnisotropy, mob ? 4 : 8) }
-    );
-    loadTextureIntoMaterial(
-      textureLoader,
-      "/assets/globe/earth-dark-bump.png",
-      globeMesh.material,
-      "bumpMap",
-      globeRelief,
-      { anisotropy: Math.min(maxAnisotropy, 4) }
-    );
-    loadTextureIntoMaterial(
-      textureLoader,
-      "/assets/globe/earth-dark-bump.png",
-      globeMesh.material,
-      "roughnessMap",
-      globeRelief,
-      { anisotropy: Math.min(maxAnisotropy, 4) }
-    );
-    loadTextureIntoMaterial(
-      textureLoader,
-      "/assets/globe/earth-dark-clouds.png",
-      cloudLayer.material,
-      "map",
-      cloudMap,
-      { colorSpace: THREE.SRGBColorSpace, anisotropy: Math.min(maxAnisotropy, 2) }
-    );
+    let cancelled = false;
+    Promise.allSettled([
+      loadTextureAsync(textureLoader, "/assets/globe/earth-albedo.jpg", {
+        colorSpace: THREE.SRGBColorSpace,
+        anisotropy: Math.min(maxAnisotropy, mob ? 4 : 8),
+      }),
+      loadTextureAsync(textureLoader, "/assets/globe/earth-land-ocean-mask.jpg", {
+        anisotropy: Math.min(maxAnisotropy, 4),
+      }),
+      loadTextureAsync(textureLoader, "/assets/globe/earth-bump.jpg", {
+        anisotropy: Math.min(maxAnisotropy, 4),
+      }),
+      loadTextureAsync(textureLoader, "/assets/globe/earth-clouds.jpg", {
+        colorSpace: THREE.SRGBColorSpace,
+        anisotropy: Math.min(maxAnisotropy, 2),
+      }),
+    ]).then((results) => {
+      if (cancelled) return;
+
+      const [albedoResult, maskResult, bumpResult, cloudResult] = results;
+      const albedoTexture = albedoResult.status === "fulfilled" ? albedoResult.value : null;
+      const maskTexture = maskResult.status === "fulfilled" ? maskResult.value : null;
+      const bumpTexture = bumpResult.status === "fulfilled" ? bumpResult.value : null;
+      const cloudTexture = cloudResult.status === "fulfilled" ? cloudResult.value : null;
+
+      if (albedoTexture?.image && maskTexture?.image) {
+        const compositeTexture = buildDarkEarthCompositeTexture(
+          albedoTexture.image,
+          maskTexture.image,
+          Math.min(maxAnisotropy, mob ? 4 : 8)
+        );
+        globeMesh.material.map = compositeTexture;
+      }
+
+      if (bumpTexture) {
+        globeMesh.material.bumpMap = bumpTexture;
+      }
+
+      if (maskTexture) {
+        globeMesh.material.roughnessMap = maskTexture;
+      }
+
+      if (cloudTexture) {
+        cloudLayer.material.map = cloudTexture;
+        cloudLayer.material.opacity = 0.14;
+      }
+
+      globeMesh.material.needsUpdate = true;
+      cloudLayer.material.needsUpdate = true;
+    });
 
     // Atmosphere
     const atm = makeAtmosphere();
@@ -5153,6 +5295,7 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
       renderer.domElement.removeEventListener("touchmove",  onTouchMove);
       renderer.domElement.removeEventListener("touchend",   onTouchEnd);
       window.removeEventListener("resize", onResize);
+      cancelled = true;
       renderer.dispose();
       if (container.contains(renderer.domElement)) container.removeChild(renderer.domElement);
     };
