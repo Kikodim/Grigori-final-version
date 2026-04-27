@@ -3,6 +3,7 @@ import { describeEnvVar, getConfig, getIntegrationConfigStatus } from "./config.
 import { buildBriefing } from "./event-insights.js";
 import { getFlightsLayer, getLayersStatus, getSatellitesLayer, getSocialSignalsLayer, getVesselsLayer } from "./layers.js";
 import { createLogger } from "./logger.js";
+import { getMarketContext } from "./market-data.js";
 import { runPipeline } from "./pipeline.js";
 import {
   buildSubscriptionStatus,
@@ -25,7 +26,7 @@ import { getEventById, getEvents, getRefreshState, getRefreshUsageStats, getStat
 
 const log = createLogger("api");
 
-const VALID_TONES = new Set(["Escalating", "Stable", "De-escalating"]);
+const VALID_TONES = new Set(["Stable", "Escalating", "Deteriorating", "Volatile", "De-escalating"]);
 const VALID_CONFIDENCE = new Set(["Low", "Medium", "High"]);
 
 function applyRateLimit(req, res) {
@@ -89,6 +90,9 @@ export async function handleHealth(_req, res) {
       port: config.port,
       ingestIntervalMinutes: config.ingestIntervalMinutes,
       enableAutomatedAi: config.enableAutomatedAi,
+      enableHistoricalBackfill: config.enableHistoricalBackfill,
+      backfillMaxDays: config.backfillMaxDays,
+      backfillBatchDays: config.backfillBatchDays,
       aiDailyLimit: config.aiDailyLimit,
       aiReservedCalls: config.aiReservedCalls,
       aiAutomationBudget: config.aiAutomationBudget,
@@ -215,6 +219,12 @@ export async function handleSocialSignalsLive(_req, res) {
   return res.status(200).json(result);
 }
 
+export async function handleMarketContext(req, res) {
+  const forceRefresh = req.query?.refresh === "true";
+  const result = await getMarketContext({ forceRefresh });
+  return res.status(200).json(result);
+}
+
 export async function handleSubscriptionStatus(req, res) {
   return res.status(200).json(await buildSubscriptionStatus(req));
 }
@@ -255,10 +265,11 @@ export async function handlePipelineRun(req, res) {
   }
 
   const requestedMode = String(req.query?.mode ?? req.body?.mode ?? "full").toLowerCase();
-  const mode = requestedMode === "news" || requestedMode === "ai" ? requestedMode : "full";
+  const mode = ["news", "ai", "backfill"].includes(requestedMode) ? requestedMode : "full";
+  const days = Number.parseInt(String(req.query?.days ?? req.body?.days ?? "30"), 10);
   const noAi = mode === "news" || req.query?.noAi === "true" || req.body?.noAi === true;
   const source = mode === "news" || mode === "ai" || req.headers["x-vercel-cron-secret"] ? "automation" : "manual";
-  const result = await runPipeline({ source, noAi, mode });
+  const result = await runPipeline({ source, noAi, mode, days });
   const nextNewsRefresh = new Date(Date.now() + 60 * 60 * 1000).toISOString();
   const nextAiRefresh = new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString();
   if (result.ok) {
@@ -281,6 +292,16 @@ export async function handlePipelineRun(req, res) {
         targetTitle: result.targetTitle ?? null,
         reason: result.reason ?? null,
       }, nextAiRefresh);
+    }
+    if (mode === "backfill") {
+      await setRefreshState("backfill", {
+        mode,
+        source,
+        daysRequested: result.daysRequested ?? days,
+        windowsProcessed: result.windowsProcessed ?? 0,
+        eventsCreated: result.eventsCreated ?? 0,
+        articlesSaved: result.articlesSaved ?? 0,
+      }, null);
     }
   }
   const status = result.ok ? 202 : 500;

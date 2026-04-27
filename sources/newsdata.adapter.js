@@ -2,7 +2,7 @@ import axios from "axios";
 
 const API_BASE = "https://newsdata.io/api/1/news";
 
-export async function fetchNewsDataArticles({ apiKey, queries, pageSize = 10 }) {
+export async function fetchNewsDataArticles({ apiKey, queries, pageSize = 10, from = null, to = null, historical = false }) {
   const articles = [];
 
   for (const query of queries) {
@@ -12,6 +12,8 @@ export async function fetchNewsDataArticles({ apiKey, queries, pageSize = 10 }) 
         q: query,
         language: "en",
         size: pageSize,
+        from_date: historical && from ? from.slice(0, 10) : undefined,
+        to_date: historical && to ? to.slice(0, 10) : undefined,
       },
       timeout: 12_000,
     });

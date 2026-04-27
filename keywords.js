@@ -28,6 +28,7 @@ const STOP_WORDS = new Set([
   "their","them","he","she","we","our","you","your","i","my","his","her",
   "paid","plans","available","only","email","internal","newsletter",
   "morning","evening","update","updates","live","blog","briefing",
+  "breaking","watch","photo","video","analysis","opinion","comment",
 ]);
 
 // ─── Geopolitical lexicon weights ─────────────────────────────────────────────
@@ -48,10 +49,21 @@ const GEO_LEXICON = {
   coup: 3, insurgency: 3, rebel: 2, militia: 2, terrorist: 2,
   // Resources
   oil: 2, gas: 1, pipeline: 2, uranium: 2, nuclear: 3, weapons: 2,
+  electricity: 2, grid: 2, power: 2, refinery: 2, lng: 2,
   // Outcomes
   casualties: 2, killed: 2, wounded: 2, displaced: 2, refugees: 2,
   // Vessels / territory
   strait: 2, corridor: 2, border: 2, territory: 2, sovereignty: 2,
+  // Political / civic pressure
+  election: 3, elections: 3, vote: 2, voting: 2, coalition: 2, parliament: 2,
+  government: 2, resignation: 2, protest: 3, protests: 3, demonstrators: 2,
+  crackdown: 2, corruption: 2, regulation: 2, regulatory: 2, sanctions: 3,
+  tariff: 2, tariffs: 2, trade: 2, dispute: 2, commission: 2, european: 2,
+  migration: 2, asylum: 2, borderguards: 2, diplomacy: 2, minister: 1,
+  // Cyber / infrastructure
+  cyber: 3, cyberattack: 3, ransomware: 3, malware: 2, telecom: 2,
+  infrastructure: 2, sabotage: 3, outage: 2, railway: 2, port: 2,
+  data: 1, espionage: 2, network: 1, gridlock: 1,
 };
 
 /**
@@ -86,15 +98,32 @@ export function extractKeywords(text, topN = 15) {
 // Maps a keyword → canonical region label + approximate lat/lng centroid.
 
 export const REGION_MAP = [
+  { keywords: ["european union","european commission","eu parliament","brussels"], label: "European Union", lat: 50.85, lng: 4.35 },
+  { keywords: ["uk","united kingdom","britain","london","westminster","downing street"], label: "United Kingdom", lat: 51.5, lng: -0.12 },
+  { keywords: ["france","paris","macron","elysee"], label: "France", lat: 46.2, lng: 2.2 },
+  { keywords: ["germany","berlin","bundestag","scholz"], label: "Germany", lat: 51.2, lng: 10.4 },
+  { keywords: ["bulgaria","sofia","bulgarian","plovdiv","varna"], label: "Bulgaria", lat: 42.7, lng: 25.5 },
+  { keywords: ["romania","bucharest","romanian"], label: "Romania", lat: 45.9, lng: 24.9 },
+  { keywords: ["moldova","chisinau","transnistria"], label: "Moldova", lat: 47.0, lng: 28.8 },
+  { keywords: ["serbia","belgrade"], label: "Serbia", lat: 44.0, lng: 20.9 },
+  { keywords: ["kosovo","pristina"], label: "Kosovo", lat: 42.7, lng: 21.1 },
+  { keywords: ["bosnia","sarajevo","republika srpska"], label: "Bosnia and Herzegovina", lat: 44.2, lng: 17.7 },
+  { keywords: ["north macedonia","skopje"], label: "North Macedonia", lat: 41.6, lng: 21.7 },
+  { keywords: ["greece","athens","aegean"], label: "Greece", lat: 39.1, lng: 22.9 },
+  { keywords: ["turkey","turkiye","ankara","erdogan","aegean", "istanbul"], label: "Turkey", lat: 39.0, lng: 35.2 },
+  { keywords: ["hungary","budapest","orban"], label: "Hungary", lat: 47.1, lng: 19.5 },
+  { keywords: ["poland","warsaw"], label: "Poland", lat: 52.1, lng: 19.1 },
+  { keywords: ["latvia","riga","lithuania","vilnius","estonia","tallinn","baltic states"], label: "Baltic Region", lat: 56.9, lng: 24.6 },
   { keywords: ["ukraine","kyiv","kharkiv","mariupol","zaporizhzhia","donbas","kherson","odesa","odessa"], label: "Ukraine", lat: 49.0, lng: 32.0 },
   { keywords: ["russia","moscow","kremlin","putin","siberia","kaliningrad"], label: "Russia", lat: 61.5, lng: 90.0 },
-  { keywords: ["taiwan","taipei","tsmc","strait","plaaf","rocaf"], label: "Taiwan Strait", lat: 24.5, lng: 122.0 },
+  { keywords: ["taiwan","taipei","tsmc","taiwan strait","median line","plaaf","rocaf"], label: "Taiwan Strait", lat: 24.5, lng: 122.0 },
   { keywords: ["china","beijing","pla","xinjiang","hongkong","south china sea"], label: "China", lat: 35.8, lng: 104.0 },
+  { keywords: ["south china sea","spratly","paracel","manila"], label: "South China Sea", lat: 12.5, lng: 114.2 },
   { keywords: ["hormuz","iran","irgc","tehran","persian gulf","strait of hormuz"], label: "Strait of Hormuz", lat: 26.6, lng: 56.3 },
   { keywords: ["israel","gaza","hamas","hezbollah","west bank","jerusalem","tel aviv","idf"], label: "Middle East", lat: 31.5, lng: 35.2 },
   { keywords: ["lebanon","beirut","syria","damascus"], label: "Levant", lat: 33.9, lng: 36.3 },
   { keywords: ["iraq","baghdad","mosul","erbil"], label: "Iraq", lat: 33.3, lng: 44.4 },
-  { keywords: ["yemen","houthi","aden","sanaa","red sea"], label: "Yemen / Red Sea", lat: 15.6, lng: 48.5 },
+  { keywords: ["yemen","houthi","aden","sanaa","red sea","bab el-mandeb","suez"], label: "Yemen / Red Sea", lat: 15.6, lng: 48.5 },
   { keywords: ["saudi","riyadh","aramco","opec"], label: "Saudi Arabia", lat: 24.0, lng: 45.0 },
   { keywords: ["colombia","bogota","cauca","medellin","farc"], label: "Colombia", lat: 4.7, lng: -74.1 },
   { keywords: ["venezuela","maduro","guyana","essequibo","caracas"], label: "Venezuela–Guyana", lat: 6.8, lng: -61.2 },
@@ -107,11 +136,34 @@ export const REGION_MAP = [
   { keywords: ["sudan","khartoum","darfur","rsf","saf"], label: "Sudan", lat: 15.6, lng: 32.5 },
   { keywords: ["ethiopia","tigray","amhara","addis ababa"], label: "Ethiopia", lat: 9.0, lng: 40.5 },
   { keywords: ["somalia","mogadishu","al-shabaab","horn of africa"], label: "Somalia", lat: 5.2, lng: 46.2 },
-  { keywords: ["black sea","bosphorus","kerch","sevastopol"], label: "Black Sea", lat: 43.0, lng: 34.0 },
-  { keywords: ["baltic","finland","estonia","latvia","lithuania","poland"], label: "Baltic Region", lat: 57.0, lng: 24.0 },
-  { keywords: ["serbia","kosovo","belgrade","pristina","balkans"], label: "Balkans", lat: 44.0, lng: 21.0 },
+  { keywords: ["black sea","bosphorus","kerch","sevastopol","constanta","varna","odessa"], label: "Black Sea", lat: 43.0, lng: 34.0 },
+  { keywords: ["balkans","western balkans","serbia","kosovo","belgrade","pristina","sarajevo","skopje","bosnia","bulgaria","romania"], label: "Balkans", lat: 43.7, lng: 22.4 },
   { keywords: ["afghanistan","kabul","taliban","kandahar"], label: "Afghanistan", lat: 33.9, lng: 67.7 },
 ];
+
+const CATEGORY_RULES = [
+  { category: "Military", pattern: /\b(war|military|missile|drone|troops|naval|airstrike|artillery|exercise|warship|carrier)\b/i },
+  { category: "Political", pattern: /\b(government|coalition|parliament|cabinet|resignation|minister|commission|regulation|legislation)\b/i },
+  { category: "Election", pattern: /\b(election|elections|vote|voting|ballot|polls|snap election)\b/i },
+  { category: "Protest", pattern: /\b(protest|protests|demonstration|demonstrators|riot|strike action)\b/i },
+  { category: "Energy", pattern: /\b(oil|gas|lng|pipeline|refinery|opec|energy security|power grid)\b/i },
+  { category: "Cyber", pattern: /\b(cyber|cyberattack|ransomware|hack|breach|telecom outage|malware)\b/i },
+  { category: "Trade", pattern: /\b(trade|tariff|customs|export control|supply chain|shipment|freight)\b/i },
+  { category: "Sanctions", pattern: /\b(sanctions|asset freeze|export ban|blacklist)\b/i },
+  { category: "Infrastructure", pattern: /\b(infrastructure|grid|railway|port disruption|telecom|pipeline sabotage|blackout)\b/i },
+  { category: "Migration", pattern: /\b(migration|migrant|asylum|border crossing|refugee)\b/i },
+  { category: "Diplomatic", pattern: /\b(diplomatic|talks|meeting|summit|envoy|mediation|ceasefire|agreement)\b/i },
+  { category: "Shipping", pattern: /\b(shipping|tanker|container|rerouting|port|red sea|hormuz|suez|black sea)\b/i },
+  { category: "Market", pattern: /\b(market|stocks|equities|vix|gold|bond|currency|investor sentiment)\b/i },
+];
+
+export function detectEventCategories(text) {
+  const corpus = String(text ?? "");
+  const matches = CATEGORY_RULES
+    .filter((rule) => rule.pattern.test(corpus))
+    .map((rule) => rule.category);
+  return matches.length > 0 ? matches : ["Political"];
+}
 
 /**
  * Detect the most likely region from article text.

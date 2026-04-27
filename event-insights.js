@@ -407,6 +407,80 @@ export function deriveImportance(event) {
   return score;
 }
 
+export function deriveEventClassification(event) {
+  const corpus = buildCorpus(event);
+  const sourceSignals = getEventSourceSignals(event);
+  const location = inferLocationDetails(event);
+  const importance = deriveImportance(event);
+  let category = "Political";
+
+  if (/\b(war|military|missile|drone|naval|exercise|troops|airstrike|artillery)\b/i.test(corpus)) category = "Military";
+  else if (/\b(election|ballot|polls|snap election|vote)\b/i.test(corpus)) category = "Election";
+  else if (/\b(protest|demonstration|riot|strike action)\b/i.test(corpus)) category = "Protest";
+  else if (/\b(oil|gas|lng|pipeline|refinery|opec|energy security|power grid)\b/i.test(corpus)) category = "Energy";
+  else if (/\b(cyber|cyberattack|ransomware|hack|breach|telecom)\b/i.test(corpus)) category = "Cyber";
+  else if (/\b(trade|tariff|customs|export control|shipment|supply chain)\b/i.test(corpus)) category = "Trade";
+  else if (/\b(sanctions|asset freeze|blacklist|export ban)\b/i.test(corpus)) category = "Sanctions";
+  else if (/\b(infrastructure|grid|railway|port disruption|blackout|pipeline sabotage)\b/i.test(corpus)) category = "Infrastructure";
+  else if (/\b(migration|migrant|asylum|refugee)\b/i.test(corpus)) category = "Migration";
+  else if (/\b(diplomatic|talks|meeting|summit|mediation|ceasefire|agreement)\b/i.test(corpus)) category = "Diplomatic";
+  else if (/\b(shipping|tanker|container|rerouting|suez|hormuz|red sea|black sea)\b/i.test(corpus)) category = "Shipping";
+  else if (/\b(market|stocks|equities|vix|gold|bond|currency)\b/i.test(corpus)) category = "Market";
+
+  let severityScore = 18;
+  if (event.tone === "Escalating") severityScore += 26;
+  if (event.tone === "Deteriorating") severityScore += 30;
+  if (event.tone === "Volatile") severityScore += 22;
+  if (sourceSignals.sourceCount >= 3) severityScore += 8;
+  if (/attack|strike|missile|drone|blockade|seizure|offensive|riot|blackout|cyberattack/i.test(corpus)) severityScore += 18;
+  if (/election|protest|coalition|parliament|regulator|commission/i.test(corpus)) severityScore += 8;
+  severityScore = Math.max(0, Math.min(100, Math.round(severityScore)));
+
+  let impactScore = Math.max(20, Math.min(100, Math.round(importance)));
+  if (/\b(hormuz|red sea|black sea|taiwan|semiconductor|nato|eu|migration|pipeline|oil|gas|sanctions)\b/i.test(corpus)) impactScore += 12;
+  if (location.label === "Region under review") impactScore -= 8;
+  impactScore = Math.max(0, Math.min(100, Math.round(impactScore)));
+
+  let confidenceScore = 28;
+  confidenceScore += Math.round(sourceSignals.averageTrust * 35);
+  confidenceScore += Math.min(20, sourceSignals.independentDomainCount * 4);
+  confidenceScore += location.confidence === "High" ? 12 : location.confidence === "Medium" ? 6 : 0;
+  if ((event.confidence ?? "Low") === "High") confidenceScore += 10;
+  else if ((event.confidence ?? "Low") === "Medium") confidenceScore += 5;
+  confidenceScore = Math.max(0, Math.min(100, Math.round(confidenceScore)));
+
+  return { category, severityScore, impactScore, confidenceScore };
+}
+
+export function deriveRecentTrend(event, allEvents = []) {
+  const now = Date.now();
+  const lookback7 = now - 7 * 24 * 3600_000;
+  const prior7 = now - 14 * 24 * 3600_000;
+  const current30 = now - 30 * 24 * 3600_000;
+  const location = String(inferLocationDetails(event).label ?? "").toLowerCase();
+  const category = deriveEventClassification(event).category;
+
+  const matches = (allEvents ?? []).filter((candidate) => {
+    const candidateLocation = String(inferLocationDetails(candidate).label ?? "").toLowerCase();
+    const candidateCategory = deriveEventClassification(candidate).category;
+    const sameLocation = location && location !== "region under review" && candidateLocation === location;
+    const sameCategory = candidateCategory === category;
+    return sameLocation || sameCategory;
+  });
+
+  const countCurrent7 = matches.filter((candidate) => new Date(candidate.timestamp ?? now).getTime() >= lookback7).length;
+  const countPrior7 = matches.filter((candidate) => {
+    const ts = new Date(candidate.timestamp ?? now).getTime();
+    return ts >= prior7 && ts < lookback7;
+  }).length;
+  const countCurrent30 = matches.filter((candidate) => new Date(candidate.timestamp ?? now).getTime() >= current30).length;
+
+  if (countCurrent30 < 2) return "Insufficient data";
+  if (countCurrent7 >= countPrior7 + 2) return "Increasing";
+  if (countCurrent7 + 1 < countPrior7) return "Decreasing";
+  return "Stable";
+}
+
 export function getDecisionLens(lensId = "global_risk") {
   return DECISION_LENSES.find((lens) => lens.id === lensId) ?? DECISION_LENSES[0];
 }
@@ -500,19 +574,25 @@ export function rankBriefingEvents(events, limit = 5, lensId = "global_risk") {
 export function buildWhyThisMatters(event) {
   const corpus = buildCorpus(event);
   const direct = WHY_THIS_MATTERS_RULES.find((rule) => rule.pattern.test(corpus));
-  if (direct) return direct.text;
+  if (Array.isArray(event.whyThisMatters) && event.whyThisMatters.length > 0) {
+    return event.whyThisMatters;
+  }
+  if (direct) return [direct.text];
 
   const sectors = getMarketImpactTags(event);
   if (sectors.some((tag) => /Shipping|Oil/i.test(tag))) {
-    return "This matters because shipping and energy disruptions can spread quickly into insurance, freight, and broader market pricing.";
+    return ["This matters because shipping and energy disruptions can spread quickly into insurance, freight, and broader market pricing."];
   }
   if (event.tone === "Escalating") {
-    return "This matters because escalating geopolitical events can widen into supply, security, and market sentiment shocks.";
+    return ["This matters because escalating geopolitical events can widen into supply, security, and market sentiment shocks."];
   }
-  return "This matters because even contained geopolitical signals can alter regional risk pricing and strategic planning.";
+  return ["This matters because even contained geopolitical signals can alter regional risk pricing and strategic planning."];
 }
 
 export function buildWatchIndicators(event) {
+  if (Array.isArray(event.watchIndicators) && event.watchIndicators.length > 0) {
+    return event.watchIndicators;
+  }
   const corpus = buildCorpus(event);
   const direct = WATCH_INDICATOR_RULES.find((rule) => rule.pattern.test(corpus));
   if (direct) return direct.indicators;
@@ -632,7 +712,16 @@ function buildTrendSeries(events, categoryKey) {
   });
 }
 
-function buildMarketCategory(label, score, level, trend, events, categoryKey) {
+function buildLineSeriesFromPoints(points = [], window) {
+  const limit = window === "24h" ? 2 : window === "7d" ? 7 : 30;
+  return (points ?? []).slice(-limit).map((point, index) => ({
+    label: window === "24h" ? `${index + 1}` : String(point.timestamp ?? "").slice(5, 10),
+    value: Number(point.value ?? 0),
+    timestamp: point.timestamp,
+  }));
+}
+
+function buildMarketCategory(label, score, level, trend, events, categoryKey, marketContext = null) {
   const contributingEvents = [...events]
     .map((event) => ({
       event,
@@ -652,6 +741,16 @@ function buildMarketCategory(label, score, level, trend, events, categoryKey) {
   const relatedSectors = unique(contributingEvents.flatMap((event) => getMarketImpactTags(event))).slice(0, 5);
   const confidence = contributingEvents.length >= 3 ? "High" : contributingEvents.length === 2 ? "Medium" : "Low";
 
+  const contextItem = marketContext?.instruments?.find((item) =>
+    categoryKey === "oil"
+      ? item.category === "oil"
+      : categoryKey === "equities"
+        ? item.symbol === "SPY"
+        : categoryKey === "tech"
+          ? item.symbol === "SPY"
+          : false
+  ) ?? null;
+
   return {
     key: categoryKey,
     label,
@@ -664,12 +763,23 @@ function buildMarketCategory(label, score, level, trend, events, categoryKey) {
     relatedSectors,
     lastUpdated: new Date().toISOString(),
     methodology: "Directional risk signal based on event importance, recency, source corroboration, chokepoint relevance, and scenario impact tags. Not financial advice.",
-    series: buildTrendSeries(events, categoryKey),
-    priceFeedStatus: categoryKey === "oil" ? "Market price feed not configured yet." : null,
+    series: contextItem?.series?.length
+      ? contextItem.series
+      : buildTrendSeries(events, categoryKey),
+    priceContext: contextItem ? {
+      currentPrice: contextItem.currentPrice,
+      changePercent: contextItem.changePercent,
+      changeAbsolute: contextItem.changeAbsolute,
+      symbol: contextItem.symbol,
+      lastUpdated: contextItem.lastUpdated,
+    } : null,
+    priceFeedStatus: contextItem
+      ? `Market context source: ${contextItem.source}`
+      : "Market price feed not configured yet.",
   };
 }
 
-export function aggregateMarketImpact(events) {
+export function aggregateMarketImpact(events, marketContext = null) {
   const totals = { oil: 0, shipping: 0, defense: 0, tech: 0, equities: 0 };
   for (const event of events) {
     const eventImpact = accumulateEventImpact(event);
@@ -681,17 +791,18 @@ export function aggregateMarketImpact(events) {
   }
 
   return {
-    oil: buildMarketCategory("Oil", totals.oil, toTrafficLight(Math.abs(totals.oil)), totals.oil >= 0 ? "Up" : "Down", events, "oil"),
-    shipping: buildMarketCategory("Shipping", totals.shipping, toTrafficLight(totals.shipping), totals.shipping >= 0.45 ? "Stressed" : "Stable", events, "shipping"),
-    defense: buildMarketCategory("Defense", totals.defense, toTrafficLight(totals.defense), totals.defense >= 0.45 ? "Supported" : "Neutral", events, "defense"),
-    tech: buildMarketCategory("Tech", totals.tech, toTrafficLight(totals.tech), totals.tech >= 0.45 ? "Sensitive" : "Neutral", events, "tech"),
+    oil: buildMarketCategory("Oil", totals.oil, toTrafficLight(Math.abs(totals.oil)), totals.oil >= 0 ? "Up" : "Down", events, "oil", marketContext),
+    shipping: buildMarketCategory("Shipping", totals.shipping, toTrafficLight(totals.shipping), totals.shipping >= 0.45 ? "Stressed" : "Stable", events, "shipping", marketContext),
+    defense: buildMarketCategory("Defense", totals.defense, toTrafficLight(totals.defense), totals.defense >= 0.45 ? "Supported" : "Neutral", events, "defense", marketContext),
+    tech: buildMarketCategory("Tech", totals.tech, toTrafficLight(totals.tech), totals.tech >= 0.45 ? "Sensitive" : "Neutral", events, "tech", marketContext),
     equities: buildMarketCategory(
       "Equities sentiment",
       totals.equities,
       totals.equities <= -1.0 ? "red" : totals.equities < -0.3 ? "amber" : totals.equities >= 0.5 ? "green" : "neutral",
       totals.equities <= -0.3 ? "Risk-off" : totals.equities >= 0.5 ? "Risk-on" : "Neutral",
       events,
-      "equities"
+      "equities",
+      marketContext
     ),
   };
 }
@@ -705,28 +816,44 @@ export function buildEventBrief(event, allEvents = []) {
   const marketImpactTags = getMarketImpactTags(event);
   const watchIndicators = buildWatchIndicators(event);
   const relatedEvents = getRelatedEvents(event, allEvents);
+  const classification = deriveEventClassification(event);
 
   return {
     executiveSummary,
     whatHappened: sentenceCase(event.summary || executiveSummary),
     whereItHappened: location.label,
+    assessment: event.assessment ?? "",
     whyThisMatters: buildWhyThisMatters(event),
     keyDevelopments: developments.length > 0 ? developments : ["Monitoring for follow-on developments."],
     scenarios,
     marketImpactTags,
+    marketImpact: event.marketImpact ?? {},
     sectorImpact: unique(scenarios.flatMap((scenario) => scenario.impact?.sectors ?? [])).slice(0, 6),
     sourceTrace,
     confidenceDrivers: buildConfidenceDrivers(event),
     confidenceExplanation: explainConfidence(event),
+    confidenceRationale: event.confidenceRationale ?? explainConfidence(event),
     locationConfidence: location.confidence,
     locationReason: location.reason,
     watchIndicators,
+    recentTrend: deriveRecentTrend(event, allEvents),
+    category: classification.category,
+    severityScore: classification.severityScore,
+    impactScore: classification.impactScore,
+    confidenceScore: classification.confidenceScore,
     relatedEvents,
+    sourceAssessment: event.sourceAssessment ?? {
+      sourceCount: sourceTrace.sourceCount,
+      corroborationLevel: sourceTrace.corroborationLabel,
+      limitations: "Open-source reporting can remain incomplete or lag operational developments.",
+    },
     aiStatusLabel:
       (event.aiStatus ?? event.ai_status) === "enriched"
         ? "AI enriched"
         : (event.aiStatus ?? event.ai_status) === "cached"
           ? "Cached intelligence"
+          : (event.aiStatus ?? event.ai_status) === "provider_error"
+            ? "Rule-based briefing after provider error"
           : (event.aiStatus ?? event.ai_status) === "budget_exhausted"
             ? "Rule-based briefing, AI budget exhausted"
             : "Rule-based briefing",
@@ -760,6 +887,8 @@ export function buildBriefing(events, lensId = "global_risk") {
           ? "AI enriched"
           : (event.aiStatus ?? event.ai_status) === "cached"
             ? "Cached intelligence"
+            : (event.aiStatus ?? event.ai_status) === "provider_error"
+              ? "Rule-based briefing after provider error"
             : (event.aiStatus ?? event.ai_status) === "budget_exhausted"
               ? "Rule-based briefing, AI budget exhausted"
               : "Rule-based briefing",
@@ -811,6 +940,7 @@ export function buildStrategicBrief(events, systemStatus = {}, lensId = "global_
     aiRemainingToday: systemStatus?.aiRemainingToday ?? 0,
     lastNewsRefresh: systemStatus?.automation?.lastNewsRefreshAt ?? null,
     lastAiRefresh: systemStatus?.automation?.lastAiRefreshAt ?? null,
+    marketSummary: systemStatus?.marketSummary ?? null,
   };
 }
 

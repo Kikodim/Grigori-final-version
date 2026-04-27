@@ -1,4 +1,4 @@
-import { buildWatchIndicators, buildWhyThisMatters, inferLocationDetails } from "./event-insights.js";
+import { buildWatchIndicators, buildWhyThisMatters, getEventSourceSignals, inferLocationDetails } from "./event-insights.js";
 
 const SECTOR_RULES = [
   { pattern: /\b(oil|tanker|hormuz|gulf|red sea|shipping|port|freight|strait|suez|maritime)\b/i, sectors: ["Energy", "Shipping"] },
@@ -9,8 +9,8 @@ const SECTOR_RULES = [
   { pattern: /\b(export|trade|tariff|customs|shipment)\b/i, sectors: ["Trade"] },
 ];
 
-const ESCALATION_HINTS = /\b(attack|strike|missile|drone|war|troops|harassment|disrupt|offensive|incursion|escalat|blockade|sanction|crisis|military|naval)\b/i;
-const STABILIZATION_HINTS = /\b(ceasefire|talks|diplom|restraint|contain|stabil|resume|agreement|corridor|reopen|mediat)\b/i;
+const ESCALATION_HINTS = /\b(attack|strike|missile|drone|war|troops|harassment|disrupt|offensive|incursion|escalat|blockade|sanction|crisis|military|naval|mine|seizure)\b/i;
+const STABILIZATION_HINTS = /\b(ceasefire|talks|diplom|restraint|contain|stabil|resume|agreement|corridor|reopen|mediat|proposal)\b/i;
 const OIL_UP_HINTS = /\b(oil|tanker|hormuz|gulf|red sea|shipping|strait|pipeline|lng|energy)\b/i;
 const RISK_OFF_HINTS = /\b(attack|strike|war|shipping|blockade|sanction|drone|missile|offensive|disrupt|energy|tanker|hormuz|red sea|crisis)\b/i;
 const RISK_ON_HINTS = /\b(ceasefire|talks|deal|agreement|contained|resume|mediat|stabil)\b/i;
@@ -129,38 +129,110 @@ function buildScenarioDescription(kind, locationLabel, sectors, tone) {
   return `Diplomatic or operational containment around ${locationLabel} stabilizes the headline, reducing near-term disruption risk while keeping core monitoring in place.`;
 }
 
-function buildScenarios(preEvent, locationLabel, tone, sectors, oilImpact, marketsImpact) {
-  const escalationProbability = tone === "Escalating" ? 62 : tone === "De-escalating" ? 38 : 52;
-  const stabilizationProbability = 100 - escalationProbability;
-  const stabilizedMarkets = tone === "De-escalating" ? "Risk-on" : "Neutral";
+function buildScenarioProbabilities(preEvent, tone, confidence, locationConfidence, articles = []) {
+  const text = buildCorpus(preEvent, articles);
+  const sourceCount = new Set(preEvent.sources ?? []).size || Math.max(1, articles.length);
+  let escalation = tone === "Escalating" ? 40 : tone === "Deteriorating" ? 45 : tone === "Volatile" ? 35 : tone === "De-escalating" ? 20 : 28;
+  let deescalation = tone === "De-escalating" ? 40 : STABILIZATION_HINTS.test(text) ? 30 : 20;
+  let base = 100 - escalation - deescalation;
+
+  if (/\b(hormuz|red sea|black sea|taiwan strait|suez|tankers?|naval|military|missile|drone)\b/i.test(text)) escalation += 10;
+  if (/\b(talks|proposal|ceasefire|mediation|reopen|meeting|dialogue)\b/i.test(text)) deescalation += 10;
+  if (sourceCount <= 1 || confidence === "Low") base += 10;
+  if (locationConfidence === "Low") base += 5;
+  if (sourceCount >= 4 && confidence === "High") base -= 5;
+
+  escalation = Math.max(15, Math.min(60, Math.round(escalation / 5) * 5));
+  deescalation = Math.max(15, Math.min(45, Math.round(deescalation / 5) * 5));
+  base = 100 - escalation - deescalation;
+
+  if (base < 20) {
+    const deficit = 20 - base;
+    if (escalation >= deescalation) escalation -= deficit;
+    else deescalation -= deficit;
+    base = 20;
+  }
+
+  return { deescalation, base, escalation };
+}
+
+function buildScenarios(preEvent, locationLabel, tone, sectors, oilImpact, marketsImpact, confidence, locationConfidence, articles = []) {
   const tradeRoutesImpact = sectors.includes("Shipping") || sectors.includes("Trade")
-    ? (tone === "Escalating" ? "Disrupted" : "Stressed")
+    ? (tone === "Escalating" || tone === "Deteriorating" ? "Disrupted" : "Stressed")
     : "Neutral";
+  const probabilities = buildScenarioProbabilities(preEvent, tone, confidence, locationConfidence, articles);
 
   return [
     {
-      name: "Escalation / Disruption",
-      probability: escalationProbability,
-      description: buildScenarioDescription("escalation", locationLabel, sectors, tone),
+      name: "De-escalation / Containment",
+      probability: probabilities.deescalation,
+      description: buildScenarioDescription("stabilization", locationLabel, sectors, tone),
+      triggers: ["Diplomatic engagement gains traction", "Operational restraint from primary actors", "No new corroborated escalation signals"],
       impact: {
-        oil: oilImpact === "Up" ? "Up" : "Neutral",
-        markets: marketsImpact === "Risk-off" ? "Risk-off" : "Neutral",
-        tradeRoutes: tradeRoutesImpact,
-        sectors,
+        oil: "Neutral",
+        markets: tone === "De-escalating" ? "Risk-on" : "Neutral",
+        sectors: sectors.filter((sector, index) => index < 3),
+        tradeRoutes: sectors.includes("Shipping") ? "Stressed" : "Neutral",
+        regionalStability: "Improving",
       },
     },
     {
-      name: "Stabilization / Containment",
-      probability: stabilizationProbability,
-      description: buildScenarioDescription("stabilization", locationLabel, sectors, tone),
+      name: "Base case / Continuation",
+      probability: probabilities.base,
+      description: `The current signal set around ${locationLabel} persists without decisive escalation or settlement, leaving operators pricing sustained friction and headline risk.`,
+      triggers: ["Incremental official statements", "No decisive military or diplomatic break", "Market reaction remains contained but watchful"],
       impact: {
-        oil: "Neutral",
-        markets: stabilizedMarkets,
-        tradeRoutes: sectors.includes("Shipping") ? "Stressed" : "Neutral",
-        sectors: sectors.filter((sector, index) => index < 3),
+        oil: oilImpact === "Up" ? "Up" : "Neutral",
+        markets: marketsImpact,
+        sectors,
+        tradeRoutes: tradeRoutesImpact === "Disrupted" ? "Stressed" : tradeRoutesImpact,
+        regionalStability: "Fragile",
+      },
+    },
+    {
+      name: "Escalation / Disruption",
+      probability: probabilities.escalation,
+      description: buildScenarioDescription("escalation", locationLabel, sectors, tone),
+      triggers: ["Follow-on military or security incidents", "More severe shipping or infrastructure disruption", "Hardening official rhetoric or force posture"],
+      impact: {
+        oil: oilImpact === "Up" ? "Up" : "Neutral",
+        markets: marketsImpact === "Risk-off" ? "Risk-off" : "Neutral",
+        sectors,
+        tradeRoutes: tradeRoutesImpact,
+        regionalStability: "Deteriorating",
       },
     },
   ];
+}
+
+function buildAssessment(preEvent, locationLabel, tone, confidence, sectors, sourceSignals) {
+  const direction = tone === "De-escalating"
+    ? "The current signal points to a contained but still important development."
+    : tone === "Stable"
+      ? "The current signal is material but not yet decisive."
+      : "The current signal points to elevated near-term geopolitical friction.";
+  return `${direction} Around ${locationLabel}, the event has relevance for ${sectors.slice(0, 3).join(", ").toLowerCase()} exposure and should be read as a directional risk signal rather than a settled outcome. Confidence is ${confidence.toLowerCase()}, supported by ${sourceSignals.sourceCount} source signal${sourceSignals.sourceCount === 1 ? "" : "s"} across ${sourceSignals.independentDomainCount} independent domain${sourceSignals.independentDomainCount === 1 ? "" : "s"}.`;
+}
+
+function buildConfidenceRationale(preEvent, confidence, location, sourceSignals, articles = []) {
+  const recencyHours = Math.max(0, (Date.now() - new Date(preEvent.timestamp ?? Date.now()).getTime()) / 3600_000);
+  const recency = recencyHours <= 2 ? "reported within 2h" : recencyHours <= 12 ? `reported within ${Math.ceil(recencyHours)}h` : `reported around ${Math.ceil(recencyHours)}h ago`;
+  return `${confidence} confidence: ${sourceSignals.sourceCount} sources, ${sourceSignals.independentDomainCount} independent domains, ${sourceSignals.corroborationLabel.toLowerCase()}, ${recency}, and ${location.confidence.toLowerCase()} location confidence. ${articles.length <= 1 ? "Evidence remains narrow and should be treated cautiously." : "Corroboration is sufficient for a directional assessment, but uncertainty remains."}`;
+}
+
+function buildMarketImpactSummary(preEvent, sectors, oilImpact, marketsImpact, scenarios) {
+  return {
+    oil: oilImpact,
+    shipping: scenarios.some((scenario) => /Shipping/.test((scenario.impact?.sectors ?? []).join(" "))) ? (scenarios.some((scenario) => scenario.impact?.tradeRoutes === "Disrupted") ? "Stressed" : "Watch") : "Neutral",
+    defense: sectors.includes("Defense") ? (preEvent.confidence === "High" ? "Supported" : "Watch") : "Neutral",
+    tech: sectors.includes("Tech") || sectors.includes("Semiconductors") ? "Sensitive" : "Neutral",
+    equities: marketsImpact,
+    summary: marketsImpact === "Risk-off"
+      ? "The signal tilts toward defensive market conditions, with transport and energy sensitivity most relevant."
+      : marketsImpact === "Risk-on"
+        ? "Market spillover looks contained for now, though exposed sectors still warrant monitoring."
+        : "Market impact is directional rather than decisive at this stage.",
+  };
 }
 
 export function buildRuleBasedBriefing(preEvent, articles = []) {
@@ -176,28 +248,46 @@ export function buildRuleBasedBriefing(preEvent, articles = []) {
   const oilImpact = inferOilImpact(preEvent, articles, tone);
   const marketsImpact = inferMarkets(preEvent, articles, tone);
   const developments = buildDevelopments(preEvent, articles, locationLabel);
+  const sourceSignals = getEventSourceSignals({
+    sources: preEvent.sources,
+    articleIds: preEvent.articleIds,
+  });
+  const scenarios = buildScenarios(preEvent, locationLabel, tone, sectors, oilImpact, marketsImpact, confidence, inferredLocation.confidence, articles);
+  const whyThisMatters = buildWhyThisMatters({
+    ...preEvent,
+    location: inferredLocation,
+    summary: buildSummary(preEvent, locationLabel, tone, confidence, sectors, marketsImpact, articles),
+    scenarios,
+  });
+  const watchIndicators = buildWatchIndicators({
+    ...preEvent,
+    location: inferredLocation,
+    summary: buildSummary(preEvent, locationLabel, tone, confidence, sectors, marketsImpact, articles),
+  }).slice(0, 6);
 
   return {
     title: preEvent.title,
     summary: buildSummary(preEvent, locationLabel, tone, confidence, sectors, marketsImpact, articles),
+    assessment: buildAssessment(preEvent, locationLabel, tone, confidence, sectors, sourceSignals),
     developments: developments.length > 0
       ? developments
       : [`Rule-based briefing generated from source signals around ${locationLabel}.`],
     tone,
     confidence,
     location: inferredLocation,
-    whyThisMatters: buildWhyThisMatters({
-      ...preEvent,
-      location: inferredLocation,
-      summary: buildSummary(preEvent, locationLabel, tone, confidence, sectors, marketsImpact, articles),
-      scenarios: buildScenarios(preEvent, locationLabel, tone, sectors, oilImpact, marketsImpact),
-    }),
-    watchIndicators72h: buildWatchIndicators({
-      ...preEvent,
-      location: inferredLocation,
-      summary: buildSummary(preEvent, locationLabel, tone, confidence, sectors, marketsImpact, articles),
-    }).slice(0, 5),
-    scenarios: buildScenarios(preEvent, locationLabel, tone, sectors, oilImpact, marketsImpact),
+    whyThisMatters: Array.isArray(whyThisMatters) ? whyThisMatters : [whyThisMatters],
+    watchIndicators: watchIndicators,
+    watchIndicators72h: watchIndicators,
+    scenarios,
+    confidenceRationale: buildConfidenceRationale(preEvent, confidence, inferredLocation, sourceSignals, articles),
+    marketImpact: buildMarketImpactSummary(preEvent, sectors, oilImpact, marketsImpact, scenarios),
+    sourceAssessment: {
+      sourceCount: sourceSignals.sourceCount,
+      corroborationLevel: sourceSignals.corroborationLabel,
+      limitations: sourceSignals.sourceCount <= 1
+        ? "Single-source or lightly corroborated reporting limits confidence."
+        : "Open-source reporting can lag operational reality and may omit classified or commercial context.",
+    },
     generationMethod: "rule-based",
   };
 }

@@ -15,6 +15,7 @@
 import { createHash } from "crypto";
 import { describeEnvVar } from "./config.js";
 import { createLogger } from "./logger.js";
+import { getCachedMarketContextSummary } from "./market-data.js";
 import { buildRuleBasedBriefing } from "./rule-based-briefing.js";
 import { getAIUsageStats, getRefreshState, recordAIUsage } from "./supabase.js";
 
@@ -202,79 +203,109 @@ async function _drain() {
 
 // ─── Prompt ───────────────────────────────────────────────────────────────────
 
-const SYS = `Return only one raw JSON object.
-No markdown, no code fences, no commentary.
-Schema:
+const SYS = `You are writing for a strategic risk and OSINT dashboard.
+You are not predicting the future. You are producing a structured intelligence assessment from limited open-source signals. Be useful, cautious, and explicit about uncertainty.
+Use only the supplied article and event data. Do not invent facts. If evidence is weak, say so.
+Return structured JSON only. No markdown. No code fences. No commentary.
+No direct investment advice. Market impact is directional risk context, not trading advice.
+Scenario probabilities are analytic estimates, not statistical certainties, and must sum to 100.
+Allowed tone values: Stable, Escalating, Deteriorating, Volatile, De-escalating.
+Allowed confidence values: Low, Medium, High.
+Required schema:
 {
   "title": "string",
   "summary": "string",
-  "developments": ["string","string","string"],
-  "tone": "Escalating|Stable|De-escalating",
-  "confidence": "Low|Medium|High",
-  "locationLabel": "string",
-  "locationLat": 0,
-  "locationLng": 0,
-  "locationConfidence": "Low|Medium|High",
-  "locationReason": "string",
-  "confidenceReasoning": "string",
-  "sourceSignalReasoning": "string",
-  "watchIndicators72h": ["string","string","string"],
-  "whyThisMatters": "string",
+  "assessment": "string",
+  "developments": ["string", "string", "string"],
+  "whyThisMatters": ["string", "string"],
+  "watchIndicators": ["string", "string", "string", "string"],
   "scenarios": [
     {
-      "name": "string",
+      "name": "De-escalation / containment",
       "probability": 0,
       "description": "string",
+      "triggers": ["string"],
       "impact": {
         "oil": "Up|Down|Neutral",
         "markets": "Risk-on|Risk-off|Neutral",
-        "sectors": ["string"],
-        "tradeRoutes": "Open|Stressed|Disrupted|Neutral"
+        "sectors": ["Energy","Defense","Tech","Shipping","Food","Finance","Trade","Semiconductors"],
+        "tradeRoutes": "Open|Stressed|Disrupted|Neutral",
+        "regionalStability": "Improving|Fragile|Deteriorating|Contained"
       }
     },
     {
-      "name": "string",
+      "name": "Base case / continuation",
       "probability": 0,
       "description": "string",
+      "triggers": ["string"],
       "impact": {
         "oil": "Up|Down|Neutral",
         "markets": "Risk-on|Risk-off|Neutral",
-        "sectors": ["string"],
-        "tradeRoutes": "Open|Stressed|Disrupted|Neutral"
+        "sectors": ["Energy","Defense","Tech","Shipping","Food","Finance","Trade","Semiconductors"],
+        "tradeRoutes": "Open|Stressed|Disrupted|Neutral",
+        "regionalStability": "Improving|Fragile|Deteriorating|Contained"
+      }
+    },
+    {
+      "name": "Escalation / disruption",
+      "probability": 0,
+      "description": "string",
+      "triggers": ["string"],
+      "impact": {
+        "oil": "Up|Down|Neutral",
+        "markets": "Risk-on|Risk-off|Neutral",
+        "sectors": ["Energy","Defense","Tech","Shipping","Food","Finance","Trade","Semiconductors"],
+        "tradeRoutes": "Open|Stressed|Disrupted|Neutral",
+        "regionalStability": "Improving|Fragile|Deteriorating|Contained"
       }
     }
-  ]
-}
-Rules:
-- summary: 2-4 concise sentences with clear market and strategic context
-- developments: exactly 3 bullets
-- scenarios: 2 or 3
-- each scenario description should include market impact, sector impact, and trade route implications when relevant
-- include 72h watch indicators grounded in source signals
-- include concise confidence reasoning and source signal reasoning
-- if location is uncertain, keep locationLabel conservative and set locationConfidence to Low
-- scenario probabilities must sum to 100
-- sectors allowed: Energy, Defense, Tech, Shipping, Food, Finance, Trade, Semiconductors`;
+  ],
+  "tone": "Stable|Escalating|Deteriorating|Volatile|De-escalating",
+  "confidence": "Low|Medium|High",
+  "confidenceRationale": "string",
+  "location": {
+    "label": "string",
+    "lat": 0,
+    "lng": 0,
+    "confidence": "Low|Medium|High",
+    "reason": "string"
+  },
+  "marketImpact": {
+    "oil": "Up|Down|Neutral",
+    "shipping": "Stressed|Watch|Neutral|Supported",
+    "defense": "Supported|Watch|Neutral",
+    "tech": "Sensitive|Watch|Neutral",
+    "equities": "Risk-on|Risk-off|Neutral",
+    "summary": "string"
+  },
+  "sourceAssessment": {
+    "sourceCount": 0,
+    "corroborationLevel": "High corroboration|Mixed corroboration|Limited corroboration",
+    "limitations": "string"
+  }
+}`;
 
-function _buildPrompt(pe, articles, { compact = false } = {}) {
+function _buildPrompt(pe, articles, marketContextSummary, { compact = false } = {}) {
   const budget = compact ? 2200 : 4200;
   const perCh  = Math.floor(budget / Math.max(articles.length, 1));
   const body   = articles.map((a) => {
     const c = a.content.replace(/<[^>]+>/g," ").replace(/\s{2,}/g," ").replace(/\[?\+\d+ chars\]?/g,"").trim().slice(0, Math.max(perCh, 150));
     return `[${a.source}] ${a.title}\n${c}`;
   }).join("\n\n---\n\n");
+  const marketLine = marketContextSummary ? `Cached market context: ${marketContextSummary}\n` : "";
   return compact
-    ? `Region: ${pe.region?.label ?? "Unknown"}\nKeywords: ${pe.keywords.slice(0, 8).join(", ")}\n\n${body}`
-    : `Region: ${pe.region?.label ?? "Unknown"}\nKeywords: ${pe.keywords.slice(0, 10).join(", ")}\nSources: ${pe.sources.join(", ")}\n\n${body}`;
+    ? `Region: ${pe.region?.label ?? "Unknown"}\nKeywords: ${pe.keywords.slice(0, 8).join(", ")}\n${marketLine}\n${body}`
+    : `Region: ${pe.region?.label ?? "Unknown"}\nKeywords: ${pe.keywords.slice(0, 10).join(", ")}\nSources: ${pe.sources.join(", ")}\n${marketLine}\n${body}`;
 }
 
 // ─── Validation ───────────────────────────────────────────────────────────────
 
-const V_TONE = new Set(["Escalating","Stable","De-escalating"]);
+const V_TONE = new Set(["Stable","Escalating","Deteriorating","Volatile","De-escalating"]);
 const V_CONF = new Set(["Low","Medium","High"]);
 const V_OIL  = new Set(["Up","Neutral","Down"]);
 const V_MKT  = new Set(["Risk-on","Risk-off","Neutral"]);
 const V_SEC  = new Set(["Energy","Defense","Tech","Shipping","Food","Finance","Trade","Semiconductors"]);
+const V_CORROBORATION = new Set(["High corroboration", "Mixed corroboration", "Limited corroboration"]);
 
 function stripCodeFences(text) {
   return text.replace(/```json\s*/gi, "").replace(/```/g, "").trim();
@@ -405,6 +436,7 @@ function _validate(raw, fb) {
         ? Math.round(Math.max(0, Math.min(100, Number(s.probability))))
         : 33,
       description: String(s.description ?? ""),
+      triggers: Array.isArray(s.triggers) ? s.triggers.filter((item) => typeof item === "string").slice(0, 4) : [],
       impact: {
         oil:     V_OIL.has(s.impact?.oil)     ? s.impact.oil     : "Neutral",
         markets: V_MKT.has(s.impact?.markets) ? s.impact.markets : "Neutral",
@@ -412,6 +444,9 @@ function _validate(raw, fb) {
         tradeRoutes: ["Open", "Stressed", "Disrupted", "Neutral"].includes(s.impact?.tradeRoutes)
           ? s.impact.tradeRoutes
           : "Neutral",
+        regionalStability: ["Improving", "Fragile", "Deteriorating", "Contained"].includes(s.impact?.regionalStability)
+          ? s.impact.regionalStability
+          : "Fragile",
       },
     }));
     const tot = scenarios.reduce((s, x) => s + x.probability, 0);
@@ -423,25 +458,43 @@ function _validate(raw, fb) {
 
   return {
     title:        String(raw.title ?? fb.title).slice(0, 120),
-    summary:      String(raw.summary ?? ""),
-    developments: Array.isArray(raw.developments) ? raw.developments.filter((d) => typeof d === "string").slice(0, 3) : [],
+    summary:      String(raw.summary ?? fb.summary ?? ""),
+    assessment:   String(raw.assessment ?? fb.assessment ?? ""),
+    developments: Array.isArray(raw.developments) ? raw.developments.filter((d) => typeof d === "string").slice(0, 5) : (fb.developments ?? []),
     tone:         V_TONE.has(raw.tone)  ? raw.tone        : "Stable",
     confidence:   V_CONF.has(raw.confidence) ? raw.confidence : fb.confidence,
     location: {
       ...(fb.location ?? {}),
-      label: String(raw.locationLabel ?? fb.location?.label ?? "Region under review"),
-      lat: Number.isFinite(Number(raw.locationLat)) ? Number(raw.locationLat) : fb.location?.lat ?? null,
-      lng: Number.isFinite(Number(raw.locationLng)) ? Number(raw.locationLng) : fb.location?.lng ?? null,
-      confidence: V_CONF.has(raw.locationConfidence) ? raw.locationConfidence : fb.location?.confidence ?? "Low",
-      reason: String(raw.locationReason ?? fb.location?.reason ?? "Location derived from source signals."),
+      label: String(raw.location?.label ?? raw.locationLabel ?? fb.location?.label ?? "Region under review"),
+      lat: Number.isFinite(Number(raw.location?.lat ?? raw.locationLat)) ? Number(raw.location?.lat ?? raw.locationLat) : fb.location?.lat ?? null,
+      lng: Number.isFinite(Number(raw.location?.lng ?? raw.locationLng)) ? Number(raw.location?.lng ?? raw.locationLng) : fb.location?.lng ?? null,
+      confidence: V_CONF.has(raw.location?.confidence ?? raw.locationConfidence) ? (raw.location?.confidence ?? raw.locationConfidence) : fb.location?.confidence ?? "Low",
+      reason: String(raw.location?.reason ?? raw.locationReason ?? fb.location?.reason ?? "Location derived from source signals."),
     },
-    whyThisMatters: String(raw.whyThisMatters ?? fb.whyThisMatters ?? ""),
-    watchIndicators72h: Array.isArray(raw.watchIndicators72h)
-      ? raw.watchIndicators72h.filter((item) => typeof item === "string").slice(0, 5)
-      : (fb.watchIndicators72h ?? []),
-    confidenceReasoning: String(raw.confidenceReasoning ?? ""),
-    sourceSignalReasoning: String(raw.sourceSignalReasoning ?? ""),
-    scenarios:    scenarios.slice(0, 3),
+    whyThisMatters: Array.isArray(raw.whyThisMatters)
+      ? raw.whyThisMatters.filter((item) => typeof item === "string").slice(0, 4)
+      : (Array.isArray(fb.whyThisMatters) ? fb.whyThisMatters : [String(fb.whyThisMatters ?? "")].filter(Boolean)),
+    watchIndicators: Array.isArray(raw.watchIndicators)
+      ? raw.watchIndicators.filter((item) => typeof item === "string").slice(0, 7)
+      : (fb.watchIndicators ?? fb.watchIndicators72h ?? []),
+    watchIndicators72h: Array.isArray(raw.watchIndicators)
+      ? raw.watchIndicators.filter((item) => typeof item === "string").slice(0, 7)
+      : (fb.watchIndicators ?? fb.watchIndicators72h ?? []),
+    confidenceRationale: String(raw.confidenceRationale ?? fb.confidenceRationale ?? ""),
+    marketImpact: {
+      oil: V_OIL.has(raw.marketImpact?.oil) ? raw.marketImpact.oil : (fb.marketImpact?.oil ?? "Neutral"),
+      shipping: ["Stressed", "Watch", "Neutral", "Supported"].includes(raw.marketImpact?.shipping) ? raw.marketImpact.shipping : (fb.marketImpact?.shipping ?? "Neutral"),
+      defense: ["Supported", "Watch", "Neutral"].includes(raw.marketImpact?.defense) ? raw.marketImpact.defense : (fb.marketImpact?.defense ?? "Neutral"),
+      tech: ["Sensitive", "Watch", "Neutral"].includes(raw.marketImpact?.tech) ? raw.marketImpact.tech : (fb.marketImpact?.tech ?? "Neutral"),
+      equities: V_MKT.has(raw.marketImpact?.equities) ? raw.marketImpact.equities : (fb.marketImpact?.equities ?? "Neutral"),
+      summary: String(raw.marketImpact?.summary ?? fb.marketImpact?.summary ?? ""),
+    },
+    sourceAssessment: {
+      sourceCount: Number.isFinite(Number(raw.sourceAssessment?.sourceCount)) ? Number(raw.sourceAssessment.sourceCount) : (fb.sourceAssessment?.sourceCount ?? 0),
+      corroborationLevel: V_CORROBORATION.has(raw.sourceAssessment?.corroborationLevel) ? raw.sourceAssessment.corroborationLevel : (fb.sourceAssessment?.corroborationLevel ?? "Limited corroboration"),
+      limitations: String(raw.sourceAssessment?.limitations ?? fb.sourceAssessment?.limitations ?? ""),
+    },
+    scenarios:    scenarios.length > 0 ? scenarios.slice(0, 3) : (fb.scenarios ?? []).slice(0, 3),
   };
 }
 
@@ -459,7 +512,8 @@ export async function processCluster(pe, articles, { source = "automation" } = {
   if (cached) { log.info(`Cache HIT ${key}`); return cached; }
 
   const fb = buildRuleBasedBriefing(pe, articles);
-  const prompt = _buildPrompt(pe, articles);
+  const marketContextSummary = await getCachedMarketContextSummary();
+  const prompt = _buildPrompt(pe, articles, marketContextSummary);
   const geminiConfigured = describeEnvVar("GEMINI_API_KEY").usable;
 
   let response;
@@ -485,7 +539,7 @@ export async function processCluster(pe, articles, { source = "automation" } = {
   if (!parsed.ok && shouldRetryShorterPrompt(parsed, raw, finishReason)) {
     log.warn(`Retrying Gemini for ${pe._clusterId} with shorter prompt due to incomplete output`);
     try {
-      const retryPrompt = _buildPrompt(pe, articles, { compact: true });
+      const retryPrompt = _buildPrompt(pe, articles, marketContextSummary, { compact: true });
       const retryResponse = await _enqueue(() => _callWithRetry(SYS, retryPrompt, RETRY_MAX_OUTPUT_TOKENS));
       raw = retryResponse?.text ?? "";
       finishReason = retryResponse?.finishReason ?? null;

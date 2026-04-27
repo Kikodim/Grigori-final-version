@@ -8,7 +8,9 @@ import {
   buildBriefing,
   buildStrategicBrief,
   DECISION_LENSES,
+  deriveEventClassification,
   deriveImportance,
+  deriveRecentTrend,
   deriveRiskLevel,
   eventMatchesWatchlist,
   explainConfidence,
@@ -350,6 +352,17 @@ const INTENSITY = {
   medium: { color: "#ff8800", colorHex: 0xff8800, glowAlpha: 0.5, pulseSpeed: 2.2, arcColor: "#ffaa33" },
   low:    { color: "#ffcc00", colorHex: 0xffcc00, glowAlpha: 0.4, pulseSpeed: 2.8, arcColor: "#ffdd44" },
 };
+const MAX_CONFLICT_ZONES = 20;
+const HOTSPOT_ZONE_RULES = [
+  { id: "taiwan-strait", label: "Taiwan Strait", lat: 24.5, lng: 122.0, pattern: /\b(taiwan|taipei|median line|tsmc|cross-strait)\b/i },
+  { id: "black-sea", label: "Black Sea", lat: 44.8, lng: 33.5, pattern: /\b(black sea|odesa|odessa|crimea|grain corridor)\b/i },
+  { id: "red-sea", label: "Red Sea", lat: 15.6, lng: 44.8, pattern: /\b(red sea|houthi|bab el-mandeb|suez|yemen)\b/i },
+  { id: "hormuz", label: "Strait of Hormuz", lat: 26.6, lng: 56.3, pattern: /\b(hormuz|iran|gulf tanker|persian gulf)\b/i },
+  { id: "gaza-israel-lebanon", label: "Gaza / Israel / Lebanon", lat: 31.5, lng: 35.1, pattern: /\b(gaza|israel|lebanon|hezbollah|west bank|idf)\b/i },
+  { id: "ukraine", label: "Ukraine", lat: 49.0, lng: 32.0, pattern: /\b(ukraine|kyiv|kharkiv|donbas|kherson|odesa)\b/i },
+  { id: "south-china-sea", label: "South China Sea", lat: 12.5, lng: 114.2, pattern: /\b(south china sea|spratly|paracel|manila)\b/i },
+  { id: "balkans", label: "Balkans", lat: 43.7, lng: 22.4, pattern: /\b(balkans|serbia|kosovo|bosnia|bulgaria|romania|moldova)\b/i },
+];
 
 const TONE_COLOR   = { Escalating: "#ff3344", Stable: "#44aaff", "De-escalating": "#44ff88" };
 const CONF_COLOR   = { High: "#22ff88", Medium: "#ffcc00", Low: "#6688aa" };
@@ -378,6 +391,57 @@ function geoToVec3(lat, lng, radius) {
   );
 }
 const latLngToVector3 = geoToVec3;
+
+function makeTextSprite(text, { fontSize = 32, color = "#a6def5", border = "rgba(88, 188, 230, 0.42)", background = "rgba(4,12,24,0.72)" } = {}) {
+  const canvas = document.createElement("canvas");
+  canvas.width = 512;
+  canvas.height = 160;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) {
+    return new THREE.Sprite(new THREE.SpriteMaterial({ color: 0xffffff, transparent: true, opacity: 0 }));
+  }
+
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.fillStyle = background;
+  ctx.strokeStyle = border;
+  ctx.lineWidth = 4;
+  const x = 18;
+  const y = 28;
+  const w = canvas.width - 36;
+  const h = canvas.height - 56;
+  const r = 28;
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.lineTo(x + w - r, y);
+  ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+  ctx.lineTo(x + w, y + h - r);
+  ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+  ctx.lineTo(x + r, y + h);
+  ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+  ctx.lineTo(x, y + r);
+  ctx.quadraticCurveTo(x, y, x + r, y);
+  ctx.closePath();
+  ctx.fill();
+  ctx.stroke();
+
+  ctx.fillStyle = color;
+  ctx.font = `700 ${fontSize}px "IBM Plex Sans", sans-serif`;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText(text, canvas.width / 2, canvas.height / 2 + 2);
+
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.needsUpdate = true;
+  const material = new THREE.SpriteMaterial({
+    map: texture,
+    transparent: true,
+    depthWrite: false,
+    depthTest: false,
+  });
+  const sprite = new THREE.Sprite(material);
+  sprite.scale.set(0.44, 0.138, 1);
+  return sprite;
+}
 
 // Great-circle arc between two lat/lng points, lifted above surface
 function buildArc(lat0, lng0, lat1, lng1, lift = 0.06, segments = 60) {
@@ -984,33 +1048,180 @@ function makeHotspot(ev) {
     return mesh;
   };
 
+  const hitRadius = ((IS_MOBILE ? 0.045 : 0.032) + Math.min(0.012, (Number(ev.impactScore ?? ev.importanceScore ?? 40) / 100) * 0.015)) * sizeScale;
+  const hitArea = addDisc(0, hitRadius, 0xffffff, 0.01, { depthTest: false });
+  hitArea.userData = { clickable: true, eventId: ev.id, objectType: "event", objectData: ev };
+  hitArea.userData.markerGroup = group;
+
   // White core dot
-  const core = addDisc(0, 0.0046, 0xffffff, 0.98);
+  const core = addDisc(0, 0.0034, 0xffffff, 0.96);
   core.userData = { clickable: true, eventId: ev.id, objectType: "event", objectData: ev };
   core.userData.markerGroup = group;
 
   // Surface anchor glow to visually pin the marker to the terrain
-  const groundGlow = addDisc(0.013, 0.024, color, 0.14, { depthTest: true });
+  const groundGlow = addDisc(0.0105, 0.019, color, 0.13, { depthTest: true });
   groundGlow.position.z = -0.002;
   groundGlow.userData.baseOpacity = 0.14;
 
   // Coloured inner ring
-  const ring1 = addDisc(0.0055, 0.0105, color, 0.82);
+  const ring1 = addDisc(0.0044, 0.0078, color, 0.78);
   if (ev.lensMatched) {
     ring1.userData.baseOpacity = 0.96;
   }
 
   // Animated pulse rings
-  const pulse1 = addDisc(0.0115, 0.0155, color, 0.36);
+  const pulse1 = addDisc(0.0088, 0.0126, color, ev.intensity === "high" ? 0.34 : 0.24);
   pulse1.userData = { pulse: true, speed: cfg.pulseSpeed, base: 0.36, phase: 0 };
 
-  group.add(groundGlow, core, ring1, pulse1);
+  group.add(hitArea, groundGlow, core, ring1, pulse1);
 
   // Position on sphere and orient outward
   group.position.copy(surfacePos);
   // Use quaternion to align group's +Z to outward normal
   group.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), outward);
 
+  return group;
+}
+
+function deriveConflictZones(events) {
+  const zones = [];
+  const assigned = new Set();
+
+  HOTSPOT_ZONE_RULES.forEach((rule) => {
+    const matches = events.filter((event) => {
+      const corpus = `${event.title ?? ""} ${event.summary ?? ""} ${event.location?.label ?? ""} ${(event.keywords ?? []).join(" ")}`.toLowerCase();
+      return event.hasRenderableLocation !== false && rule.pattern.test(corpus);
+    });
+    if (matches.length >= 2 || matches.some((event) => Number(event.impactScore ?? event.importanceScore ?? 0) >= 75)) {
+      matches.forEach((event) => assigned.add(event.id));
+      zones.push({
+        id: rule.id,
+        label: rule.label,
+        lat: rule.lat,
+        lng: rule.lng,
+        events: matches,
+      });
+    }
+  });
+
+  const regionGroups = new Map();
+  events.forEach((event) => {
+    if (!event.hasRenderableLocation) return;
+    if (assigned.has(event.id)) return;
+    const label = String(event.location?.label ?? "").trim();
+    if (!label || /region under review/i.test(label)) return;
+    if (!regionGroups.has(label)) regionGroups.set(label, []);
+    regionGroups.get(label).push(event);
+  });
+
+  regionGroups.forEach((groupEvents, label) => {
+    if (groupEvents.length < 2) return;
+    const avgLat = groupEvents.reduce((sum, item) => sum + Number(item.lat ?? 0), 0) / groupEvents.length;
+    const avgLng = groupEvents.reduce((sum, item) => sum + Number(item.lng ?? 0), 0) / groupEvents.length;
+    zones.push({
+      id: `zone-${label.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`,
+      label,
+      lat: avgLat,
+      lng: avgLng,
+      events: groupEvents,
+    });
+  });
+
+  return zones
+    .map((zone) => {
+      const sortedEvents = [...zone.events].sort((a, b) => Number(b.impactScore ?? b.importanceScore ?? 0) - Number(a.impactScore ?? a.importanceScore ?? 0));
+      const topEvent = sortedEvents[0];
+      const severity = sortedEvents.some((event) => event.intensity === "high") ? "high" : sortedEvents.some((event) => event.intensity === "medium") ? "medium" : "low";
+      const sourcesCount = sortedEvents.reduce((sum, event) => sum + Number(event.sourceSignals?.sourceCount ?? event.sources?.length ?? 1), 0);
+      return {
+        ...zone,
+        topEvent,
+        eventCount: sortedEvents.length,
+        sourcesCount,
+        severity,
+        summary: topEvent?.summary ?? "Monitoring a dense geopolitical hotspot.",
+      };
+    })
+    .sort((a, b) => Number(b.topEvent?.impactScore ?? b.topEvent?.importanceScore ?? 0) - Number(a.topEvent?.impactScore ?? a.topEvent?.importanceScore ?? 0))
+    .slice(0, MAX_CONFLICT_ZONES);
+}
+
+function makeConflictZoneMarker(zone) {
+  const group = new THREE.Group();
+  const pos = geoToVec3(zone.lat, zone.lng, R + 0.01);
+  const outward = geoToVec3(zone.lat, zone.lng, 1.0).normalize();
+  const cfg = INTENSITY[zone.severity] ?? INTENSITY.medium;
+  const color = new THREE.Color(cfg.color);
+  const width = zone.eventCount >= 4 ? 0.18 : 0.14;
+  const height = 0.06;
+
+  group.position.copy(pos);
+  group.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), outward);
+  group.userData = {
+    zoneId: zone.id,
+    surfaceNormal: outward.clone(),
+    markerType: "zone",
+  };
+
+  const fill = new THREE.Mesh(
+    new THREE.PlaneGeometry(width, height),
+    new THREE.MeshBasicMaterial({
+      color,
+      transparent: true,
+      opacity: 0.08,
+      depthWrite: false,
+      depthTest: false,
+      side: THREE.DoubleSide,
+      blending: THREE.AdditiveBlending,
+    })
+  );
+  fill.userData.baseOpacity = 0.08;
+
+  const outline = new THREE.LineSegments(
+    new THREE.EdgesGeometry(new THREE.PlaneGeometry(width, height)),
+    new THREE.LineBasicMaterial({
+      color: color.clone().lerp(new THREE.Color(0x8fdfff), 0.25),
+      transparent: true,
+      opacity: 0.4,
+      depthWrite: false,
+      depthTest: false,
+    })
+  );
+  outline.userData.baseOpacity = 0.4;
+
+  const hit = new THREE.Mesh(
+    new THREE.PlaneGeometry(width * 1.18, height * 1.6),
+    new THREE.MeshBasicMaterial({
+      color: 0xffffff,
+      transparent: true,
+      opacity: 0.01,
+      depthWrite: false,
+      depthTest: false,
+      side: THREE.DoubleSide,
+    })
+  );
+  hit.userData = { clickable: true, objectType: "zone", objectData: zone };
+  hit.userData.markerGroup = group;
+
+  const labelSprite = makeTextSprite(`${zone.label} · ${zone.eventCount}`);
+  labelSprite.position.set(0, height * 0.9, 0.002);
+  labelSprite.userData.baseOpacity = 0.9;
+
+  const pulse = new THREE.Mesh(
+    new THREE.RingGeometry(width * 0.42, width * 0.48, 32),
+    new THREE.MeshBasicMaterial({
+      color,
+      transparent: true,
+      opacity: 0.18,
+      depthWrite: false,
+      depthTest: false,
+      side: THREE.DoubleSide,
+      blending: THREE.AdditiveBlending,
+    })
+  );
+  pulse.userData = { pulse: true, speed: cfg.pulseSpeed * 0.5, base: 0.18, phase: 0 };
+
+  group.add(fill, outline, hit, pulse, labelSprite);
   return group;
 }
 
@@ -1215,47 +1426,6 @@ async function fetchGDELTEvents(maxItems = 12) {
   }
 }
 
-// ── Market data fetcher ────────────────────────────────────────────────────────
-// Uses the free Yahoo Finance unofficial endpoint (no key required)
-async function fetchMarketData() {
-  const cached = cacheGet("market_data");
-  if (cached) return cached;
-
-  // Fetch Brent crude, S&P 500, VIX via Yahoo Finance v8 chart API
-  const symbols = ["BZ=F", "^GSPC", "^VIX"];
-  const results = {};
-
-  await Promise.allSettled(symbols.map(async sym => {
-    try {
-      const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(sym)}?interval=1d&range=5d`;
-      const res = await fetch(url, { signal: AbortSignal.timeout(6000) });
-      if (!res.ok) return;
-      const data = await res.json();
-      const meta  = data.chart?.result?.[0]?.meta;
-      if (!meta) return;
-      results[sym] = {
-        price:         meta.regularMarketPrice,
-        prevClose:     meta.previousClose || meta.chartPreviousClose,
-        change:        meta.regularMarketPrice - (meta.previousClose || meta.chartPreviousClose),
-        changePct:     ((meta.regularMarketPrice - (meta.previousClose || meta.chartPreviousClose)) /
-                        (meta.previousClose || meta.chartPreviousClose) * 100),
-        currency:      meta.currency,
-        symbol:        sym,
-      };
-    } catch { /* skip failed symbol */ }
-  }));
-
-  const data = {
-    oil:     results["BZ=F"]    || null,
-    sp500:   results["^GSPC"]   || null,
-    vix:     results["^VIX"]    || null,
-    fetchedAt: Date.now(),
-  };
-
-  cacheSet("market_data", data, 5 * 60 * 1000);   // 5-min TTL for market data
-  return data;
-}
-
 function resolveBackendUrl(path) {
   if (typeof window === "undefined") return path;
   if (window.__GRIGORI_API_BASE) {
@@ -1278,12 +1448,14 @@ function normalizeBackendScenario(scenario) {
     name: scenario?.name ?? "Base Case",
     probability: scenario?.probability ?? 100,
     description: scenario?.description ?? "Monitoring for follow-on developments.",
+    triggers: scenario?.triggers ?? [],
     impact: {
       oil: impact.oil ?? "Neutral",
-      markets: impact.markets ?? "Stable",
-      tradeRoutes: impact.tradeRoutes ?? (impact.markets === "Risk-off" ? "Disrupted" : "Stable"),
+      markets: impact.markets ?? "Neutral",
+      tradeRoutes: impact.tradeRoutes ?? (impact.markets === "Risk-off" ? "Disrupted" : "Neutral"),
       sectors: impact.sectors ?? [],
       regionalEffects: impact.regionalEffects ?? [],
+      regionalStability: impact.regionalStability ?? "Fragile",
     },
   };
 }
@@ -1294,6 +1466,16 @@ function normalizeBackendEvent(event) {
     location: event.location ?? { label: "Region under review", lat: null, lng: null },
   });
   const scenarios = (event.scenarios ?? []).map(normalizeBackendScenario);
+  const classification = deriveEventClassification({
+    ...event,
+    location,
+    scenarios,
+  });
+  const impactDrivenIntensity = classification.impactScore >= 82
+    ? "high"
+    : classification.impactScore >= 56
+      ? "medium"
+      : "low";
 
   return {
     id: event.id,
@@ -1301,8 +1483,9 @@ function normalizeBackendEvent(event) {
     lat: Number.isFinite(location.lat) ? location.lat : null,
     lng: Number.isFinite(location.lng) ? location.lng : null,
     location,
-    intensity: mapToneToGlobeIntensity(event.tone, event.confidence),
+    intensity: impactDrivenIntensity || mapToneToGlobeIntensity(event.tone, event.confidence),
     summary: event.summary ?? "",
+    assessment: event.assessment ?? "",
     tone: event.tone ?? "Stable",
     confidence: event.confidence ?? "Low",
     developments: event.developments ?? [],
@@ -1326,6 +1509,16 @@ function normalizeBackendEvent(event) {
     articleIds: event.articleIds ?? event.article_ids ?? [],
     keywords: event.keywords ?? [],
     aiStatus: event.aiStatus ?? event.ai_status ?? "fallback",
+    whyThisMatters: event.whyThisMatters ?? event.why_this_matters ?? [],
+    watchIndicators: event.watchIndicators ?? event.watch_indicators ?? [],
+    confidenceRationale: event.confidenceRationale ?? event.confidence_rationale ?? "",
+    marketImpact: event.marketImpact ?? event.market_impact ?? {},
+    sourceAssessment: event.sourceAssessment ?? event.source_assessment ?? {},
+    category: event.category ?? classification.category,
+    severityScore: Number(event.severityScore ?? event.severity_score ?? classification.severityScore),
+    impactScore: Number(event.impactScore ?? event.impact_score ?? classification.impactScore),
+    confidenceScore: Number(event.confidenceScore ?? event.confidence_score ?? classification.confidenceScore),
+    isHistorical: Boolean(event.isHistorical ?? event.is_historical ?? false),
   };
 }
 
@@ -1333,6 +1526,7 @@ function decorateEventForUi(event) {
   const sourceSignals = getEventSourceSignals(event);
   const importanceScore = Number(event.importanceScore ?? event.priorityScore ?? deriveImportance(event));
   const location = inferLocationDetails(event);
+  const classification = deriveEventClassification({ ...event, location });
 
   return {
     ...event,
@@ -1341,26 +1535,36 @@ function decorateEventForUi(event) {
     location,
     hasRenderableLocation: Number.isFinite(location.lat) && Number.isFinite(location.lng),
     importanceScore,
+    category: event.category ?? classification.category,
+    severityScore: Number(event.severityScore ?? classification.severityScore),
+    impactScore: Number(event.impactScore ?? classification.impactScore),
+    confidenceScore: Number(event.confidenceScore ?? classification.confidenceScore),
     sourceSignals,
     riskLevel: deriveRiskLevel({ ...event, importanceScore }),
     marketImpactTags: getMarketImpactTags(event),
     confidenceExplanation: explainConfidence(event),
     briefSummary: getOneLineSummary(event),
     confidenceDrivers: buildConfidenceDrivers({ ...event, location }),
+    recentTrend: event.recentTrend ?? "Insufficient data",
   };
 }
 
 async function fetchBackendEvents() {
-  const url = resolveBackendUrl("/api/v1/events?limit=50");
+  const url = resolveBackendUrl("/api/v1/events?limit=120");
   const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
   if (!res.ok) throw new Error(`backend ${res.status}`);
 
   const data = await res.json();
-  const normalized = Array.isArray(data.events)
+  const rawNormalized = Array.isArray(data.events)
     ? data.events.map((event) => decorateEventForUi(normalizeBackendEvent(event)))
     : [];
 
-  return normalized.length > 0 ? enrichEvents(normalized) : [];
+  const withTrends = rawNormalized.map((event) => ({
+    ...event,
+    recentTrend: deriveRecentTrend(event, rawNormalized),
+  }));
+
+  return withTrends.length > 0 ? enrichEvents(withTrends) : [];
 }
 
 // ── Merge live data with static events ────────────────────────────────────────
@@ -1505,6 +1709,12 @@ function deriveSocialCorroboration(signal, events = []) {
 async function fetchOperationalStatus() {
   const res = await fetch(resolveBackendUrl("/api/v1/health"), { signal: AbortSignal.timeout(8000) });
   if (!res.ok) throw new Error(`health ${res.status}`);
+  return await res.json();
+}
+
+async function fetchMarketContext() {
+  const res = await fetch(resolveBackendUrl("/api/v1/market/context"), { signal: AbortSignal.timeout(12000) });
+  if (!res.ok) throw new Error(`market ${res.status}`);
   return await res.json();
 }
 
@@ -1918,6 +2128,20 @@ function MarketImpactDetailPanel({ item, onClose, isMobile = false }) {
           <TrafficPill level={item.level}>{item.trend}</TrafficPill>
           <span style={{ color: "#d6ebff", fontSize: 12, fontFamily: mono }}>score {item.score.toFixed(2)}</span>
         </div>
+        {item.priceContext ? (
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, padding: "10px 12px", borderRadius: 12, background: "rgba(8,20,36,0.72)", border: "1px solid rgba(94,164,195,0.12)" }}>
+            <div>
+              <div style={{ color: "#d6ebff", fontSize: 12, fontFamily: display, fontWeight: 700 }}>{item.priceContext.symbol}</div>
+              <div style={{ color: "rgba(150,205,245,0.62)", fontSize: 10, fontFamily: mono }}>Updated {formatLayerTime(item.priceContext.lastUpdated)}</div>
+            </div>
+            <div style={{ textAlign: "right" }}>
+              <div style={{ color: "#d6ebff", fontSize: 13, fontFamily: mono }}>{typeof item.priceContext.currentPrice === "number" ? item.priceContext.currentPrice.toFixed(2) : "—"}</div>
+              <div style={{ color: item.priceContext.changePercent >= 0 ? "#6ee7b7" : "#ff8f78", fontSize: 10, fontFamily: mono }}>
+                {typeof item.priceContext.changePercent === "number" ? `${item.priceContext.changePercent >= 0 ? "+" : ""}${item.priceContext.changePercent.toFixed(2)}%` : "No change"}
+              </div>
+            </div>
+          </div>
+        ) : null}
         <div style={{ color: "rgba(180,220,255,0.78)", fontSize: 12, lineHeight: 1.7 }}>
           Why this score? {item.drivers.length > 0 ? item.drivers.join(", ") : "Signals remain light and directional."}
         </div>
@@ -1964,6 +2188,9 @@ function MarketImpactDetailPanel({ item, onClose, isMobile = false }) {
               {item.priceFeedStatus}
             </div>
           ) : null}
+        </div>
+        <div style={{ color: "rgba(130,185,230,0.62)", fontSize: 10, lineHeight: 1.6, fontFamily: mono }}>
+          Market data and geopolitical scores are contextual intelligence signals, not financial advice.
         </div>
         <div style={{ color: "rgba(130,185,230,0.62)", fontSize: 10, lineHeight: 1.6, fontFamily: mono }}>
           Last updated: {formatLayerTime(item.lastUpdated)} · {item.methodology}
@@ -2220,24 +2447,25 @@ function SocialSignalsPanel({ signals, status, events, onClose }) {
 function MarketTicker({ marketData }) {
   if (!marketData) return null;
 
-  const oil  = marketData.oil;
-  const vix  = marketData.vix;
+  const instruments = Array.isArray(marketData.instruments) ? marketData.instruments : [];
+  const oil = instruments.find((item) => item.key === "wti" || item.key === "brent") ?? null;
+  const vix = instruments.find((item) => item.key === "vix") ?? null;
 
   if (!oil && !vix) return null;
 
-  const oilChange = oil ? (oil.changePct >= 0 ? "+" : "") + oil.changePct.toFixed(1) + "%" : null;
-  const oilColor  = oil ? (oil.change > 0 ? "#ff5533" : oil.change < 0 ? "#44dd88" : "#88aacc") : "#88aacc";
-  const vixLevel  = vix ? (vix.price > 25 ? "HIGH" : vix.price > 18 ? "ELEV" : "LOW") : null;
-  const vixColor  = vix ? (vix.price > 25 ? "#ff4444" : vix.price > 18 ? "#ffaa00" : "#44cc88") : "#88aacc";
+  const oilChange = oil && typeof oil.changePercent === "number" ? (oil.changePercent >= 0 ? "+" : "") + oil.changePercent.toFixed(1) + "%" : null;
+  const oilColor  = oil ? ((oil.changeAbsolute ?? 0) > 0 ? "#ff5533" : (oil.changeAbsolute ?? 0) < 0 ? "#44dd88" : "#88aacc") : "#88aacc";
+  const vixLevel  = vix ? (vix.currentPrice > 25 ? "HIGH" : vix.currentPrice > 18 ? "ELEV" : "LOW") : null;
+  const vixColor  = vix ? (vix.currentPrice > 25 ? "#ff4444" : vix.currentPrice > 18 ? "#ffaa00" : "#44cc88") : "#88aacc";
 
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
       {oil && (
         <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
           <span style={{ color: "rgba(0,180,255,0.35)", fontSize: 8, fontFamily: mono,
-            letterSpacing: "0.1em" }}>BRENT</span>
+            letterSpacing: "0.1em" }}>{oil.name.includes("Brent") ? "BRENT" : "WTI"}</span>
           <span style={{ color: "#e0eeff", fontSize: 10, fontFamily: mono, fontWeight: 600 }}>
-            ${oil.price.toFixed(1)}
+            ${oil.currentPrice.toFixed(1)}
           </span>
           <span style={{ color: oilColor, fontSize: 9, fontFamily: mono }}>{oilChange}</span>
         </div>
@@ -2250,7 +2478,7 @@ function MarketTicker({ marketData }) {
           <span style={{ color: "rgba(0,180,255,0.35)", fontSize: 8, fontFamily: mono,
             letterSpacing: "0.1em" }}>VIX</span>
           <span style={{ color: vixColor, fontSize: 10, fontFamily: mono, fontWeight: 600 }}>
-            {vix.price.toFixed(1)}
+            {vix.currentPrice.toFixed(1)}
           </span>
           <span style={{ color: vixColor, fontSize: 8, fontFamily: mono,
             background: `${vixColor}15`, border: `1px solid ${vixColor}44`,
@@ -2441,6 +2669,70 @@ function FloatingPanel({ title, subtitle, children, top, left, right, width = 30
   );
 }
 
+function ConflictZonePanel({ zone, onSelectEvent, onClose, isMobile = false }) {
+  if (!zone) return null;
+  const severityLevel = zone.severity === "high" ? "red" : zone.severity === "medium" ? "amber" : "neutral";
+
+  return (
+    <FloatingPanel
+      title="Conflict Zone"
+      subtitle={`${zone.label} · ${zone.eventCount} events`}
+      onClose={onClose}
+      top={isMobile ? 88 : FLOATING_TOP}
+      left={isMobile ? 16 : undefined}
+      right={16}
+      width={isMobile ? undefined : 388}
+    >
+      <div style={{ display: "grid", gap: 14 }}>
+        <div style={{ display: "flex", gap: 7, flexWrap: "wrap" }}>
+          <TrafficPill level={severityLevel}>{zone.severity.toUpperCase()}</TrafficPill>
+          <TrafficPill level="neutral">{zone.sourcesCount} source signals</TrafficPill>
+          <TrafficPill level="neutral">{zone.topEvent?.location?.label ?? zone.label}</TrafficPill>
+        </div>
+        <div>
+          <div style={{ color: "rgba(0,200,255,0.34)", fontSize: 9, fontFamily: mono, letterSpacing: "0.15em", textTransform: "uppercase", marginBottom: 7 }}>
+            Top Risk
+          </div>
+          <div style={{ color: "rgba(214,235,255,0.9)", fontSize: 13, fontFamily: display, fontWeight: 700, lineHeight: 1.45 }}>
+            {zone.topEvent?.title ?? "Monitoring hotspot"}
+          </div>
+          <div style={{ marginTop: 8, color: "rgba(150,205,245,0.72)", fontSize: 11, lineHeight: 1.65 }}>
+            {zone.summary}
+          </div>
+        </div>
+        <div>
+          <div style={{ color: "rgba(0,200,255,0.34)", fontSize: 9, fontFamily: mono, letterSpacing: "0.15em", textTransform: "uppercase", marginBottom: 7 }}>
+            Events In Zone
+          </div>
+          <div style={{ display: "grid", gap: 8 }}>
+            {zone.events.slice(0, 8).map((event) => (
+              <button key={event.id} onClick={() => onSelectEvent?.(event)} style={{
+                textAlign: "left",
+                padding: "10px 11px",
+                borderRadius: 12,
+                border: "1px solid rgba(87,216,255,0.12)",
+                background: "rgba(8,20,36,0.64)",
+                color: "#d6ebff",
+                cursor: "pointer",
+              }}>
+                <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "center", marginBottom: 6 }}>
+                  <div style={{ fontSize: 12, fontFamily: display, fontWeight: 700, lineHeight: 1.45 }}>{event.title}</div>
+                  <TrafficPill level={event.intensity === "high" ? "red" : event.intensity === "medium" ? "amber" : "neutral"}>
+                    {event.category ?? "Political"}
+                  </TrafficPill>
+                </div>
+                <div style={{ color: "rgba(150,205,245,0.72)", fontSize: 10, lineHeight: 1.6, fontFamily: mono }}>
+                  {event.location?.label ?? "Region under review"} · impact {event.impactScore ?? event.importanceScore ?? 0} · severity {event.severityScore ?? 0}
+                </div>
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+    </FloatingPanel>
+  );
+}
+
 // ── Tooltip (desktop only) ────────────────────────────────────────────────────
 function Tooltip({ text, x, y }) {
   if (!text) return null;
@@ -2448,7 +2740,7 @@ function Tooltip({ text, x, y }) {
     <div style={{ position: "fixed", left: x + 16, top: y - 12, pointerEvents: "none",
       zIndex: 200, background: "rgba(3,9,22,0.96)", border: "1px solid rgba(0,200,255,0.4)",
       borderRadius: 4, padding: "5px 11px", color: "#8ecfee", fontFamily: mono,
-      fontSize: 11, letterSpacing: "0.07em", whiteSpace: "nowrap",
+      fontSize: 11, letterSpacing: "0.07em", whiteSpace: "pre-line",
       boxShadow: "0 0 16px rgba(0,180,255,0.22)" }}>
       {text}
     </div>
@@ -2779,7 +3071,10 @@ function EventDetailContent({ event, activeScenario, onScenarioChange, allEvents
         <div style={{ display: "flex", gap: 7, flexWrap: "wrap", alignItems: "center" }}>
           <Badge color={TONE_COLOR[event.tone]}>{event.tone}</Badge>
           <Badge color={CONF_COLOR[event.confidence]}>CONF: {event.confidence}</Badge>
+          <Badge color="#9bd6ff">{brief.category}</Badge>
           <Badge color="#7dd3fc">RISK: {event.riskLevel}</Badge>
+          <Badge color="#f7c96a">IMP: {brief.impactScore}</Badge>
+          <Badge color="#f79d6a">SEV: {brief.severityScore}</Badge>
           <Badge color={event.sourceSignals?.trustLabel === "High" ? "#58e38f" : event.sourceSignals?.trustLabel === "Medium" ? "#ffbf47" : "#7fb8dd"}>
             TRUST: {event.sourceSignals?.trustLabel ?? "Low"}
           </Badge>
@@ -2803,6 +3098,9 @@ function EventDetailContent({ event, activeScenario, onScenarioChange, allEvents
           <div style={{ marginTop: 10, color: "rgba(130,185,230,0.7)", fontSize: 10, fontFamily: mono, lineHeight: 1.6 }}>
             {event.confidenceExplanation}
           </div>
+          <div style={{ marginTop: 8, color: "rgba(130,185,230,0.76)", fontSize: 10, fontFamily: mono, lineHeight: 1.6 }}>
+            Recent trend: {brief.recentTrend}
+          </div>
           <div style={{ marginTop: 10, display: "flex", flexWrap: "wrap", gap: 6 }}>
             <TrafficPill level="neutral">Sources: {sourceLine}</TrafficPill>
             <TrafficPill level={event.sourceSignals?.trustLabel === "High" ? "green" : event.sourceSignals?.trustLabel === "Medium" ? "amber" : "neutral"}>
@@ -2822,6 +3120,14 @@ function EventDetailContent({ event, activeScenario, onScenarioChange, allEvents
 
         <div style={{ padding: "13px 18px", borderBottom: "1px solid rgba(0,180,255,0.07)", display: "grid", gap: 12 }}>
           <div>
+            {brief.assessment ? (
+              <>
+                <div style={{ color: "rgba(0,200,255,0.3)", fontSize: 9, fontFamily: mono, letterSpacing: "0.15em", textTransform: "uppercase", marginBottom: 7 }}>
+                  Assessment
+                </div>
+                <div style={{ color: "rgba(180,220,255,0.74)", fontSize: 12, lineHeight: 1.7, marginBottom: 12 }}>{brief.assessment}</div>
+              </>
+            ) : null}
             <div style={{ color: "rgba(0,200,255,0.3)", fontSize: 9, fontFamily: mono, letterSpacing: "0.15em", textTransform: "uppercase", marginBottom: 7 }}>
               What happened
             </div>
@@ -2842,7 +3148,14 @@ function EventDetailContent({ event, activeScenario, onScenarioChange, allEvents
             <div style={{ color: "rgba(0,200,255,0.3)", fontSize: 9, fontFamily: mono, letterSpacing: "0.15em", textTransform: "uppercase", marginBottom: 7 }}>
               Why this matters
             </div>
-            <div style={{ color: "rgba(180,220,255,0.74)", fontSize: 12, lineHeight: 1.7 }}>{brief.whyThisMatters}</div>
+            <div style={{ display: "grid", gap: 7 }}>
+              {(brief.whyThisMatters ?? []).map((item) => (
+                <div key={item} style={{ display: "flex", gap: 9, alignItems: "flex-start" }}>
+                  <span style={{ color: "rgba(0,200,255,0.55)", fontSize: 10, marginTop: 2, flexShrink: 0 }}>•</span>
+                  <span style={{ color: "rgba(180,220,255,0.74)", fontSize: 12, lineHeight: 1.7 }}>{item}</span>
+                </div>
+              ))}
+            </div>
           </div>
         </div>
 
@@ -2864,6 +3177,9 @@ function EventDetailContent({ event, activeScenario, onScenarioChange, allEvents
           <div>
             <div style={{ color: "rgba(0,200,255,0.3)", fontSize: 9, fontFamily: mono, letterSpacing: "0.15em", textTransform: "uppercase", marginBottom: 7 }}>
               Confidence Drivers
+            </div>
+            <div style={{ color: "rgba(180,220,255,0.76)", fontSize: 11, lineHeight: 1.65, marginBottom: 10 }}>
+              {brief.confidenceRationale}
             </div>
             <div style={{ display: "grid", gap: 7 }}>
               {brief.confidenceDrivers.map((driver) => (
@@ -2915,6 +3231,11 @@ function EventDetailContent({ event, activeScenario, onScenarioChange, allEvents
           <div style={{ color: "rgba(0,200,255,0.3)", fontSize: 9, fontFamily: mono, letterSpacing: "0.15em", textTransform: "uppercase", marginBottom: 7 }}>
             Market & Sector Impact
           </div>
+          {brief.marketImpact?.summary ? (
+            <div style={{ color: "rgba(180,220,255,0.76)", fontSize: 11, lineHeight: 1.65, marginBottom: 10 }}>
+              {brief.marketImpact.summary}
+            </div>
+          ) : null}
           <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 10 }}>
             {brief.marketImpactTags.map((tag) => (
               <TrafficPill key={tag} level={/Oil Up|Shipping Risk|Equities Risk-off/i.test(tag) ? "red" : /Defense|Tech|Finance/i.test(tag) ? "amber" : "neutral"}>
@@ -2929,6 +3250,18 @@ function EventDetailContent({ event, activeScenario, onScenarioChange, allEvents
           </div>
           <div style={{ marginTop: 10, color: "rgba(130,185,230,0.68)", fontSize: 10, lineHeight: 1.6, fontFamily: mono }}>
             Directional intelligence signal only. Not financial advice.
+          </div>
+        </div>
+
+        <div style={{ padding: "13px 18px", borderBottom: "1px solid rgba(0,180,255,0.07)" }}>
+          <div style={{ color: "rgba(0,200,255,0.3)", fontSize: 9, fontFamily: mono, letterSpacing: "0.15em", textTransform: "uppercase", marginBottom: 7 }}>
+            Source Assessment
+          </div>
+          <div style={{ marginBottom: 8, color: "rgba(180,220,255,0.74)", fontSize: 12, lineHeight: 1.7 }}>
+            {brief.sourceAssessment?.corroborationLevel ?? brief.sourceTrace.corroborationLabel} · {brief.sourceAssessment?.sourceCount ?? brief.sourceTrace.sourceCount} source signals
+          </div>
+          <div style={{ color: "rgba(130,185,230,0.68)", fontSize: 10, lineHeight: 1.6 }}>
+            {brief.sourceAssessment?.limitations}
           </div>
         </div>
 
@@ -3292,6 +3625,34 @@ function GlobalViewButton({ onReset, mobile = false }) {
       }}
     >
       Return to Global View
+    </button>
+  );
+}
+
+function LiveSunButton({ enabled, onToggle, mobile = false }) {
+  return (
+    <button
+      onClick={onToggle}
+      style={{
+        position: "absolute",
+        left: mobile ? 12 : 18,
+        bottom: mobile ? 58 : 70,
+        zIndex: 38,
+        borderRadius: 14,
+        minHeight: mobile ? 36 : 34,
+        padding: mobile ? "8px 12px" : "7px 11px",
+        background: enabled ? "rgba(18,40,62,0.88)" : "rgba(6,15,30,0.82)",
+        border: `1px solid ${enabled ? "rgba(255,205,120,0.24)" : "rgba(87,216,255,0.18)"}`,
+        color: enabled ? "#ffe0ad" : "#d6ebff",
+        fontFamily: mono,
+        fontSize: 10,
+        letterSpacing: "0.12em",
+        textTransform: "uppercase",
+        cursor: "pointer",
+        boxShadow: "0 16px 40px rgba(0,0,0,0.26)",
+      }}
+    >
+      Live Sun {enabled ? "On" : "Off"}
     </button>
   );
 }
@@ -4318,8 +4679,12 @@ function DesktopSidebar({ events, selectedEvent, onSelect, topOffset = TOP_BAR_H
                 )}
               </div>
               <div style={{ marginTop: 10, display: "flex", justifyContent: "space-between", gap: 8, color: "rgba(150,200,240,0.5)", fontSize: 10, fontFamily: mono, flexWrap: "wrap" }}>
+                <span>{ev.category ?? "Political"}</span>
+                <span>SEV {ev.severityScore ?? 0}</span>
+                <span>IMP {ev.impactScore ?? 0}</span>
                 <span>CONF {ev.confidence}</span>
                 <span>{ev.sourceSignals?.sourceCount ?? 0} src / {ev.sourceSignals?.corroboratedCount ?? 0} corr</span>
+                <span>{ev.recentTrend ?? "Stable"}</span>
                 <span>{getDataFreshness(ev.timestamp).label}</span>
               </div>
             </div>
@@ -4339,11 +4704,13 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
   const sceneRef = useRef({});
 
   const [selectedEvent,  setSelectedEvent]  = useState(null);
+  const [selectedZone,   setSelectedZone]   = useState(null);
   const [selectedObject, setSelectedObject] = useState(null);
   const [activeScenario, setActiveScenario] = useState(0);
   const [tooltip,        setTooltip]        = useState({ text: null, x: 0, y: 0 });
   const [bordersLoaded,  setBordersLoaded]  = useState(false);
   const [ready,          setReady]          = useState(false);
+  const [liveSunEnabled, setLiveSunEnabled] = useState(true);
   const [activeLayers,   setActiveLayers]   = useState({
     events: true, flights: false, vessels: false, satellites: false, social: false, intelBoard: true,
   });
@@ -4402,7 +4769,7 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
   const refreshData = useCallback(async () => {
     if (!DEMO_MODE) {
       try {
-        const md = await fetchMarketData();
+        const md = await fetchMarketContext();
         setMarketData(md);
       } catch {}
     } else {
@@ -4579,18 +4946,23 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
     return applyDecisionLens(filtered, selectedLens);
   }, [timelineEvents, prefs, watchlist, selectedLens]);
 
+  const conflictZones = useMemo(
+    () => deriveConflictZones(filteredEvents),
+    [filteredEvents]
+  );
+
   const liveTopEvents = useMemo(
     () => [...filteredEvents].sort((a, b) => (b.lensPriorityScore ?? b.priorityScore ?? 0) - (a.lensPriorityScore ?? a.priorityScore ?? 0)).slice(0, 5),
     [filteredEvents]
   );
 
   const marketImpact = useMemo(
-    () => aggregateMarketImpact(filteredEvents),
-    [filteredEvents]
+    () => aggregateMarketImpact(filteredEvents, marketData),
+    [filteredEvents, marketData]
   );
   const strategicBrief = useMemo(
-    () => buildStrategicBrief(filteredEvents, systemStatus, selectedLens),
-    [filteredEvents, systemStatus, selectedLens]
+    () => buildStrategicBrief(filteredEvents, { ...systemStatus, marketSummary: marketData?.summary ?? null }, selectedLens),
+    [filteredEvents, systemStatus, selectedLens, marketData]
   );
   const selectedMarketImpact = selectedMarketKey ? marketImpact[selectedMarketKey] ?? null : null;
 
@@ -4647,6 +5019,7 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
     if (!event) return;
     setTimelineSlider(100);
     sceneRef.current.focusCameraOnEvent?.(event);
+    setSelectedZone(null);
     setSelectedObject(null);
     setPanelVisibility((current) => ({ ...current, selectedObjectDetail: true }));
     setSelectedEvent(event);
@@ -4656,6 +5029,7 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
   const handleReturnToGlobalView = useCallback(() => {
     sceneRef.current.resetGlobalView?.();
     setSelectedEvent(null);
+    setSelectedZone(null);
     setSelectedObject(null);
     setActiveScenario(0);
     setPanelVisibility((current) => ({ ...current, selectedObjectDetail: false }));
@@ -4667,6 +5041,12 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
       setActiveScenario(0);
     }
   }, [filteredEvents, selectedEvent]);
+
+  useEffect(() => {
+    if (selectedZone && !conflictZones.some((zone) => zone.id === selectedZone.id)) {
+      setSelectedZone(null);
+    }
+  }, [conflictZones, selectedZone]);
 
   useEffect(() => {
     if (!selectedObject) return;
@@ -4733,11 +5113,31 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
     scene.add(new THREE.HemisphereLight(0x21354a, 0x06090f, 1.5));
     scene.add(new THREE.AmbientLight(0x0b1220, 0.75));
     const sun = new THREE.DirectionalLight(0xe6edf6, 1.95);
-    sun.position.set(5.8, 2.6, 4.4);
     scene.add(sun);
     const fill = new THREE.DirectionalLight(0x39536f, 0.65);
-    fill.position.set(-4.2, -1.4, -2.8);
     scene.add(fill);
+    let sunLive = true;
+    let lastSunMinute = -1;
+    const fixedSunDirection = new THREE.Vector3(5.8, 2.6, 4.4).normalize();
+    const computeSunDirection = () => {
+      if (!sunLive) return fixedSunDirection.clone();
+      const now = new Date();
+      const minutes = now.getUTCHours() * 60 + now.getUTCMinutes();
+      const dayOfYear = Math.floor((Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()) - Date.UTC(now.getUTCFullYear(), 0, 0)) / 86400000);
+      const subsolarLng = 180 - (minutes / 1440) * 360;
+      const declination = 23.44 * Math.sin(((2 * Math.PI) / 365) * (dayOfYear - 81));
+      return geoToVec3(declination, subsolarLng, 1).normalize();
+    };
+    const updateSunLighting = (force = false) => {
+      const now = new Date();
+      const minuteKey = now.getUTCFullYear() * 600000 + now.getUTCMonth() * 40000 + now.getUTCDate() * 1500 + now.getUTCHours() * 60 + now.getUTCMinutes();
+      if (!force && minuteKey === lastSunMinute) return;
+      lastSunMinute = minuteKey;
+      const sunDir = computeSunDirection();
+      sun.position.copy(sunDir.clone().multiplyScalar(6.2));
+      fill.position.copy(sunDir.clone().multiplyScalar(-4.5));
+    };
+    updateSunLighting(true);
 
     // Globe
     const segs = mob ? 48 : 96;
@@ -4846,8 +5246,11 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
     // Hotspots
     const hotspotLayer = new THREE.Group();
     scene.add(hotspotLayer);
+    const zoneLayer = new THREE.Group();
+    scene.add(zoneLayer);
     let clickableObjects = [];
     let interactiveEvents = [];
+    let interactiveZones = [];
 
     // Impact layer (rebuilt on selection)
     let impactLayer = new THREE.Group();
@@ -4939,15 +5342,16 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
 
     function collectClickableObjects() {
       clickableObjects = [];
-      [hotspotLayer, flightLayer, vesselLayer, satelliteLayer].forEach((layer) => {
+      [hotspotLayer, zoneLayer, flightLayer, vesselLayer, satelliteLayer].forEach((layer) => {
         layer.traverse((obj) => {
           if (obj.userData.clickable) clickableObjects.push(obj);
         });
       });
     }
 
-    function syncVisibleEvents(events) {
+    function syncVisibleEvents(events, zones = []) {
       interactiveEvents = events;
+      interactiveZones = zones;
 
       while (hotspotLayer.children.length > 0) {
         const child = hotspotLayer.children[0];
@@ -4957,10 +5361,22 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
           obj.material?.dispose?.();
         });
       }
+      while (zoneLayer.children.length > 0) {
+        const child = zoneLayer.children[0];
+        zoneLayer.remove(child);
+        child.traverse((obj) => {
+          obj.geometry?.dispose?.();
+          obj.material?.dispose?.();
+          obj.material?.map?.dispose?.();
+        });
+      }
 
       interactiveEvents.filter((ev) => ev.hasRenderableLocation !== false).forEach((ev) => {
         const hs = makeHotspot(ev);
         hotspotLayer.add(hs);
+      });
+      interactiveZones.forEach((zone) => {
+        zoneLayer.add(makeConflictZoneMarker(zone));
       });
       collectClickableObjects();
     }
@@ -5044,10 +5460,18 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
       const visibleHit = resolveVisibleHit(hits);
       if (visibleHit) {
         const hit = visibleHit.object.userData;
-        const ev2 = hit.objectType === "event"
-          ? interactiveEvents.find(ev => ev.id === hit.eventId)
-          : hit.objectData;
-        setTooltip({ text: ev2?.title ?? ev2?.name ?? ev2?.flightNumber ?? null, x: e.clientX, y: e.clientY });
+        let tooltipText = null;
+        if (hit.objectType === "event") {
+          const ev2 = interactiveEvents.find(ev => ev.id === hit.eventId);
+          tooltipText = ev2 ? `${ev2.title}\n${ev2.location?.label ?? "Region under review"} · ${ev2.category ?? "Political"} · ${ev2.tone}\nImpact ${ev2.impactScore ?? ev2.importanceScore ?? 0} · Severity ${ev2.severityScore ?? 0}` : null;
+        } else if (hit.objectType === "zone") {
+          const zone = hit.objectData;
+          tooltipText = zone ? `${zone.label}\n${zone.eventCount} events · ${zone.sourcesCount} sources` : null;
+        } else {
+          const obj = hit.objectData;
+          tooltipText = obj?.title ?? obj?.name ?? obj?.flightNumber ?? null;
+        }
+        setTooltip({ text: tooltipText, x: e.clientX, y: e.clientY });
         container.style.cursor = "pointer";
       } else {
         setTooltip({ text: null, x: 0, y: 0 });
@@ -5068,13 +5492,21 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
         if (hit.objectType === "event") {
           const ev2 = interactiveEvents.find(ev => ev.id === hit.eventId);
           if (ev2) {
+            setSelectedZone(null);
             setSelectedObject(null);
             setPanelVisibility((current) => ({ ...current, selectedObjectDetail: true }));
             setSelectedEvent(ev2);
             setActiveScenario(0);
             focusCameraOnEvent(ev2);
           }
+        } else if (hit.objectType === "zone") {
+          setSelectedEvent(null);
+          setSelectedObject(null);
+          setSelectedZone(hit.objectData ?? null);
+          setPanelVisibility((current) => ({ ...current, selectedObjectDetail: true }));
+          if (hit.objectData) focusCameraOnEvent(hit.objectData);
         } else if (hit.objectData) {
+          setSelectedZone(null);
           setSelectedEvent(null);
           setPanelVisibility((current) => ({ ...current, selectedObjectDetail: true }));
           setSelectedObject({ type: hit.objectType, data: hit.objectData });
@@ -5128,13 +5560,21 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
             if (hit.objectType === "event") {
               const ev2 = interactiveEvents.find(ev => ev.id === hit.eventId);
               if (ev2) {
+                setSelectedZone(null);
                 setSelectedObject(null);
                 setPanelVisibility((current) => ({ ...current, selectedObjectDetail: true }));
                 setSelectedEvent(ev2);
                 setActiveScenario(0);
                 focusCameraOnEvent(ev2);
               }
+            } else if (hit.objectType === "zone") {
+              setSelectedEvent(null);
+              setSelectedObject(null);
+              setSelectedZone(hit.objectData ?? null);
+              setPanelVisibility((current) => ({ ...current, selectedObjectDetail: true }));
+              if (hit.objectData) focusCameraOnEvent(hit.objectData);
             } else if (hit.objectData) {
+              setSelectedZone(null);
               setSelectedEvent(null);
               setPanelVisibility((current) => ({ ...current, selectedObjectDetail: true }));
               setSelectedObject({ type: hit.objectType, data: hit.objectData });
@@ -5162,7 +5602,11 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
 
     // Store refs
     sceneRef.current = {
-      cam, scene, focusCameraOnEvent, hotspotLayer, resetGlobalView,
+      cam, scene, focusCameraOnEvent, hotspotLayer, zoneLayer, resetGlobalView,
+      setLiveSunEnabled: (enabled) => {
+        sunLive = enabled !== false;
+        updateSunLighting(true);
+      },
       liveLayers: { flights: flightLayer, vessels: vesselLayer, satellites: satelliteLayer },
       setSelectedEventHighlight: (selectedId) => {
         hotspotLayer.children.forEach((group) => {
@@ -5187,7 +5631,7 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
       },
     };
 
-    syncVisibleEvents(filteredEvents);
+    syncVisibleEvents(filteredEvents, conflictZones);
 
     // ── Animation loop ────────────────────────────────────────────────────────
     let rafId;
@@ -5199,6 +5643,7 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
 
       atm.material.uniforms.time.value = t;
       cloudLayer.rotation.y += mob ? 0.00008 : 0.00011;
+      updateSunLighting(false);
       if (cam.autoSpin) cam.targetTheta += mob ? 0.0005 : 0.0007;
       if (!cam.dragging && Math.abs(cam.thetaVelocity) > 0.00005) {
         cam.targetTheta += cam.thetaVelocity;
@@ -5215,7 +5660,7 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
       applyCam();
 
       const cameraDirection = camera.position.clone().normalize();
-      [hotspotLayer, flightLayer, vesselLayer, satelliteLayer].forEach((layer) => {
+      [hotspotLayer, zoneLayer, flightLayer, vesselLayer, satelliteLayer].forEach((layer) => {
         layer.children.forEach((group) => {
           const surfaceNormal = group.userData.surfaceNormal;
           if (!surfaceNormal) return;
@@ -5250,6 +5695,21 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
           if (obj.userData.pulse || !obj.material) return;
           const baseOpacity = obj.userData.baseOpacity ?? obj.material.opacity ?? 1;
           obj.material.opacity = baseOpacity * groupAlpha * dimAlpha;
+        });
+      });
+
+      zoneLayer.children.forEach((group) => {
+        const groupAlpha = group.userData.visibilityAlpha ?? 1;
+        group.traverse((obj) => {
+          if (obj.userData.pulse) {
+            const beat = Math.sin(t * obj.userData.speed + (obj.userData.phase ?? 0));
+            obj.scale.setScalar(1 + 0.06 * Math.max(0, beat));
+            obj.material.opacity = obj.userData.base * (0.35 + 0.65 * Math.max(0, beat)) * groupAlpha;
+            return;
+          }
+          if (!obj.material) return;
+          const baseOpacity = obj.userData.baseOpacity ?? obj.material.opacity ?? 1;
+          obj.material.opacity = baseOpacity * groupAlpha;
         });
       });
 
@@ -5311,12 +5771,19 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
   }, [selectedEvent]);
 
   useEffect(() => {
-    sceneRef.current.syncVisibleEvents?.(filteredEvents);
-  }, [filteredEvents]);
+    sceneRef.current.syncVisibleEvents?.(filteredEvents, conflictZones);
+  }, [filteredEvents, conflictZones]);
+
+  useEffect(() => {
+    sceneRef.current.setLiveSunEnabled?.(liveSunEnabled);
+  }, [liveSunEnabled]);
 
   useEffect(() => {
     if (sceneRef.current.hotspotLayer) {
       sceneRef.current.hotspotLayer.visible = activeLayers.events;
+    }
+    if (sceneRef.current.zoneLayer) {
+      sceneRef.current.zoneLayer.visible = activeLayers.events;
     }
   }, [activeLayers.events]);
 
@@ -5335,16 +5802,20 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
   // Focus camera from sidebar click
   const focusEvent = useCallback(ev => {
     sceneRef.current.focusCameraOnEvent?.(ev);
+    setSelectedZone(null);
     setSelectedObject(null);
     setPanelVisibility((current) => ({ ...current, selectedObjectDetail: true }));
     setSelectedEvent(ev);
     setActiveScenario(0);
   }, []);
 
-  const selectedDetail = selectedObject ?? (selectedEvent ? { type: "event", data: selectedEvent } : null);
+  const selectedDetail = selectedZone
+    ? { type: "zone", data: selectedZone }
+    : selectedObject ?? (selectedEvent ? { type: "event", data: selectedEvent } : null);
 
   const focusExternalObject = useCallback((selection) => {
     if (!selection?.data) return;
+    setSelectedZone(null);
     setSelectedEvent(null);
     setPanelVisibility((current) => ({ ...current, selectedObjectDetail: true }));
     setSelectedObject(selection);
@@ -5504,6 +5975,7 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
         </div>
 
         <GlobalViewButton onReset={handleReturnToGlobalView} mobile={isMobile} />
+        <LiveSunButton enabled={liveSunEnabled} onToggle={() => setLiveSunEnabled((current) => !current)} mobile={isMobile} />
 
         {/* DESKTOP: Left sidebar */}
         {!isMobile && panelVisibility.events && activeLayers.intelBoard && (
@@ -5578,6 +6050,18 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
                 setActiveScenario(0);
               }}
             />
+          ) : selectedDetail.type === "zone" ? (
+            <ConflictZonePanel
+              zone={selectedDetail.data}
+              onSelectEvent={(event) => {
+                setSelectedZone(null);
+                focusEvent(event);
+              }}
+              onClose={() => {
+                setPanelVisibility((current) => ({ ...current, selectedObjectDetail: false }));
+                setSelectedZone(null);
+              }}
+            />
           ) : (
             <SelectedObjectCard
               selected={selectedDetail}
@@ -5639,6 +6123,21 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
             onClearSelection={() => {
               setPanelVisibility((current) => ({ ...current, selectedObjectDetail: false }));
               setSelectedObject(null);
+            }}
+          />
+        ) : null}
+
+        {isMobile && selectedZone && panelVisibility.selectedObjectDetail ? (
+          <ConflictZonePanel
+            zone={selectedZone}
+            isMobile
+            onSelectEvent={(event) => {
+              setSelectedZone(null);
+              focusEvent(event);
+            }}
+            onClose={() => {
+              setPanelVisibility((current) => ({ ...current, selectedObjectDetail: false }));
+              setSelectedZone(null);
             }}
           />
         ) : null}

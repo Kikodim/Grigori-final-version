@@ -67,6 +67,13 @@ function normalizeEvent(row) {
     aiUpdatedAt: row.aiUpdatedAt ?? row.ai_updated_at ?? null,
     clusterSignature: row.clusterSignature ?? row.cluster_signature ?? null,
     importanceScore: row.importanceScore ?? row.importance_score ?? 0,
+    assessment: row.assessment ?? "",
+    whyThisMatters: row.whyThisMatters ?? row.why_this_matters ?? [],
+    watchIndicators: row.watchIndicators ?? row.watch_indicators ?? [],
+    confidenceRationale: row.confidenceRationale ?? row.confidence_rationale ?? "",
+    marketImpact: row.marketImpact ?? row.market_impact ?? {},
+    sourceAssessment: row.sourceAssessment ?? row.source_assessment ?? {},
+    isHistorical: row.isHistorical ?? row.is_historical ?? false,
   };
 }
 
@@ -129,10 +136,16 @@ function buildSupabaseRow(event, id = event.id) {
     location: event.location,
     timestamp: event.timestamp,
     summary: event.summary,
+    assessment: event.assessment ?? "",
     developments: event.developments,
     tone: event.tone,
     confidence: event.confidence,
     scenarios: event.scenarios,
+    why_this_matters: event.whyThisMatters ?? [],
+    watch_indicators: event.watchIndicators ?? event.watchIndicators72h ?? [],
+    confidence_rationale: event.confidenceRationale ?? "",
+    market_impact: event.marketImpact ?? {},
+    source_assessment: event.sourceAssessment ?? {},
     sources: event.sources,
     keywords: event.keywords,
     article_ids: normalizeArticleIds(event.articleIds ?? event.article_ids),
@@ -140,6 +153,7 @@ function buildSupabaseRow(event, id = event.id) {
     ai_updated_at: event.aiUpdatedAt ?? null,
     cluster_signature: event.clusterSignature ?? null,
     importance_score: event.importanceScore ?? 0,
+    is_historical: Boolean(event.isHistorical),
   };
 }
 
@@ -192,7 +206,10 @@ function findEquivalentMemoryEvent(event) {
 }
 
 async function findEquivalentSupabaseEvent(db, event) {
-  const cutoff = new Date(Date.now() - EQUIVALENT_EVENT_WINDOW_MS).toISOString();
+  const lookbackMs = event.isHistorical
+    ? 45 * 24 * 60 * 60 * 1000
+    : EQUIVALENT_EVENT_WINDOW_MS;
+  const cutoff = new Date(Date.now() - lookbackMs).toISOString();
 
   const { data, error } = await db
     .from("events")
@@ -406,7 +423,8 @@ export async function deleteOldEvents(hours = 24) {
     const { error, count } = await db
       .from("events")
       .delete({ count: "exact" })
-      .lt("timestamp", cutoff);
+      .lt("timestamp", cutoff)
+      .eq("is_historical", false);
 
     if (error) {
       log.warn(`Supabase purge failed — retained in-memory cleanup (${error.message})`);

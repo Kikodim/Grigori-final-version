@@ -2,7 +2,7 @@ import axios from "axios";
 
 const API_BASE = "https://api.currentsapi.services/v1/search";
 
-export async function fetchCurrentsArticles({ apiKey, queries, pageSize = 10 }) {
+export async function fetchCurrentsArticles({ apiKey, queries, pageSize = 10, from = null, to = null, historical = false }) {
   const articles = [];
 
   for (const query of queries) {
@@ -14,6 +14,8 @@ export async function fetchCurrentsArticles({ apiKey, queries, pageSize = 10 }) 
         keywords: query,
         language: "en",
         limit: pageSize,
+        start_date: historical && from ? from : undefined,
+        end_date: historical && to ? to : undefined,
       },
       timeout: 12_000,
     });

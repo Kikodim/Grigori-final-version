@@ -2,8 +2,14 @@ import axios from "axios";
 
 const GDELT_API_BASE = "https://api.gdeltproject.org/api/v2/doc/doc";
 
-export async function fetchGdeltArticles({ queries, pageSize = 10 }) {
-  const from = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+function toGdeltDate(value, fallbackTime = "000000") {
+  const iso = new Date(value).toISOString().slice(0, 19).replace(/[-:T]/g, "");
+  return iso.length >= 14 ? iso.slice(0, 14) : `${iso.slice(0, 8)}${fallbackTime}`;
+}
+
+export async function fetchGdeltArticles({ queries, pageSize = 10, from = null, to = null }) {
+  const resolvedFrom = from ?? new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+  const resolvedTo = to ?? new Date().toISOString();
   const articles = [];
 
   for (const query of queries) {
@@ -13,7 +19,8 @@ export async function fetchGdeltArticles({ queries, pageSize = 10 }) {
         mode: "ArtList",
         format: "json",
         maxrecords: pageSize,
-        startdatetime: `${from.replace(/-/g, "")}000000`,
+        startdatetime: toGdeltDate(resolvedFrom),
+        enddatetime: toGdeltDate(resolvedTo, "235959"),
       },
       timeout: 12_000,
     });

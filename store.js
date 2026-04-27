@@ -102,7 +102,7 @@ export function clearStaleEvents(maxAgeMs = 24 * 60 * 60 * 1000) {
   const cutoff = Date.now() - maxAgeMs;
   let removed = 0;
   for (const [id, ev] of eventMap) {
-    if (new Date(ev.timestamp).getTime() < cutoff) {
+    if (!ev.isHistorical && new Date(ev.timestamp).getTime() < cutoff) {
       eventMap.delete(id);
       removed++;
     }

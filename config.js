@@ -45,6 +45,7 @@ export function getIntegrationConfigStatus() {
   const aviationstack = describeEnvVar("AVIATIONSTACK_API_KEY");
   const aishub = describeEnvVar("AISHUB_API_KEY");
   const xBearer = describeEnvVar("X_BEARER_TOKEN");
+  const marketDataApiKey = describeEnvVar("MARKET_DATA_API_KEY");
 
   return {
     newsApi,
@@ -62,6 +63,7 @@ export function getIntegrationConfigStatus() {
     aviationstack,
     aishub,
     xBearer,
+    marketDataApiKey,
   };
 }
 
@@ -128,5 +130,15 @@ export function getConfig() {
       .filter(Boolean),
     xRefreshIntervalMinutes: parseInt(process.env.X_REFRESH_INTERVAL_MINUTES ?? "60", 10),
     xDailyReadLimit:        parseInt(process.env.X_DAILY_READ_LIMIT ?? "100", 10),
+    enableMarketData:       String(process.env.ENABLE_MARKET_DATA ?? "false").toLowerCase() === "true",
+    marketDataProvider:     process.env.MARKET_DATA_PROVIDER ?? "alpha_vantage",
+    marketDataApiKey:       process.env.MARKET_DATA_API_KEY ?? "",
+    marketDataRefreshIntervalMinutes: parseInt(process.env.MARKET_DATA_REFRESH_INTERVAL_MINUTES ?? "60", 10),
+    marketDataDailyLimit:   parseInt(process.env.MARKET_DATA_DAILY_LIMIT ?? "20", 10),
+    enableHistoricalBackfill: String(process.env.ENABLE_HISTORICAL_BACKFILL ?? "true").toLowerCase() !== "false",
+    backfillMaxDays:        parseInt(process.env.BACKFILL_MAX_DAYS ?? "30", 10),
+    backfillBatchDays:      parseInt(process.env.BACKFILL_BATCH_DAYS ?? "3", 10),
+    backfillMaxArticlesPerBatch: parseInt(process.env.BACKFILL_MAX_ARTICLES_PER_BATCH ?? "50", 10),
+    maxConflictZones:       parseInt(process.env.MAX_CONFLICT_ZONES ?? "20", 10),
   };
 }

@@ -14,12 +14,18 @@ create table if not exists events (
                default '{"label":"Unknown Region","lat":null,"lng":null}'::jsonb,
   timestamp    timestamptz   not null default now(),
   summary      text          not null default '',
+  assessment   text          not null default '',
   developments text[]        not null default '{}',
   tone         text          not null default 'Stable'
-               check (tone in ('Escalating', 'Stable', 'De-escalating')),
+               check (tone in ('Stable', 'Escalating', 'Deteriorating', 'Volatile', 'De-escalating')),
   confidence   text          not null default 'Low'
                check (confidence in ('Low', 'Medium', 'High')),
   scenarios    jsonb         not null default '[]'::jsonb,
+  why_this_matters text[]    not null default '{}',
+  watch_indicators text[]    not null default '{}',
+  confidence_rationale text  not null default '',
+  market_impact jsonb        not null default '{}'::jsonb,
+  source_assessment jsonb    not null default '{}'::jsonb,
   sources      text[]        not null default '{}',
   keywords     text[]        not null default '{}',
   article_ids  text[]        not null default '{}',
@@ -27,6 +33,7 @@ create table if not exists events (
   ai_updated_at timestamptz,
   cluster_signature text,
   importance_score integer   not null default 0,
+  is_historical boolean      not null default false,
   created_at   timestamptz   not null default now()
 );
 
@@ -35,6 +42,7 @@ create index if not exists events_tone           on events (tone);
 create index if not exists events_confidence     on events (confidence);
 create index if not exists events_created_at     on events (created_at);
 create index if not exists events_cluster_signature on events (cluster_signature);
+create index if not exists events_is_historical on events (is_historical);
 
 create table if not exists ai_usage_logs (
   id                bigint generated always as identity primary key,

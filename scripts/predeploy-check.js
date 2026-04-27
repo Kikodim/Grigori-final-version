@@ -18,6 +18,8 @@ const requiredFiles = [
   "api/v1/[...path].js",
   "schema.sql",
   "supabase_migration_grigori_ai_fields.sql",
+  "supabase_migration_grigori_intelligence_fields.sql",
+  "supabase_migration_grigori_backfill.sql",
   "supabase_migration_grigori_live_layers.sql",
   "supabase_migration_grigori_premium_phase1.sql",
 ];

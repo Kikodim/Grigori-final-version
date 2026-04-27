@@ -2,8 +2,9 @@ import axios from "axios";
 
 const NEWS_API_BASE = "https://newsapi.org/v2/everything";
 
-export async function fetchNewsApiArticles({ apiKey, queries, pageSize = 10 }) {
-  const from = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+export async function fetchNewsApiArticles({ apiKey, queries, pageSize = 10, from = null, to = null }) {
+  const resolvedFrom = from ?? new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+  const resolvedTo = to ?? undefined;
   const articles = [];
 
   for (const query of queries) {
@@ -13,7 +14,8 @@ export async function fetchNewsApiArticles({ apiKey, queries, pageSize = 10 }) {
       },
       params: {
         q: query,
-        from,
+        from: resolvedFrom,
+        to: resolvedTo,
         sortBy: "publishedAt",
         language: "en",
         pageSize,

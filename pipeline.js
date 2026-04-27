@@ -1,5 +1,5 @@
 import { createHash } from "crypto";
-import { ingest } from "./ingest.js";
+import { ingest, ingestHistoricalBackfill } from "./ingest.js";
 import { cluster } from "./cluster.js";
 import { cacheHas, cachePrune, getAIStatus, makeClusterKey, processCluster } from "./ai.js";
 import { describeEnvVar, getConfig } from "./config.js";
@@ -14,11 +14,21 @@ const HIGH_IMPORTANCE_THRESHOLD = 70;
 const CONFLICT_KEYWORDS = new Set([
   "war","conflict","attack","strike","missile","drone","military","troops",
   "ceasefire","sanctions","naval","blockade","crisis","escalation","border",
+  "election","protest","coalition","parliament","cyber","migration","trade","energy",
 ]);
 const MARKET_IMPACT_KEYWORDS = new Set([
   "oil","gas","shipping","strait","pipeline","trade","market","energy","uranium","grain",
 ]);
 const REGION_IMPORTANCE = {
+  "European Union": 12,
+  "Bulgaria": 10,
+  "Romania": 10,
+  "Moldova": 12,
+  "Balkans": 14,
+  "Turkey": 12,
+  "Germany": 10,
+  "France": 10,
+  "United Kingdom": 10,
   "Ukraine": 20,
   "Russia": 16,
   "Taiwan Strait": 20,
@@ -138,9 +148,13 @@ function shouldPublishPreEvent(preEvent, articles = []) {
   const title = String(preEvent.title ?? "").toLowerCase();
   const lowValueTitle = /\b(morning update|evening update|daily briefing|marathon|celebrity|luxury resort)\b/i.test(title);
   const underReview = String(preEvent.region?.label ?? "").toLowerCase() === "region under review";
+  const hasStrategicPoliticalSignal = /\b(election|protest|parliament|government|coalition|sanction|cyber|migration|trade|energy|regulator|commission|nato|eu)\b/i.test(
+    `${preEvent.title ?? ""} ${(preEvent.keywords ?? []).join(" ")}`
+  );
 
   if (lowValueTitle) return false;
   if (sourceCount <= 1 && relevanceScore < 4 && underReview) return false;
+  if (sourceCount <= 1 && relevanceScore < 4 && !hasStrategicPoliticalSignal) return false;
   if ((articles?.length ?? 0) <= 1 && relevanceScore < 3) return false;
   return true;
 }
@@ -388,11 +402,19 @@ async function runAiOnlyRefresh({ source, noAi, startedAt }) {
     title: result.title,
     location: result.location ?? target.event.location,
     summary: result.summary,
+    assessment: result.assessment ?? target.event.assessment ?? "",
     developments: result.developments,
     tone: result.tone,
     confidence: result.confidence,
     scenarios: result.scenarios,
-    aiStatus: result.generationMethod === "rule-based" ? "fallback" : "enriched",
+    whyThisMatters: result.whyThisMatters ?? target.event.whyThisMatters ?? [],
+    watchIndicators: result.watchIndicators ?? result.watchIndicators72h ?? target.event.watchIndicators ?? [],
+    confidenceRationale: result.confidenceRationale ?? target.event.confidenceRationale ?? "",
+    marketImpact: result.marketImpact ?? target.event.marketImpact ?? {},
+    sourceAssessment: result.sourceAssessment ?? target.event.sourceAssessment ?? {},
+    aiStatus: result.generationMethod === "rule-based"
+      ? (result.aiSkippedReason === "provider_error" ? "provider_error" : "fallback")
+      : "enriched",
     aiUpdatedAt: new Date().toISOString(),
     clusterSignature: target.preEvent._clusterSignature,
     importanceScore: target.importanceScore,
@@ -425,12 +447,123 @@ async function runAiOnlyRefresh({ source, noAi, startedAt }) {
   };
 }
 
-export async function runPipeline({ source = "manual", noAi = false, mode = "full" } = {}) {
+async function persistRuleBasedCandidate(preEvent, articles, importanceScore, { aiStatus = "fallback", isHistorical = false } = {}) {
+  const result = buildRuleBasedBriefing(preEvent, articles);
+  const location = inferLocationDetails({
+    ...preEvent,
+    location: preEvent.region,
+    summary: result.summary,
+  }, articles);
+
+  await insertEvent({
+    id: makeEventId(preEvent),
+    title: result.title,
+    location,
+    timestamp: preEvent.timestamp,
+    summary: result.summary,
+    assessment: result.assessment ?? "",
+    developments: result.developments ?? [],
+    tone: result.tone,
+    confidence: result.confidence,
+    scenarios: result.scenarios ?? [],
+    whyThisMatters: result.whyThisMatters ?? [],
+    watchIndicators: result.watchIndicators ?? result.watchIndicators72h ?? [],
+    confidenceRationale: result.confidenceRationale ?? "",
+    marketImpact: result.marketImpact ?? {},
+    sourceAssessment: result.sourceAssessment ?? {},
+    sources: preEvent.sources ?? [],
+    keywords: preEvent.keywords ?? [],
+    articleIds: preEvent.articleIds ?? [],
+    aiStatus,
+    aiUpdatedAt: null,
+    clusterSignature: preEvent._clusterSignature,
+    importanceScore,
+    isHistorical,
+  });
+}
+
+async function runHistoricalBackfill({ startedAt, daysRequested = 30 }) {
+  const config = getConfig();
+  if (!config.enableHistoricalBackfill) {
+    return {
+      ok: false,
+      error: "Historical backfill disabled",
+      mode: "backfill",
+      refreshMode: "backfill",
+      daysRequested,
+      windowsProcessed: 0,
+      providersUsed: [],
+      articlesFetched: 0,
+      articlesSaved: 0,
+      clustersCreated: 0,
+      eventsCreated: 0,
+      duplicatesSkipped: 0,
+      skippedProviders: [{ provider: "system", reason: "ENABLE_HISTORICAL_BACKFILL=false" }],
+      rateLimitedProviders: [],
+      aiCalls: 0,
+      elapsed: getElapsed(startedAt),
+    };
+  }
+
+  const safeDays = Math.max(1, Math.min(daysRequested, config.backfillMaxDays));
+  const ingestResult = await ingestHistoricalBackfill({
+    days: safeDays,
+    batchDays: Math.max(1, config.backfillBatchDays),
+    maxArticlesPerBatch: Math.max(10, config.backfillMaxArticlesPerBatch),
+  });
+
+  const threshold = config.clusterThreshold;
+  const preEvents = cluster({ threshold });
+  const articleStore = new Map(getAllArticles().map((article) => [article.id, article]));
+  const publishablePreEvents = preEvents.filter((preEvent) => {
+    const articles = preEvent.articleIds.map((id) => articleStore.get(id)).filter(Boolean);
+    return shouldPublishPreEvent(preEvent, articles);
+  });
+
+  let eventsCreated = 0;
+  let regionUnderReviewCount = 0;
+  for (const preEvent of publishablePreEvents) {
+    const articles = preEvent.articleIds.map((id) => articleStore.get(id)).filter(Boolean);
+    const importanceScore = scoreImportance(preEvent, articles);
+    if (String(preEvent.region?.label ?? "").toLowerCase() === "region under review") {
+      regionUnderReviewCount += 1;
+    }
+    preEvent._clusterSignature = makeClusterKey(preEvent);
+    await persistRuleBasedCandidate(preEvent, articles, importanceScore, { aiStatus: "fallback", isHistorical: true });
+    eventsCreated += 1;
+  }
+
+  return {
+    ok: true,
+    mode: "backfill",
+    refreshMode: "backfill",
+    daysRequested: safeDays,
+    windowsProcessed: ingestResult.windowsProcessed,
+    providersUsed: ingestResult.providersUsed,
+    articlesFetched: ingestResult.articlesFetched,
+    articlesSaved: ingestResult.articlesSaved,
+    clustersCreated: preEvents.length,
+    eventsCreated,
+    duplicatesSkipped: ingestResult.duplicatesSkipped,
+    skippedProviders: ingestResult.skippedProviders,
+    rateLimitedProviders: ingestResult.rateLimitedProviders,
+    filteredOutCount: ingestResult.filteredOutCount ?? 0,
+    lowRelevanceCount: ingestResult.lowRelevanceCount ?? 0,
+    regionUnderReviewCount,
+    aiCalls: 0,
+    elapsed: getElapsed(startedAt),
+  };
+}
+
+export async function runPipeline({ source = "manual", noAi = false, mode = "full", days = null } = {}) {
   const startedAt = Date.now();
   log.info(`Pipeline starting mode=${mode} source=${source}`);
 
   if (mode === "ai") {
     return runAiOnlyRefresh({ source, noAi, startedAt });
+  }
+  if (mode === "backfill") {
+    return runHistoricalBackfill({ startedAt, daysRequested: Number(days ?? 30) });
   }
 
   let ingestResult;
@@ -567,7 +700,9 @@ export async function runPipeline({ source = "manual", noAi = false, mode = "ful
     const result = await processCluster(preEvent, articles, {
       source: isAutomatedRun ? "automation" : "manual",
     });
-    actualAiCalls++;
+    if (result.generationMethod !== "rule-based") {
+      actualAiCalls++;
+    }
     results.set(preEvent._clusterId, {
       ...result,
       aiStatus: result.generationMethod === "rule-based" ? "fallback" : "enriched",
@@ -598,17 +733,24 @@ export async function runPipeline({ source = "manual", noAi = false, mode = "ful
       location: resolvedLocation ?? { label: "Region under review", lat: null, lng: null, confidence: "Low", reason: "Location signals remain under review." },
       timestamp: preEvent.timestamp,
       summary: result.summary,
+      assessment: result.assessment ?? "",
       developments: result.developments,
       tone: result.tone,
       confidence: result.confidence,
       scenarios: result.scenarios,
+      whyThisMatters: result.whyThisMatters ?? [],
+      watchIndicators: result.watchIndicators ?? result.watchIndicators72h ?? [],
+      confidenceRationale: result.confidenceRationale ?? "",
+      marketImpact: result.marketImpact ?? {},
+      sourceAssessment: result.sourceAssessment ?? {},
       sources: preEvent.sources,
       keywords: preEvent.keywords,
       articleIds: preEvent.articleIds,
-      aiStatus: result.aiStatus ?? "fallback",
+      aiStatus: result.aiStatus ?? (result.aiSkippedReason === "provider_error" ? "provider_error" : "fallback"),
       aiUpdatedAt: result.aiUpdatedAt ?? null,
       clusterSignature: preEvent._clusterSignature,
       importanceScore: result.importanceScore ?? scoreImportance(preEvent, []),
+      isHistorical: false,
     });
     created++;
   }

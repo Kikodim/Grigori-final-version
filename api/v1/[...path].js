@@ -7,6 +7,7 @@ import {
   handleEventStats,
   handleFlightsLive,
   handleHealth,
+  handleMarketContext,
   handlePipelineRun,
   handleReportsExport,
   handleReportsGenerate,
@@ -84,6 +85,11 @@ export default async function handler(req, res) {
   if (parts[0] === "briefing") {
     if (method !== "GET") return res.status(405).json({ success: false, error: "Method not allowed" });
     return handleBriefing(req, res);
+  }
+
+  if (parts[0] === "market" && parts[1] === "context") {
+    if (method !== "GET") return res.status(405).json({ success: false, error: "Method not allowed" });
+    return handleMarketContext(req, res);
   }
 
   if (parts[0] === "flights" && parts[1] === "live") {

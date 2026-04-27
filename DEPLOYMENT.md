@@ -81,6 +81,11 @@ GEMINI_API_KEY
 SUPABASE_URL
 SUPABASE_SERVICE_ROLE_KEY
 ADMIN_SECRET
+ENABLE_MARKET_DATA
+MARKET_DATA_PROVIDER
+MARKET_DATA_API_KEY
+MARKET_DATA_REFRESH_INTERVAL_MINUTES
+MARKET_DATA_DAILY_LIMIT
 NODE_ENV
 RUN_PIPELINE_ON_STARTUP
 INGEST_INTERVAL_MINUTES
@@ -108,6 +113,15 @@ ENABLE_AUTOMATED_AI=true
 MAX_AI_CALLS_PER_RUN=1
 AI_DAILY_LIMIT=20
 AI_RESERVED_CALLS=2
+ENABLE_MARKET_DATA=false
+MARKET_DATA_PROVIDER=alpha_vantage
+MARKET_DATA_REFRESH_INTERVAL_MINUTES=60
+MARKET_DATA_DAILY_LIMIT=20
+ENABLE_HISTORICAL_BACKFILL=true
+BACKFILL_MAX_DAYS=30
+BACKFILL_BATCH_DAYS=3
+BACKFILL_MAX_ARTICLES_PER_BATCH=50
+MAX_CONFLICT_ZONES=20
 ENABLE_GDELT=true
 ENABLE_RSS=true
 ENABLE_NEWSDATA=true
@@ -126,6 +140,7 @@ curl https://YOUR_DOMAIN/api/v1/events/stats
 curl https://YOUR_DOMAIN/api/v1/ai/status
 curl -X POST https://YOUR_DOMAIN/api/v1/pipeline/run -H "Authorization: Bearer YOUR_ADMIN_SECRET"
 curl -X POST https://YOUR_DOMAIN/api/v1/admin/refresh -H "Authorization: Bearer YOUR_ADMIN_SECRET"
+curl -X POST "https://YOUR_DOMAIN/api/v1/admin/refresh?mode=backfill&days=30" -H "Authorization: Bearer YOUR_ADMIN_SECRET"
 ```
 
 ## 6. Hostinger DNS For `grigori.oryth.io`
@@ -164,5 +179,10 @@ git push origin main
 - Production Vercel uses `/api/v1/...` serverless handlers, not `app.listen()`.
 - Do not commit `.env.local`.
 - Do not expose `SUPABASE_SERVICE_ROLE_KEY`, `GEMINI_API_KEY`, or `NEWS_API_KEY` to the frontend.
+- Market data is optional and the app works without `MARKET_DATA_API_KEY`.
+- If enabled, market data is fetched server-side, cached, and rate-limited before the frontend sees it.
+- Historical backfill is manual and admin-only. It is intended as a one-time or occasional maintenance operation, not a scheduled job.
+- Historical backfill uses small date windows and skips providers that do not support historical retrieval on the current plan.
+- Historical backfill does not call Gemini. It stores rule-based historical event memory and preserves it from normal live-event purge logic.
 - Vercel Hobby cron is set to once daily: `0 0 * * *`.
 - If you need more frequent automated ingestion later, use Vercel Pro, GitHub Actions scheduled workflows, an external cron service, or the protected `/api/v1/admin/refresh` and `/api/v1/pipeline/run` endpoints.
