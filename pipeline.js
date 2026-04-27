@@ -2,6 +2,7 @@ import { createHash } from "crypto";
 import { ingest } from "./ingest.js";
 import { cluster } from "./cluster.js";
 import { cacheHas, cachePrune, getAIStatus, makeClusterKey, processCluster } from "./ai.js";
+import { describeEnvVar, getConfig } from "./config.js";
 import { inferLocationDetails } from "./event-insights.js";
 import { getAllArticles } from "./store.js";
 import { buildRuleBasedBriefing } from "./rule-based-briefing.js";
@@ -131,17 +132,53 @@ function getElapsed(startedAt) {
   return `${((Date.now() - startedAt) / 1000).toFixed(1)}s`;
 }
 
+function buildAiDiagnostics(aiStatus, overrides = {}) {
+  const config = getConfig();
+  const geminiConfigured = describeEnvVar("GEMINI_API_KEY").usable;
+  const automationBudget = config.aiAutomationBudget ?? aiStatus.automationBudget;
+  const aiRemainingToday = Math.max(0, config.aiDailyLimit - aiStatus.aiCallsToday);
+  const automationRemainingToday = Math.max(0, automationBudget - aiStatus.aiCallsToday);
+
+  return {
+    automatedAiEnabled: config.enableAutomatedAi && !overrides.noAi,
+    geminiConfigured,
+    maxAiCallsPerRun: config.maxAiCallsPerRun,
+    aiCallsToday: aiStatus.aiCallsToday,
+    aiDailyLimit: config.aiDailyLimit,
+    aiReservedCalls: config.aiReservedCalls,
+    aiAutomationBudget: automationBudget,
+    aiRemainingToday,
+    automationRemainingToday,
+    targetEventId: null,
+    targetTitle: null,
+    targetAiStatusBefore: null,
+    targetHadScenariosBefore: false,
+    targetUpdatedAt: null,
+    aiAttempted: false,
+    aiCallsUsed: 0,
+    aiSkippedReason: "unknown",
+    aiProviderError: null,
+    ...overrides,
+  };
+}
+
 async function runAiOnlyRefresh({ source, noAi, startedAt }) {
-  const automatedAiEnabled = !noAi && String(process.env.ENABLE_AUTOMATED_AI ?? "true").toLowerCase() !== "false";
+  const config = getConfig();
+  const geminiConfigured = describeEnvVar("GEMINI_API_KEY").usable;
+  const automatedAiEnabled = !noAi && config.enableAutomatedAi;
   const articleStore = new Map(getAllArticles().map((article) => [article.id, article]));
   const previousEvents = await getRecentEvents(72);
   const aiStatus = await getAIStatus();
-  const maxAiCallsPerRun = parseInt(process.env.MAX_AI_CALLS_PER_RUN ?? "1", 10);
+  const maxAiCallsPerRun = config.maxAiCallsPerRun;
   const automationRemaining = Math.max(0, aiStatus.automationBudget - aiStatus.aiCallsToday);
   const isAutomatedRun = source !== "manual";
   const allowedCallsThisRun = automatedAiEnabled
     ? Math.max(0, Math.min(maxAiCallsPerRun, isAutomatedRun ? automationRemaining : maxAiCallsPerRun))
     : 0;
+  const baseDiagnostics = buildAiDiagnostics(aiStatus, { noAi });
+
+  log.info(`Gemini configured? ${geminiConfigured}`);
+  log.info(`AI budget check result source=${source} automatedAiEnabled=${automatedAiEnabled} maxAiCallsPerRun=${maxAiCallsPerRun} aiCallsToday=${aiStatus.aiCallsToday} aiRemainingToday=${baseDiagnostics.aiRemainingToday} automationRemainingToday=${automationRemaining}`);
 
   const candidates = previousEvents
     .filter((event) => !["enriched", "cached"].includes(event.aiStatus))
@@ -175,7 +212,95 @@ async function runAiOnlyRefresh({ source, noAi, startedAt }) {
       return new Date(b.event.timestamp).getTime() - new Date(a.event.timestamp).getTime();
     });
 
+  if (!automatedAiEnabled) {
+    log.info("AI skipped reason automated_ai_disabled");
+    return {
+      ok: true,
+      events: 0,
+      articles: 0,
+      clusters: 0,
+      cached: 0,
+      aiCalls: 0,
+      purged: 0,
+      mode: "ai",
+      refreshMode: "ai",
+      elapsed: getElapsed(startedAt),
+      changed: false,
+      reason: "Automated AI disabled",
+      ...baseDiagnostics,
+      aiSkippedReason: "automated_ai_disabled",
+    };
+  }
+
+  if (!geminiConfigured) {
+    log.info("AI skipped reason gemini_not_configured");
+    return {
+      ok: true,
+      events: 0,
+      articles: 0,
+      clusters: 0,
+      cached: 0,
+      aiCalls: 0,
+      purged: 0,
+      mode: "ai",
+      refreshMode: "ai",
+      elapsed: getElapsed(startedAt),
+      changed: false,
+      reason: "Gemini is not configured",
+      ...baseDiagnostics,
+      aiSkippedReason: "gemini_not_configured",
+    };
+  }
+
+  if (maxAiCallsPerRun <= 0) {
+    log.info("AI skipped reason max_ai_calls_per_run_zero");
+    return {
+      ok: true,
+      events: 0,
+      articles: 0,
+      clusters: 0,
+      cached: 0,
+      aiCalls: 0,
+      purged: 0,
+      mode: "ai",
+      refreshMode: "ai",
+      elapsed: getElapsed(startedAt),
+      changed: false,
+      reason: "MAX_AI_CALLS_PER_RUN is zero",
+      ...baseDiagnostics,
+      aiSkippedReason: "max_ai_calls_per_run_zero",
+    };
+  }
+
+  if (baseDiagnostics.aiRemainingToday <= 0) {
+    log.info("AI skipped reason daily_budget_exhausted");
+    return {
+      ok: true,
+      events: 0,
+      articles: 0,
+      clusters: 0,
+      cached: 0,
+      aiCalls: 0,
+      purged: 0,
+      mode: "ai",
+      refreshMode: "ai",
+      elapsed: getElapsed(startedAt),
+      changed: false,
+      reason: "AI daily budget exhausted",
+      ...baseDiagnostics,
+      aiSkippedReason: "daily_budget_exhausted",
+    };
+  }
+
   if (candidates.length === 0) {
+    const previousTarget = previousEvents
+      .slice()
+      .sort((a, b) => (Number(b.importanceScore ?? 0) - Number(a.importanceScore ?? 0)))
+      .find(Boolean);
+    const skipReason = previousTarget && ["enriched", "cached"].includes(previousTarget.aiStatus)
+      ? "event_already_enriched"
+      : "no_eligible_event";
+    log.info(`AI skipped reason ${skipReason}`);
     return {
       ok: true,
       events: 0,
@@ -189,16 +314,25 @@ async function runAiOnlyRefresh({ source, noAi, startedAt }) {
       elapsed: getElapsed(startedAt),
       changed: false,
       reason: "No eligible fallback events for AI enrichment",
+      ...baseDiagnostics,
+      targetEventId: previousTarget?.id ?? null,
+      targetTitle: previousTarget?.title ?? null,
+      targetAiStatusBefore: previousTarget?.aiStatus ?? null,
+      targetHadScenariosBefore: Array.isArray(previousTarget?.scenarios) && previousTarget.scenarios.length > 0,
+      targetUpdatedAt: previousTarget?.aiUpdatedAt ?? previousTarget?.updated_at ?? previousTarget?.timestamp ?? null,
+      aiSkippedReason: skipReason,
     };
   }
 
   const target = candidates[0];
+  log.info(`AI mode selected target id=${target.event.id} title="${target.event.title}" aiStatus=${target.event.aiStatus ?? "unknown"} scenarios=${Array.isArray(target.event.scenarios) ? target.event.scenarios.length : 0} importance=${target.importanceScore}`);
   if (allowedCallsThisRun <= 0) {
     await insertEvent({
       ...target.event,
       aiStatus: "budget_exhausted",
       aiUpdatedAt: target.event.aiUpdatedAt ?? null,
     });
+    log.info(`AI skipped reason automation_budget_exhausted`);
     return {
       ok: true,
       events: 1,
@@ -212,14 +346,29 @@ async function runAiOnlyRefresh({ source, noAi, startedAt }) {
       elapsed: getElapsed(startedAt),
       changed: true,
       reason: "AI automation budget exhausted",
+      ...baseDiagnostics,
       targetEventId: target.event.id,
       targetTitle: target.event.title,
+      targetAiStatusBefore: target.event.aiStatus ?? null,
+      targetHadScenariosBefore: Array.isArray(target.event.scenarios) && target.event.scenarios.length > 0,
+      targetUpdatedAt: target.event.aiUpdatedAt ?? target.event.updated_at ?? target.event.timestamp ?? null,
+      aiSkippedReason: "automation_budget_exhausted",
     };
   }
 
+  log.info("AI attempted true");
   const result = await processCluster(target.preEvent, target.articles, {
     source: isAutomatedRun ? "automation" : "manual",
   });
+  const aiCallsUsed = result.generationMethod === "ai" ? 1 : 0;
+  const aiSkippedReason = aiCallsUsed > 0
+    ? null
+    : (result.aiSkippedReason ?? "provider_error");
+  const aiProviderError = result.aiProviderError ?? null;
+  log.info(`AI calls used ${aiCallsUsed}`);
+  if (aiSkippedReason) {
+    log.info(`AI skipped reason ${aiSkippedReason}`);
+  }
 
   await insertEvent({
     ...target.event,
@@ -250,6 +399,16 @@ async function runAiOnlyRefresh({ source, noAi, startedAt }) {
     changed: true,
     targetEventId: target.event.id,
     targetTitle: target.event.title,
+    ...baseDiagnostics,
+    targetEventId: target.event.id,
+    targetTitle: target.event.title,
+    targetAiStatusBefore: target.event.aiStatus ?? null,
+    targetHadScenariosBefore: Array.isArray(target.event.scenarios) && target.event.scenarios.length > 0,
+    targetUpdatedAt: target.event.aiUpdatedAt ?? target.event.updated_at ?? target.event.timestamp ?? null,
+    aiAttempted: true,
+    aiCallsUsed,
+    aiSkippedReason,
+    aiProviderError,
   };
 }
 

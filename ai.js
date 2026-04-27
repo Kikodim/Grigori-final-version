@@ -460,13 +460,20 @@ export async function processCluster(pe, articles, { source = "automation" } = {
 
   const fb = buildRuleBasedBriefing(pe, articles);
   const prompt = _buildPrompt(pe, articles);
+  const geminiConfigured = describeEnvVar("GEMINI_API_KEY").usable;
 
   let response;
   try {
     response = await _enqueue(() => _callWithRetry(SYS, prompt, DEFAULT_MAX_OUTPUT_TOKENS));
   } catch (err) {
     log.warn(`Gemini failed for ${pe._clusterId}: ${err.message}`);
-    return fb;
+    return {
+      ...fb,
+      aiAttempted: true,
+      aiCallsUsed: 0,
+      aiSkippedReason: geminiConfigured ? "provider_error" : "gemini_not_configured",
+      aiProviderError: err.message,
+    };
   }
 
   let raw = response?.text ?? "";
@@ -487,13 +494,25 @@ export async function processCluster(pe, articles, { source = "automation" } = {
       parsed = parseGeminiJson(raw);
     } catch (err) {
       log.warn(`Gemini retry failed for ${pe._clusterId}: ${err.message}`);
-      return fb;
+      return {
+        ...fb,
+        aiAttempted: true,
+        aiCallsUsed: 0,
+        aiSkippedReason: "provider_error",
+        aiProviderError: err.message,
+      };
     }
   }
 
   if (!parsed.ok) {
     log.warn(`JSON parse failed for ${pe._clusterId}: ${parsed.reason} raw=${String(raw).slice(0, 500)}`);
-    return fb;
+    return {
+      ...fb,
+      aiAttempted: true,
+      aiCallsUsed: 0,
+      aiSkippedReason: "provider_error",
+      aiProviderError: parsed.reason,
+    };
   }
 
   if (parsed.source === "extracted" || parsed.source === "extracted-raw") {
@@ -502,6 +521,10 @@ export async function processCluster(pe, articles, { source = "automation" } = {
 
   const result = _validate(parsed.value, fb);
   result.generationMethod = "ai";
+  result.aiAttempted = true;
+  result.aiCallsUsed = 1;
+  result.aiSkippedReason = null;
+  result.aiProviderError = null;
   await recordAIUsage({
     source,
     clusterSignature: pe._clusterSignature ?? makeClusterKey(pe),
