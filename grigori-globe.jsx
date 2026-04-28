@@ -1152,8 +1152,8 @@ function makeConflictZoneMarker(zone) {
   const outward = geoToVec3(zone.lat, zone.lng, 1.0).normalize();
   const cfg = INTENSITY[zone.severity] ?? INTENSITY.medium;
   const color = new THREE.Color(cfg.color);
-  const width = zone.eventCount >= 4 ? 0.18 : 0.14;
-  const height = 0.06;
+  const width = zone.eventCount >= 4 ? 0.16 : 0.12;
+  const height = 0.048;
 
   group.position.copy(pos);
   group.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), outward);
@@ -1168,26 +1168,26 @@ function makeConflictZoneMarker(zone) {
     new THREE.MeshBasicMaterial({
       color,
       transparent: true,
-      opacity: 0.08,
+      opacity: 0.05,
       depthWrite: false,
       depthTest: false,
       side: THREE.DoubleSide,
       blending: THREE.AdditiveBlending,
     })
   );
-  fill.userData.baseOpacity = 0.08;
+  fill.userData.baseOpacity = 0.05;
 
   const outline = new THREE.LineSegments(
     new THREE.EdgesGeometry(new THREE.PlaneGeometry(width, height)),
     new THREE.LineBasicMaterial({
       color: color.clone().lerp(new THREE.Color(0x8fdfff), 0.25),
       transparent: true,
-      opacity: 0.4,
+      opacity: 0.26,
       depthWrite: false,
       depthTest: false,
     })
   );
-  outline.userData.baseOpacity = 0.4;
+  outline.userData.baseOpacity = 0.26;
 
   const hit = new THREE.Mesh(
     new THREE.PlaneGeometry(width * 1.18, height * 1.6),
@@ -1203,23 +1203,29 @@ function makeConflictZoneMarker(zone) {
   hit.userData = { clickable: true, objectType: "zone", objectData: zone };
   hit.userData.markerGroup = group;
 
-  const labelSprite = makeTextSprite(`${zone.label} · ${zone.eventCount}`);
+  const labelSprite = makeTextSprite(`${zone.label} ${zone.eventCount}`, {
+    fontSize: 26,
+    color: "#b9e7f8",
+    border: "rgba(88, 188, 230, 0.18)",
+    background: "rgba(4,12,24,0.48)",
+  });
   labelSprite.position.set(0, height * 0.9, 0.002);
-  labelSprite.userData.baseOpacity = 0.9;
+  labelSprite.userData.baseOpacity = 0.74;
+  labelSprite.scale.set(0.34, 0.108, 1);
 
   const pulse = new THREE.Mesh(
     new THREE.RingGeometry(width * 0.42, width * 0.48, 32),
     new THREE.MeshBasicMaterial({
       color,
       transparent: true,
-      opacity: 0.18,
+      opacity: 0.12,
       depthWrite: false,
       depthTest: false,
       side: THREE.DoubleSide,
       blending: THREE.AdditiveBlending,
     })
   );
-  pulse.userData = { pulse: true, speed: cfg.pulseSpeed * 0.5, base: 0.18, phase: 0 };
+  pulse.userData = { pulse: true, speed: cfg.pulseSpeed * 0.5, base: 0.12, phase: 0 };
 
   group.add(fill, outline, hit, pulse, labelSprite);
   return group;
@@ -2201,15 +2207,16 @@ function MarketImpactDetailPanel({ item, onClose, isMobile = false }) {
 }
 
 function DataConfidencePanel({ stats, onClose }) {
+  const [showDetails, setShowDetails] = useState(false);
   return (
-    <FloatingPanel title="Data Confidence" subtitle="Overall signal confidence" top={430} right={16} width={320} onClose={onClose}>
+    <FloatingPanel title="Signal Confidence" subtitle="Source quality and corroboration" top={430} right={16} width={300} onClose={onClose}>
       <div style={{ display: "grid", gap: 14 }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
           <div style={{
-            width: 92,
-            height: 92,
+            width: 78,
+            height: 78,
             borderRadius: "50%",
-            border: "4px solid rgba(78,214,159,0.24)",
+            border: "3px solid rgba(78,214,159,0.2)",
             boxShadow: "inset 0 0 0 1px rgba(94,164,195,0.16)",
             display: "flex",
             alignItems: "center",
@@ -2217,15 +2224,15 @@ function DataConfidencePanel({ stats, onClose }) {
             background: "radial-gradient(circle at 35% 30%, rgba(87,216,255,0.08), rgba(6,14,26,0.9))",
           }}>
             <div style={{ textAlign: "center" }}>
-              <div style={{ color: "#eef7ff", fontFamily: display, fontSize: 28, fontWeight: 700, lineHeight: 1 }}>{stats.overall}%</div>
-              <div style={{ color: "#4ed69f", fontFamily: mono, fontSize: 10, letterSpacing: "0.14em", textTransform: "uppercase", marginTop: 4 }}>Good</div>
+              <div style={{ color: "#eef7ff", fontFamily: display, fontSize: 24, fontWeight: 700, lineHeight: 1 }}>{stats.overall}%</div>
+              <div style={{ color: "#4ed69f", fontFamily: mono, fontSize: 9, letterSpacing: "0.1em", textTransform: "uppercase", marginTop: 4 }}>Good</div>
             </div>
           </div>
           <div style={{ flex: 1, display: "grid", gap: 12 }}>
             {stats.bands.map((band) => (
               <div key={band.label}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
-                  <span style={{ color: "rgba(209,227,241,0.86)", fontFamily: mono, fontSize: 10, letterSpacing: "0.14em", textTransform: "uppercase" }}>{band.label}</span>
+                  <span style={{ color: "rgba(209,227,241,0.86)", fontFamily: mono, fontSize: 10, letterSpacing: "0.1em", textTransform: "uppercase" }}>{band.label}</span>
                   <span style={{ color: "#8ea8bf", fontFamily: mono, fontSize: 10 }}>{band.value}%</span>
                 </div>
                 <div style={{ height: 3, borderRadius: 999, background: "rgba(255,255,255,0.06)", overflow: "hidden" }}>
@@ -2235,9 +2242,34 @@ function DataConfidencePanel({ stats, onClose }) {
             ))}
           </div>
         </div>
-        <div style={{ color: "rgba(148,175,198,0.72)", fontSize: 10, fontFamily: mono, letterSpacing: "0.1em" }}>
-          Updated: {stats.updatedAt}
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+          <div style={{ color: "rgba(148,175,198,0.72)", fontSize: 10, fontFamily: mono, letterSpacing: "0.08em" }}>
+            Updated {stats.updatedAt}
+          </div>
+          <button onClick={() => setShowDetails((value) => !value)} style={{
+            background: "transparent",
+            border: "none",
+            color: "rgba(159, 209, 235, 0.82)",
+            fontFamily: mono,
+            fontSize: 10,
+            letterSpacing: "0.08em",
+            textTransform: "uppercase",
+            cursor: "pointer",
+            padding: 0,
+          }}>
+            {showDetails ? "Hide details" : "Details"}
+          </button>
         </div>
+        {showDetails ? (
+          <div style={{ display: "grid", gap: 8, paddingTop: 10, borderTop: "1px solid rgba(94,164,195,0.12)" }}>
+            {stats.bands.map((band) => (
+              <div key={`${band.label}-detail`} style={{ display: "flex", justifyContent: "space-between", gap: 12 }}>
+                <span style={{ color: "rgba(214,235,255,0.84)", fontSize: 12, fontFamily: bodyFont }}>{band.label}</span>
+                <span style={{ color: "rgba(148,175,198,0.82)", fontSize: 11, fontFamily: mono }}>{band.value}%</span>
+              </div>
+            ))}
+          </div>
+        ) : null}
       </div>
     </FloatingPanel>
   );
@@ -2612,12 +2644,60 @@ function TrafficPill({ level, children }) {
       padding: "4px 9px",
       fontSize: 9,
       fontFamily: mono,
-      letterSpacing: "0.12em",
+      letterSpacing: "0.08em",
       textTransform: "uppercase",
       whiteSpace: "nowrap",
     }}>
       {children}
     </span>
+  );
+}
+
+function TopControlButton({ active = false, subtle = false, children, onClick }) {
+  return (
+    <button
+      onClick={onClick}
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        justifyContent: "center",
+        gap: 6,
+        minHeight: 34,
+        padding: "8px 12px",
+        borderRadius: 12,
+        border: `1px solid ${active ? "rgba(87,216,255,0.26)" : subtle ? "rgba(94,164,195,0.12)" : "rgba(87,216,255,0.14)"}`,
+        background: active ? "rgba(56,189,248,0.12)" : "rgba(6,15,30,0.72)",
+        color: active ? "#dff7ff" : "rgba(206,226,241,0.8)",
+        cursor: "pointer",
+        fontFamily: mono,
+        fontSize: 10,
+        letterSpacing: "0.08em",
+        textTransform: "uppercase",
+      }}
+    >
+      {children}
+    </button>
+  );
+}
+
+function HeaderPopover({ children, right = 0, minWidth = 220 }) {
+  return (
+    <div style={{
+      position: "absolute",
+      top: "calc(100% + 10px)",
+      right,
+      minWidth,
+      background: "linear-gradient(180deg, rgba(5,12,24,0.96) 0%, rgba(7,15,29,0.98) 100%)",
+      border: "1px solid rgba(94,164,195,0.16)",
+      borderRadius: 16,
+      boxShadow: "0 24px 55px rgba(0,0,0,0.42)",
+      overflow: "hidden",
+      zIndex: 65,
+      backdropFilter: "blur(16px)",
+      WebkitBackdropFilter: "blur(16px)",
+    }}>
+      {children}
+    </div>
   );
 }
 
@@ -4052,15 +4132,15 @@ const LAYER_DEFS = {
 function LayerToggleChip({ layerKey, def, active, onToggle }) {
   return (
     <button onClick={() => onToggle(layerKey)} style={{
-      display: "flex", alignItems: "center", gap: 5, padding: "7px 12px",
+      display: "flex", alignItems: "center", gap: 5, padding: "8px 12px",
       background: active ? `${def.color}14` : "rgba(10,20,36,0.74)",
       border: `1px solid ${active ? def.color + "55" : "rgba(94, 164, 195, 0.12)"}`,
       borderRadius: 12, cursor: "pointer", whiteSpace: "nowrap",
-      transition: "all 0.18s ease", minHeight: 30,
+      transition: "all 0.18s ease", minHeight: 34,
     }}>
       <span style={{ fontSize: 11, color: active ? def.color : "rgba(160,190,214,0.7)" }}>{def.icon}</span>
       <span style={{ color: active ? def.color : "rgba(150,200,240,0.55)",
-        fontSize: 9, fontFamily: mono, letterSpacing: "0.12em" }}>{def.label}</span>
+        fontSize: 9, fontFamily: mono, letterSpacing: "0.08em" }}>{def.label}</span>
     </button>
   );
 }
@@ -4305,8 +4385,11 @@ function buildConnectionLayer() {
 // TOP BAR
 // ═══════════════════════════════════════════════════════════════════════════════
 
-function TopBar({ counts, bordersLoaded, activeLayers, onLayerToggle, isMobile, isTablet, onWarRoom, showWarRoom, marketData, onPersonalize, showPersonalize, onAdminRefresh, refreshState, layerEntries, activeView = "globe", onNavigate, systemStatus, adminUnlocked, onAdminUnlock, selectedLens, onLensChange, demoMode = false, feedState, layersStatus }) {
+function TopBar({ counts, bordersLoaded, activeLayers, onLayerToggle, isMobile, isTablet, onWarRoom, showWarRoom, marketData, onPersonalize, showPersonalize, onAdminRefresh, refreshState, layerEntries, activeView = "globe", onNavigate, systemStatus, adminUnlocked, onAdminUnlock, selectedLens, onLensChange, demoMode = false, feedState, layersStatus, liveSunEnabled = true, onToggleLiveSun = () => {} }) {
   const [time, setTime] = useState(() => new Date().toISOString().slice(11,19));
+  const [showLayersMenu, setShowLayersMenu] = useState(false);
+  const [showStatusMenu, setShowStatusMenu] = useState(false);
+  const [showAdminMenu, setShowAdminMenu] = useState(false);
   useEffect(() => {
     const t = setInterval(() => setTime(new Date().toISOString().slice(11,19)), 1000);
     return () => clearInterval(t);
@@ -4314,6 +4397,8 @@ function TopBar({ counts, bordersLoaded, activeLayers, onLayerToggle, isMobile, 
 
   const compact = isMobile || isTablet;
   const headerHeight = getHeaderHeight(isMobile, isTablet);
+  const publicLayerEntries = layerEntries.filter(([key]) => key !== "intelBoard");
+  const aiRemaining = systemStatus?.aiRemainingToday ?? systemStatus?.automation?.aiRemainingToday ?? 0;
   const navButtons = APP_VIEWS.map((item) => {
     const active = activeView === item.key;
     return (
@@ -4330,7 +4415,7 @@ function TopBar({ counts, bordersLoaded, activeLayers, onLayerToggle, isMobile, 
           cursor: "pointer",
           fontFamily: mono,
           fontSize: compact ? 10 : 11,
-          letterSpacing: "0.12em",
+          letterSpacing: "0.08em",
           textTransform: "uppercase",
           whiteSpace: "nowrap",
         }}
@@ -4353,6 +4438,13 @@ function TopBar({ counts, bordersLoaded, activeLayers, onLayerToggle, isMobile, 
   });
 
   return (
+    <div style={{
+      position: "absolute",
+      top: 0,
+      left: 0,
+      right: 0,
+      zIndex: 40,
+    }}>
     <div style={{
       position: "absolute", top: 0, left: 0, right: 0, height: headerHeight,
       background: "linear-gradient(180deg, rgba(4,9,18,0.96) 0%, rgba(4,10,22,0.88) 100%)", backdropFilter: "blur(18px)",
@@ -4412,7 +4504,7 @@ function TopBar({ counts, bordersLoaded, activeLayers, onLayerToggle, isMobile, 
         <div style={{ display: "flex", alignItems: "center", gap: 6, overflowX: "auto", flex: 1, paddingBottom: 2 }}>
             {navButtons}
           </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 8, justifyContent: "space-between", flexWrap: "wrap" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, justifyContent: "space-between", flexWrap: "wrap", position: "relative" }}>
           <select
             value={selectedLens}
             onChange={(event) => onLensChange?.(event.target.value)}
@@ -4434,38 +4526,77 @@ function TopBar({ counts, bordersLoaded, activeLayers, onLayerToggle, isMobile, 
             ))}
           </select>
           <div style={{ display: "flex", gap: 8, flexShrink: 0, flexWrap: "wrap" }}>
-            <button onClick={onWarRoom} style={{
-              padding: "8px 10px",
-              borderRadius: 12,
-              border: `1px solid ${showWarRoom ? "rgba(255,34,51,0.28)" : "rgba(87,216,255,0.14)"}`,
-              background: showWarRoom ? "rgba(255,34,51,0.12)" : "rgba(6,15,30,0.76)",
-              color: showWarRoom ? "#ff6b7d" : "rgba(200,220,255,0.7)",
-              fontFamily: mono,
-              fontSize: 10,
-              letterSpacing: "0.12em",
-              textTransform: "uppercase",
-            }}>
-              War Room
-            </button>
-            {!demoMode ? <button onClick={adminUnlocked ? () => onAdminRefresh("full") : onAdminUnlock} style={{
-              padding: "8px 10px",
-              borderRadius: 12,
-              border: "1px solid rgba(87,216,255,0.14)",
-              background: adminUnlocked ? "rgba(0,140,90,0.16)" : "rgba(6,15,30,0.76)",
-              color: adminUnlocked ? "#74f3b0" : "rgba(200,220,255,0.7)",
-              fontFamily: mono,
-              fontSize: 10,
-              letterSpacing: "0.12em",
-              textTransform: "uppercase",
-            }}>
-              {adminUnlocked ? "Admin" : "Unlock"}
-            </button> : null}
+            <TopControlButton onClick={() => { setShowLayersMenu((value) => !value); setShowStatusMenu(false); setShowAdminMenu(false); }} active={showLayersMenu}>Layers</TopControlButton>
+            <TopControlButton onClick={onWarRoom} active={showWarRoom}>War Room</TopControlButton>
+            <TopControlButton onClick={() => { setShowStatusMenu((value) => !value); setShowLayersMenu(false); setShowAdminMenu(false); }} subtle>
+              Status
+            </TopControlButton>
+            {!demoMode ? (
+              <TopControlButton onClick={() => { setShowAdminMenu((value) => !value); setShowLayersMenu(false); setShowStatusMenu(false); }} subtle>
+                Admin
+              </TopControlButton>
+            ) : null}
           </div>
+          {showLayersMenu ? (
+            <HeaderPopover right={demoMode ? 82 : 0} minWidth={238}>
+              <div style={{ padding: "12px", display: "grid", gap: 10 }}>
+                <div style={{ color: "rgba(103, 220, 255, 0.48)", fontSize: 10, fontFamily: mono, letterSpacing: "0.12em", textTransform: "uppercase" }}>Layers</div>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                  {publicLayerEntries.map(([key, def]) => (
+                    <LayerToggleChip key={key} layerKey={key} def={def} active={activeLayers[key]} onToggle={onLayerToggle} />
+                  ))}
+                </div>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", paddingTop: 4, borderTop: "1px solid rgba(94,164,195,0.12)" }}>
+                  <span style={{ color: "rgba(214,235,255,0.84)", fontSize: 12, fontFamily: bodyFont }}>Live Sun</span>
+                  <TopControlButton active={liveSunEnabled} onClick={onToggleLiveSun}>{liveSunEnabled ? "On" : "Off"}</TopControlButton>
+                </div>
+              </div>
+            </HeaderPopover>
+          ) : null}
+          {showStatusMenu ? (
+            <HeaderPopover right={demoMode ? 0 : 76} minWidth={232}>
+              <div style={{ padding: "12px", display: "grid", gap: 8 }}>
+                <div style={{ color: "rgba(103, 220, 255, 0.48)", fontSize: 10, fontFamily: mono, letterSpacing: "0.12em", textTransform: "uppercase" }}>Operational status</div>
+                <div style={{ display: "flex", justifyContent: "space-between", gap: 12 }}>
+                  <span style={{ color: "#4ed69f", fontFamily: mono, fontSize: 10, letterSpacing: "0.08em", textTransform: "uppercase" }}>Operational</span>
+                  <span style={{ color: "rgba(148,175,198,0.78)", fontFamily: mono, fontSize: 10 }}>{time} UTC</span>
+                </div>
+                <div style={{ color: "rgba(214,235,255,0.84)", fontSize: 12, fontFamily: bodyFont }}>AI remaining today {aiRemaining}</div>
+                {adminUnlocked && systemStatus?.automation ? (
+                  <div style={{ display: "grid", gap: 4, paddingTop: 6, borderTop: "1px solid rgba(94,164,195,0.12)", color: "rgba(148,175,198,0.78)", fontFamily: mono, fontSize: 10 }}>
+                    <div>News {formatLayerTime(systemStatus.automation.lastNewsRefreshAt)}</div>
+                    <div>AI {formatLayerTime(systemStatus.automation.lastAiRefreshAt)}</div>
+                  </div>
+                ) : null}
+              </div>
+            </HeaderPopover>
+          ) : null}
+          {showAdminMenu && !demoMode ? (
+            <HeaderPopover right={0} minWidth={228}>
+              <div style={{ padding: "12px", display: "grid", gap: 10 }}>
+                <div style={{ color: "rgba(103, 220, 255, 0.48)", fontSize: 10, fontFamily: mono, letterSpacing: "0.12em", textTransform: "uppercase" }}>Admin</div>
+                {adminUnlocked ? (
+                  <>
+                    <TopControlButton onClick={() => onAdminRefresh("news")}>Refresh Newsfeed</TopControlButton>
+                    <TopControlButton onClick={() => onAdminRefresh("ai")}>Master Refresh with AI</TopControlButton>
+                    {feedState?.message ? <div style={{ color: "rgba(148,175,198,0.76)", fontFamily: mono, fontSize: 10 }}>{feedState.message}</div> : null}
+                  </>
+                ) : (
+                  <TopControlButton onClick={onAdminUnlock}>Unlock Admin</TopControlButton>
+                )}
+              </div>
+            </HeaderPopover>
+          ) : null}
         </div>
         </>
       ) : (
         <div style={{ display: "flex", alignItems: "center", gap: 14, justifyContent: "center", flex: 1, minWidth: 0, flexWrap: "wrap" }}>
           {navButtons}
+        </div>
+      )}
+
+      <div style={{ display: "flex", alignItems: "center", gap: 10, flexShrink: 0, position: "relative" }}>
+        {!compact && (
           <select
             value={selectedLens}
             onChange={(event) => onLensChange?.(event.target.value)}
@@ -4479,128 +4610,100 @@ function TopBar({ counts, bordersLoaded, activeLayers, onLayerToggle, isMobile, 
               fontSize: 10,
               letterSpacing: "0.08em",
               padding: "0 10px",
-              minWidth: 172,
+              minWidth: 158,
             }}
           >
             {DECISION_LENSES.map((lens) => (
               <option key={lens.id} value={lens.id}>{lens.label}</option>
             ))}
           </select>
-        </div>
-      )}
-
-      <div style={{ display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
-        {!compact && (
-          <div style={{
-            display: "flex",
-            alignItems: "center",
-            gap: 8,
-            padding: "7px 10px",
-            borderRadius: 14,
-            background: "rgba(6, 15, 30, 0.76)",
-            border: "1px solid rgba(87,216,255,0.14)",
-          }}>
-            <span style={{ color: "rgba(150,200,240,0.55)", fontSize: 10, fontFamily: mono, letterSpacing: "0.16em", textTransform: "uppercase" }}>
-              Layers
-            </span>
-            <DesktopLayerBar activeLayers={activeLayers} onToggle={onLayerToggle}
-              bordersLoaded={bordersLoaded} layerEntries={layerEntries} />
-          </div>
         )}
 
-        {!compact && (
-          <button onClick={onPersonalize} style={{
-            display: "flex", alignItems: "center", gap: 5, padding: "8px 12px",
-            background: showPersonalize ? "rgba(0,180,255,0.12)" : "rgba(6,15,30,0.76)",
-            border: `1px solid ${showPersonalize ? "rgba(0,180,255,0.32)" : "rgba(87,216,255,0.14)"}`,
-            borderRadius: 14, cursor: "pointer", minHeight: 36, transition: "all 0.18s ease",
-          }}>
-            <span style={{ color: showPersonalize ? "#44ccff" : "rgba(200,220,255,0.55)",
-              fontSize: 10, fontFamily: mono, letterSpacing: "0.12em" }}>Focus</span>
-          </button>
-        )}
-
-        {!compact ? <button onClick={onWarRoom} style={{
-          display: "flex", alignItems: "center", gap: 5, padding: "8px 12px",
-          background: showWarRoom ? "rgba(255,34,51,0.12)" : "rgba(6,15,30,0.76)",
-          border: `1px solid ${showWarRoom ? "rgba(255,34,51,0.28)" : "rgba(87,216,255,0.14)"}`,
-          borderRadius: 14, cursor: "pointer", minHeight: 36, transition: "all 0.18s ease",
-        }}>
-          <span style={{ color: showWarRoom ? "#ff4455" : "rgba(200,220,255,0.55)",
-            fontSize: 10, fontFamily: mono, letterSpacing: "0.12em" }}>War Room</span>
-        </button> : null}
-
+        {!compact ? <TopControlButton onClick={() => { setShowLayersMenu((value) => !value); setShowStatusMenu(false); setShowAdminMenu(false); }} active={showLayersMenu}>Layers</TopControlButton> : null}
+        {!compact ? <TopControlButton onClick={onWarRoom} active={showWarRoom}>War Room</TopControlButton> : null}
         {!compact ? (
-          adminUnlocked ? (
-            <div style={{ display: "flex", gap: 8 }}>
-              <button onClick={() => onAdminRefresh("news")} disabled={refreshState?.status === "running"} style={{
-                display: "flex", alignItems: "center", gap: 5, padding: "8px 12px",
-                background: refreshState?.status === "success" ? "rgba(0,140,90,0.18)" : refreshState?.status === "error" ? "rgba(180,30,60,0.18)" : "rgba(6,15,30,0.76)",
-                border: `1px solid ${refreshState?.status === "success" ? "rgba(0,200,140,0.28)" : refreshState?.status === "error" ? "rgba(255,80,120,0.28)" : "rgba(87,216,255,0.14)"}`,
-                borderRadius: 14, cursor: refreshState?.status === "running" ? "wait" : "pointer", minHeight: 36,
-              }}>
-                <span style={{ color: "rgba(200,220,255,0.7)", fontSize: 10, fontFamily: mono, letterSpacing: "0.12em" }}>
-                  Refresh Newsfeed
-                </span>
-              </button>
-              <button onClick={() => onAdminRefresh("ai")} disabled={refreshState?.status === "running"} style={{
-                display: "flex", alignItems: "center", gap: 5, padding: "8px 12px",
-                background: "rgba(58,20,22,0.82)",
-                border: "1px solid rgba(255,120,88,0.2)",
-                borderRadius: 14, cursor: refreshState?.status === "running" ? "wait" : "pointer", minHeight: 36,
-              }}>
-                <span style={{ color: "#ffd4cc", fontSize: 10, fontFamily: mono, letterSpacing: "0.12em" }}>
-                  Master Refresh with AI
-                </span>
-              </button>
-            </div>
-          ) : !demoMode ? (
-            <button onClick={onAdminUnlock} style={{
-              display: "flex", alignItems: "center", gap: 5, padding: "8px 12px",
-              background: "rgba(6,15,30,0.76)",
-              border: "1px solid rgba(87,216,255,0.14)",
-              borderRadius: 14, cursor: "pointer", minHeight: 36,
-            }}>
-              <span style={{ color: "rgba(200,220,255,0.7)", fontSize: 10, fontFamily: mono, letterSpacing: "0.12em" }}>
-                Admin Unlock
-              </span>
-            </button>
-          ) : null
+          <TopControlButton onClick={() => { setShowStatusMenu((value) => !value); setShowLayersMenu(false); setShowAdminMenu(false); }} subtle>
+            Operational · {aiRemaining}
+          </TopControlButton>
+        ) : null}
+        {!compact && !demoMode ? (
+          <TopControlButton onClick={() => { setShowAdminMenu((value) => !value); setShowLayersMenu(false); setShowStatusMenu(false); }} subtle>
+            Admin
+          </TopControlButton>
         ) : null}
 
-        {!compact ? (
-          <div style={{
-            minWidth: 168,
-            padding: "8px 12px",
-            borderRadius: 14,
-            background: "rgba(6, 15, 30, 0.76)",
-            border: "1px solid rgba(87,216,255,0.14)",
-          }}>
-            <div style={{ color: "rgba(171,208,228,0.72)", fontSize: 10, fontFamily: mono, letterSpacing: "0.14em", textTransform: "uppercase" }}>
-              Intel Status
-            </div>
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 4, gap: 10 }}>
-              <span style={{ color: "#4ed69f", fontFamily: mono, fontSize: 10, letterSpacing: "0.12em", textTransform: "uppercase" }}>
-                Operational
-              </span>
-              <span style={{ color: "rgba(148,175,198,0.7)", fontFamily: mono, fontSize: 10 }}>
-                {time} UTC
-              </span>
-            </div>
-            {systemStatus?.automation ? (
-              <div style={{ display: "grid", gap: 2, marginTop: 8, color: "rgba(148,175,198,0.76)", fontFamily: mono, fontSize: 9 }}>
-                <div>News {formatLayerTime(systemStatus.automation.lastNewsRefreshAt)}</div>
-                <div>AI {formatLayerTime(systemStatus.automation.lastAiRefreshAt)}</div>
-                <div>AI remaining {systemStatus.aiRemainingToday}</div>
-                {layersStatus?.flights?.remainingMonthlyCalls != null ? <div>Flights left {layersStatus.flights.remainingMonthlyCalls}</div> : null}
-                {systemStatus.automation.nextEstimatedNewsRefresh ? <div>Next news {formatLayerTime(systemStatus.automation.nextEstimatedNewsRefresh)}</div> : null}
-                {systemStatus.automation.nextEstimatedAiRefresh ? <div>Next AI {formatLayerTime(systemStatus.automation.nextEstimatedAiRefresh)}</div> : null}
-                {feedState?.message ? <div>{feedState.message}</div> : null}
+        {showLayersMenu && !compact ? (
+          <HeaderPopover right={demoMode ? 0 : 88} minWidth={252}>
+            <div style={{ padding: "12px", display: "grid", gap: 10 }}>
+              <div style={{ color: "rgba(103, 220, 255, 0.48)", fontSize: 10, fontFamily: mono, letterSpacing: "0.12em", textTransform: "uppercase" }}>Layers</div>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                {publicLayerEntries.map(([key, def]) => (
+                  <LayerToggleChip key={key} layerKey={key} def={def} active={activeLayers[key]} onToggle={onLayerToggle} />
+                ))}
               </div>
-            ) : null}
-          </div>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, paddingTop: 8, borderTop: "1px solid rgba(94,164,195,0.12)" }}>
+                <span style={{ color: "rgba(214,235,255,0.84)", fontSize: 12, fontFamily: bodyFont }}>Live Sun</span>
+                <TopControlButton active={liveSunEnabled} onClick={onToggleLiveSun}>{liveSunEnabled ? "On" : "Off"}</TopControlButton>
+              </div>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 }}>
+                <span style={{ color: "rgba(214,235,255,0.84)", fontSize: 12, fontFamily: bodyFont }}>Borders</span>
+                <TrafficPill level={bordersLoaded ? "green" : "neutral"}>{bordersLoaded ? "On" : "Loading"}</TrafficPill>
+              </div>
+              <button onClick={onPersonalize} style={{
+                textAlign: "left",
+                background: "rgba(8,20,36,0.66)",
+                border: `1px solid ${showPersonalize ? "rgba(0,180,255,0.32)" : "rgba(94,164,195,0.12)"}`,
+                color: showPersonalize ? "#8fe7ff" : "rgba(214,235,255,0.84)",
+                borderRadius: 12,
+                padding: "10px 12px",
+                cursor: "pointer",
+                fontFamily: bodyFont,
+                fontSize: 12,
+              }}>
+                Focus & watchlist
+              </button>
+            </div>
+          </HeaderPopover>
+        ) : null}
+
+        {showStatusMenu && !compact ? (
+          <HeaderPopover right={demoMode ? 0 : 88} minWidth={232}>
+            <div style={{ padding: "12px", display: "grid", gap: 8 }}>
+              <div style={{ color: "rgba(103, 220, 255, 0.48)", fontSize: 10, fontFamily: mono, letterSpacing: "0.12em", textTransform: "uppercase" }}>Operational status</div>
+              <div style={{ display: "flex", justifyContent: "space-between", gap: 12 }}>
+                <span style={{ color: "#4ed69f", fontFamily: mono, fontSize: 10, letterSpacing: "0.08em", textTransform: "uppercase" }}>Operational</span>
+                <span style={{ color: "rgba(148,175,198,0.78)", fontFamily: mono, fontSize: 10 }}>{time} UTC</span>
+              </div>
+              <div style={{ color: "rgba(214,235,255,0.84)", fontSize: 12, fontFamily: bodyFont }}>AI remaining today {aiRemaining}</div>
+              {demoMode ? <TrafficPill level="neutral">Public Preview</TrafficPill> : null}
+              {adminUnlocked && systemStatus?.automation ? (
+                <div style={{ display: "grid", gap: 4, paddingTop: 6, borderTop: "1px solid rgba(94,164,195,0.12)", color: "rgba(148,175,198,0.78)", fontFamily: mono, fontSize: 10 }}>
+                  <div>News {formatLayerTime(systemStatus.automation.lastNewsRefreshAt)}</div>
+                  <div>AI {formatLayerTime(systemStatus.automation.lastAiRefreshAt)}</div>
+                </div>
+              ) : null}
+            </div>
+          </HeaderPopover>
+        ) : null}
+
+        {showAdminMenu && !compact && !demoMode ? (
+          <HeaderPopover right={0} minWidth={228}>
+            <div style={{ padding: "12px", display: "grid", gap: 10 }}>
+              <div style={{ color: "rgba(103, 220, 255, 0.48)", fontSize: 10, fontFamily: mono, letterSpacing: "0.12em", textTransform: "uppercase" }}>Admin</div>
+              {adminUnlocked ? (
+                <>
+                  <TopControlButton onClick={() => onAdminRefresh("news")}>Refresh Newsfeed</TopControlButton>
+                  <TopControlButton onClick={() => onAdminRefresh("ai")}>Master Refresh with AI</TopControlButton>
+                  {feedState?.message ? <div style={{ color: "rgba(148,175,198,0.76)", fontFamily: mono, fontSize: 10 }}>{feedState.message}</div> : null}
+                </>
+              ) : (
+                <TopControlButton onClick={onAdminUnlock}>Unlock Admin</TopControlButton>
+              )}
+            </div>
+          </HeaderPopover>
         ) : null}
       </div>
+    </div>
     </div>
   );
 }
@@ -4609,26 +4712,53 @@ function TopBar({ counts, bordersLoaded, activeLayers, onLayerToggle, isMobile, 
 // DESKTOP LEFT SIDEBAR
 // ═══════════════════════════════════════════════════════════════════════════════
 
-function DesktopSidebar({ events, selectedEvent, onSelect, topOffset = TOP_BAR_HEIGHT }) {
+function DesktopSidebar({ events, selectedEvent, onSelect, modeHours, onModeChange, topOffset = TOP_BAR_HEIGHT }) {
+  const options = [
+    { label: "24h", value: 24 },
+    { label: "7d", value: 24 * 7 },
+    { label: "30d", value: 24 * 30 },
+  ];
   return (
     <div style={{
       position: "absolute", left: 0, top: topOffset, bottom: 0, width: 284,
-      background: "rgba(4,10,21,0.82)", backdropFilter: "blur(16px)",
+      background: "rgba(4,10,21,0.78)", backdropFilter: "blur(16px)",
       WebkitBackdropFilter: "blur(14px)",
       borderRight: "1px solid rgba(87,216,255,0.12)",
       display: "flex", flexDirection: "column", zIndex: 30,
     }}>
-      <div style={{ padding: "16px 18px 14px", borderBottom: "1px solid rgba(87,216,255,0.08)",
+      <div style={{ padding: "18px 18px 16px", borderBottom: "1px solid rgba(87,216,255,0.08)",
         flexShrink: 0 }}>
         <div style={{ color: "rgba(0,200,255,0.38)", fontSize: 10, fontFamily: mono,
-          letterSpacing: "0.18em", textTransform: "uppercase" }}>ACTIVE EVENTS</div>
-        <div style={{ color: "rgba(0,200,255,0.62)", fontSize: 12, fontFamily: mono, marginTop: 6 }}>
-          {events.length} TRACKED
+          letterSpacing: "0.14em", textTransform: "uppercase" }}>Active Signals</div>
+        <div style={{ color: "rgba(214,235,255,0.92)", fontSize: 22, fontFamily: display, fontWeight: 700, marginTop: 6 }}>
+          {events.length}
         </div>
-        <div style={{ display: "flex", gap: 10, marginTop: 12, flexWrap: "wrap" }}>
+        <div style={{ color: "rgba(148,175,198,0.72)", fontSize: 12, lineHeight: 1.5, marginTop: 4, fontFamily: bodyFont }}>
+          Live geopolitical signals prioritized for the current lens.
+        </div>
+        <div style={{ display: "flex", gap: 8, marginTop: 14, flexWrap: "wrap" }}>
           <TrafficPill level="red">{events.filter((ev) => ev.intensity === "high").length} H</TrafficPill>
           <TrafficPill level="amber">{events.filter((ev) => ev.intensity === "medium").length} M</TrafficPill>
           <TrafficPill level="neutral">{events.filter((ev) => ev.intensity === "low").length} L</TrafficPill>
+        </div>
+        <div style={{ display: "flex", gap: 8, marginTop: 14 }}>
+          {options.map((option) => (
+            <button key={option.value} onClick={() => onModeChange?.(option.value)} style={{
+              flex: 1,
+              minHeight: 34,
+              borderRadius: 12,
+              cursor: "pointer",
+              background: modeHours === option.value ? "rgba(56, 189, 248, 0.14)" : "rgba(8,20,36,0.66)",
+              border: `1px solid ${modeHours === option.value ? "rgba(87,216,255,0.36)" : "rgba(83, 148, 182, 0.16)"}`,
+              color: modeHours === option.value ? "#88ddff" : "rgba(150,200,240,0.62)",
+              fontSize: 10,
+              fontFamily: mono,
+              letterSpacing: "0.08em",
+              textTransform: "uppercase",
+            }}>
+              {option.label}
+            </button>
+          ))}
         </div>
       </div>
       <div style={sharedPanelBodyStyle({ flex: 1 })}>
@@ -4643,50 +4773,50 @@ function DesktopSidebar({ events, selectedEvent, onSelect, topOffset = TOP_BAR_H
           const sel  = selectedEvent?.id === ev.id;
           return (
             <div key={ev.id} onClick={() => onSelect(ev)} style={{
-              padding: "14px 18px",
+              padding: "16px 18px",
               borderBottom: "1px solid rgba(87,216,255,0.06)",
               borderLeft: `3px solid ${sel ? cfg.color : "transparent"}`,
-              background: sel ? "rgba(8,34,56,0.42)" : "transparent",
+              background: sel ? "rgba(8,34,56,0.34)" : "transparent",
               cursor: "pointer", transition: "all 0.15s ease",
             }}
             onMouseEnter={e => { if (!sel) e.currentTarget.style.background = "rgba(8,28,48,0.3)"; }}
             onMouseLeave={e => { if (!sel) e.currentTarget.style.background = "transparent"; }}
             >
-              <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 8, flexWrap: "wrap" }}>
+              <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 10, flexWrap: "wrap" }}>
                 <TrafficPill level={ev.intensity === "high" ? "red" : ev.intensity === "medium" ? "amber" : "green"}>
                   {ev.intensity}
                 </TrafficPill>
-                <span style={{ color: "rgba(0,180,255,0.42)", fontSize: 9, fontFamily: mono,
-                  letterSpacing: "0.12em", textTransform: "uppercase" }}>
-                  {ev.intensity} · {ev.tone}
-                </span>
-                {ev.lensMatched ? <TrafficPill level="neutral">{ev.lensLabel}</TrafficPill> : null}
+                <TrafficPill level="neutral">{ev.category ?? "Political"}</TrafficPill>
                 {ev.watchlistMatch?.matched ? <TrafficPill level="amber">Watchlist</TrafficPill> : null}
               </div>
-              <div style={{ color: sel ? "#c8e8ff" : "rgba(235,244,255,0.9)", fontSize: 18,
-                fontFamily: display, fontWeight: 700, lineHeight: 1.2, marginBottom: 8, letterSpacing: "0.02em" }}>
+              <div style={{ color: sel ? "#c8e8ff" : "rgba(235,244,255,0.9)", fontSize: 17,
+                fontFamily: display, fontWeight: 700, lineHeight: 1.22, marginBottom: 8, letterSpacing: "0.01em" }}>
                 {ev.title}
               </div>
-              <div style={{ color: "rgba(178,205,228,0.72)", fontSize: 13, lineHeight: 1.55, marginBottom: 10, fontFamily: bodyFont }}>
+              <div style={{ color: "rgba(178,205,228,0.72)", fontSize: 13, lineHeight: 1.6, marginBottom: 12, fontFamily: bodyFont }}>
                 {ev.briefSummary}
               </div>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                <div style={{ color: "rgba(0,160,220,0.38)", fontSize: 10, fontFamily: mono }}>
-                  {Number.isFinite(ev.lat) && Number.isFinite(ev.lng) ? `${ev.lat.toFixed(1)}°, ${ev.lng.toFixed(1)}°` : ev.location?.label ?? "Region under review"}
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
+                <div style={{ color: "rgba(120,178,214,0.58)", fontSize: 10, fontFamily: mono, letterSpacing: "0.04em" }}>
+                  {ev.location?.label ?? "Region under review"}
                 </div>
-                {ev.priorityScore !== undefined && (
-                  <span style={{ color: pcfg.color, fontSize: 9, fontFamily: mono,
-                    fontWeight: 700, background: pcfg.bg,
-                    border: `1px solid ${pcfg.border}`, borderRadius: 999,
-                    padding: "4px 8px" }}>{Math.round(ev.lensPriorityScore ?? ev.priorityScore)}</span>
-                )}
+                <span style={{ color: pcfg.color, fontSize: 9, fontFamily: mono,
+                  fontWeight: 700, background: pcfg.bg,
+                  border: `1px solid ${pcfg.border}`, borderRadius: 999,
+                  padding: "4px 8px" }}>{Math.round(ev.lensPriorityScore ?? ev.priorityScore ?? 0)}</span>
               </div>
-              <div style={{ marginTop: 10, display: "flex", justifyContent: "space-between", gap: 8, color: "rgba(150,200,240,0.5)", fontSize: 10, fontFamily: mono, flexWrap: "wrap" }}>
-                <span>{ev.category ?? "Political"}</span>
-                <span>SEV {ev.severityScore ?? 0}</span>
-                <span>IMP {ev.impactScore ?? 0}</span>
-                <span>CONF {ev.confidence}</span>
-                <span>{ev.sourceSignals?.sourceCount ?? 0} src / {ev.sourceSignals?.corroboratedCount ?? 0} corr</span>
+              <div style={{ marginTop: 12, display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                <div style={{ padding: "8px 10px", borderRadius: 12, background: "rgba(8,20,36,0.58)", border: "1px solid rgba(94,164,195,0.1)" }}>
+                  <div style={{ color: "rgba(120,178,214,0.52)", fontSize: 9, fontFamily: mono, letterSpacing: "0.08em", textTransform: "uppercase" }}>Impact</div>
+                  <div style={{ color: "#eaf7ff", fontSize: 14, fontFamily: display, fontWeight: 700, marginTop: 4 }}>{ev.impactScore ?? 0}</div>
+                </div>
+                <div style={{ padding: "8px 10px", borderRadius: 12, background: "rgba(8,20,36,0.58)", border: "1px solid rgba(94,164,195,0.1)" }}>
+                  <div style={{ color: "rgba(120,178,214,0.52)", fontSize: 9, fontFamily: mono, letterSpacing: "0.08em", textTransform: "uppercase" }}>Confidence</div>
+                  <div style={{ color: "#eaf7ff", fontSize: 14, fontFamily: display, fontWeight: 700, marginTop: 4 }}>{ev.confidence}</div>
+                </div>
+              </div>
+              <div style={{ marginTop: 10, display: "flex", justifyContent: "space-between", gap: 8, color: "rgba(150,200,240,0.54)", fontSize: 10, fontFamily: mono, flexWrap: "wrap" }}>
+                <span>{ev.sourceSignals?.sourceCount ?? 0} sources</span>
                 <span>{ev.recentTrend ?? "Stable"}</span>
                 <span>{getDataFreshness(ev.timestamp).label}</span>
               </div>
@@ -4727,7 +4857,7 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
     satellites: false,
     social: false,
     selectedObjectDetail: true,
-    timeline: true,
+    timeline: false,
   });
   const [showWarRoom,     setShowWarRoom]     = useState(false);
   const [liveEvents,      setLiveEvents]      = useState(SCORED_EVENTS);
@@ -5872,7 +6002,9 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
           onLensChange={setSelectedLens}
           demoMode={DEMO_MODE}
           feedState={feedState}
-          layersStatus={layersStatus} />
+          layersStatus={layersStatus}
+          liveSunEnabled={liveSunEnabled}
+          onToggleLiveSun={() => setLiveSunEnabled((current) => !current)} />
 
         {!isMobile && (
           <>
@@ -5985,7 +6117,14 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
 
         {/* DESKTOP: Left sidebar */}
         {!isMobile && panelVisibility.events && activeLayers.intelBoard && (
-          <DesktopSidebar events={filteredEvents} selectedEvent={selectedEvent} onSelect={focusEvent} topOffset={headerHeight} />
+          <DesktopSidebar
+            events={filteredEvents}
+            selectedEvent={selectedEvent}
+            onSelect={focusEvent}
+            modeHours={timelineHours}
+            onModeChange={setTimelineHours}
+            topOffset={headerHeight}
+          />
         )}
 
         {/* WAR ROOM PANEL */}

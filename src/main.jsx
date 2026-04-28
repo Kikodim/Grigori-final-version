@@ -95,23 +95,23 @@ function Shell() {
         left: isCompact ? 12 : "auto",
         bottom: isCompact ? "calc(env(safe-area-inset-bottom, 0px) + 10px)" : "calc(env(safe-area-inset-bottom, 0px) + 14px)",
         zIndex: 2500,
-        color: "rgba(148,163,184,0.68)",
-        fontSize: isCompact ? 9 : 10,
-        letterSpacing: isCompact ? "0.12em" : "0.18em",
+        color: "rgba(148,163,184,0.54)",
+        fontSize: isCompact ? 8.5 : 9,
+        letterSpacing: isCompact ? "0.08em" : "0.12em",
         textTransform: "uppercase",
         fontFamily: "'Share Tech Mono', 'IBM Plex Mono', monospace",
         pointerEvents: "none",
-        padding: isCompact ? "8px 10px" : "8px 12px",
+        padding: isCompact ? "7px 9px" : "7px 10px",
         borderRadius: 999,
-        background: "rgba(3, 9, 22, 0.62)",
-        border: "1px solid rgba(86, 146, 180, 0.18)",
-        backdropFilter: "blur(14px)",
+        background: "rgba(3, 9, 22, 0.42)",
+        border: "1px solid rgba(86, 146, 180, 0.12)",
+        backdropFilter: "blur(10px)",
         textAlign: "center",
         whiteSpace: isCompact ? "normal" : "nowrap",
-        maxWidth: isCompact ? "calc(100vw - 24px)" : "min(78vw, 560px)",
+        maxWidth: isCompact ? "calc(100vw - 24px)" : "min(72vw, 420px)",
         lineHeight: 1.45,
       }}>
-        Built by oryth.io · Open-source intelligence signals. Not financial advice.
+        Built by oryth.io · OSINT signals · Not financial advice
       </div>
     </div>
   );
