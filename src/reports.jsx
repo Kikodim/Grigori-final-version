@@ -443,9 +443,12 @@ function WaitlistAdminPanel({ entries, status, onLoad }) {
 function AuthPanel({ configured, session, authMode, setAuthMode, authForm, setAuthForm, onAuth, onLogout, authMessage }) {
   if (!configured) {
     return (
-      <ShellCard title="Supabase Auth Not Configured" eyebrow="Premium access">
-        <div style={{ color: "#cbd5e1", lineHeight: 1.8 }}>
-          Add <code>VITE_SUPABASE_URL</code> and <code>VITE_SUPABASE_ANON_KEY</code> to enable sign-up, sign-in, and session persistence for Personalized Reports.
+      <ShellCard title="Premium Access Coming Soon" eyebrow="Private preview">
+        <div style={{ color: "#cbd5e1", lineHeight: 1.8, marginBottom: 16 }}>
+          Personalized Reports are currently in private preview. Join the early-access list to help shape the first rollout.
+        </div>
+        <div style={{ color: "#94a3b8", lineHeight: 1.75 }}>
+          We’re opening access carefully for operators, analysts, and strategic users who want tailored geopolitical briefings built on Grigori’s live intelligence engine.
         </div>
       </ShellCard>
     );
@@ -453,7 +456,7 @@ function AuthPanel({ configured, session, authMode, setAuthMode, authForm, setAu
 
   if (session?.user) {
     return (
-      <ShellCard title={session.user.email || "Authenticated"} eyebrow="Signed in">
+      <ShellCard title={session.user.email || "Premium Preview Access"} eyebrow="Signed in">
         <div style={{ color: "#cbd5e1", lineHeight: 1.8, marginBottom: 18 }}>
           Your premium workspace is available in preview mode. Subscription checkout and portal access will be activated in a later phase.
         </div>
@@ -465,16 +468,20 @@ function AuthPanel({ configured, session, authMode, setAuthMode, authForm, setAu
   }
 
   return (
-    <ShellCard title="Sign In To Premium Preview" eyebrow="Account access">
+    <ShellCard title="Access Personalized Reports" eyebrow="Premium preview">
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 18 }}>
-        {["login", "signup", "reset"].map((mode) => (
+        {[
+          { key: "login", label: "Sign In" },
+          { key: "signup", label: "Sign Up" },
+          { key: "reset", label: "Reset Password" },
+        ].map((mode) => (
           <button
-            key={mode}
-            onClick={() => setAuthMode(mode)}
+            key={mode.key}
+            onClick={() => setAuthMode(mode.key)}
             style={{
               border: "1px solid rgba(125,211,252,0.22)",
               borderRadius: 999,
-              background: authMode === mode ? "rgba(56,189,248,0.16)" : "rgba(15,23,42,0.82)",
+              background: authMode === mode.key ? "rgba(56,189,248,0.16)" : "rgba(15,23,42,0.82)",
               color: "#f8fafc",
               padding: "9px 14px",
               cursor: "pointer",
@@ -483,7 +490,7 @@ function AuthPanel({ configured, session, authMode, setAuthMode, authForm, setAu
               textTransform: "uppercase",
             }}
           >
-            {mode}
+            {mode.label}
           </button>
         ))}
       </div>
@@ -493,7 +500,7 @@ function AuthPanel({ configured, session, authMode, setAuthMode, authForm, setAu
           <AuthField label="Password" type="password" value={authForm.password} onChange={(value) => setAuthForm((current) => ({ ...current, password: value }))} placeholder="Secure password" />
         ) : null}
         <button onClick={onAuth} style={{ border: "1px solid rgba(125,211,252,0.28)", borderRadius: 999, background: "rgba(56,189,248,0.16)", color: "#f8fafc", padding: "11px 16px", cursor: "pointer", fontFamily: "monospace", letterSpacing: "0.08em", textTransform: "uppercase" }}>
-          {authMode === "signup" ? "Create Account" : authMode === "reset" ? "Send Reset Link" : "Login"}
+          {authMode === "signup" ? "Create Account" : authMode === "reset" ? "Send Reset Link" : "Sign In"}
         </button>
         {authMessage ? (
           <div style={{ color: authMessage.type === "error" ? "#fda4af" : "#93c5fd", fontSize: 12, fontFamily: "monospace" }}>
@@ -507,6 +514,7 @@ function AuthPanel({ configured, session, authMode, setAuthMode, authForm, setAu
 
 export default function ReportsApp({ activeView = "reports", onNavigate }) {
   const supabase = useMemo(() => getSupabaseBrowserClient(), []);
+  const authConfigured = Boolean(supabase);
   const [viewportWidth, setViewportWidth] = useState(() => (typeof window === "undefined" ? 1280 : window.innerWidth));
   const [session, setSession] = useState(null);
   const [authMode, setAuthMode] = useState("login");
@@ -757,8 +765,8 @@ export default function ReportsApp({ activeView = "reports", onNavigate }) {
               <button style={{ border: "1px solid rgba(196,181,253,0.28)", borderRadius: 999, background: "rgba(76,29,149,0.16)", color: "#f8fafc", padding: "11px 16px", cursor: "pointer", fontFamily: MONO_FONT, textTransform: "uppercase", letterSpacing: isMobile ? "0.08em" : "0.12em", width: "100%" }}>
                 Upgrade to Top Secret
               </button>
-              <button onClick={() => setAuthMode("login")} style={{ border: "1px solid rgba(71,85,105,0.82)", borderRadius: 999, background: "rgba(15,23,42,0.82)", color: "#f8fafc", padding: "11px 16px", cursor: "pointer", fontFamily: MONO_FONT, textTransform: "uppercase", letterSpacing: isMobile ? "0.08em" : "0.12em", width: "100%" }}>
-                Sign In
+              <button onClick={() => setAuthMode(authConfigured ? "login" : "signup")} style={{ border: "1px solid rgba(71,85,105,0.82)", borderRadius: 999, background: "rgba(15,23,42,0.82)", color: "#f8fafc", padding: "11px 16px", cursor: "pointer", fontFamily: MONO_FONT, textTransform: "uppercase", letterSpacing: isMobile ? "0.08em" : "0.12em", width: "100%" }}>
+                {authConfigured ? "Sign In" : "Join Early Access"}
               </button>
             </div>
           </div>
@@ -766,7 +774,7 @@ export default function ReportsApp({ activeView = "reports", onNavigate }) {
 
         <div style={{ display: "grid", gridTemplateColumns: heroGrid, gap: 22 }}>
           <AuthPanel
-            configured={Boolean(supabase)}
+            configured={authConfigured}
             session={session}
             authMode={authMode}
             setAuthMode={setAuthMode}

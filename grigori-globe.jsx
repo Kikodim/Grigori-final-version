@@ -1017,29 +1017,44 @@ function makeHotspot(ev) {
   const cfg   = INTENSITY[ev.intensity];
   const color = new THREE.Color(cfg.color);
 
-  // Surface position at lift = R + 0.015
-  // Priority-aware sizing: CRITICAL events are larger & brighter
   const scored     = SCORED_EVENTS.find(s => s.id === ev.id) || ev;
   const pLevel     = scored.priorityLevel || "LOW";
-  const sizeScale  = ({ CRITICAL: 1.5, HIGH: 1.25, WATCH: 1.0, LOW: 0.75 }[pLevel] ?? 1.0) * (ev.lensMatched ? 1.12 : 0.94);
-  const surfacePos = geoToVec3(ev.lat, ev.lng, R + 0.015);
-
-  // Normal vector pointing outward (used for lookAt)
-  const outward = geoToVec3(ev.lat, ev.lng, 1.0).normalize();
+  const sizeScale  = ({ CRITICAL: 1.16, HIGH: 1.04, WATCH: 0.92, LOW: 0.82 }[pLevel] ?? 0.9) * (ev.lensMatched ? 1.04 : 1);
+  const markerLat = Number.isFinite(ev.displayLat) ? ev.displayLat : ev.lat;
+  const markerLng = Number.isFinite(ev.displayLng) ? ev.displayLng : ev.lng;
+  const surfacePos = geoToVec3(markerLat, markerLng, R + 0.014);
+  const outward = geoToVec3(markerLat, markerLng, 1.0).normalize();
 
   const group = new THREE.Group();
   group.userData = { eventId: ev.id, surfaceNormal: outward.clone(), markerType: "event" };
 
-  // Scale: mobile enlarges tap targets; priority score enlarges visual size
-  const mobileScale = (IS_MOBILE ? 1.6 : 1.0) * sizeScale;
-  const addDisc = (rInner, rOuter, col, opacity, extra = {}) => {
-    const geo = rInner === 0
-      ? new THREE.CircleGeometry(rOuter * mobileScale, 28)
-      : new THREE.RingGeometry(rInner * mobileScale, rOuter * mobileScale, 32);
+  const mobileScale = (IS_MOBILE ? 1.28 : 1.0) * sizeScale;
+  const makeHex = (radius, opacity, fill = false, extra = {}) => {
+    const geo = fill
+      ? new THREE.CircleGeometry(radius * mobileScale, 6)
+      : new THREE.RingGeometry(radius * mobileScale * 0.72, radius * mobileScale, 6);
     const mat = new THREE.MeshBasicMaterial({
-      color: col, transparent: true, opacity,
+      color,
+      transparent: true,
+      opacity,
       side: THREE.DoubleSide, depthWrite: false,
-      depthTest: false,                      // always visible regardless of depth
+      depthTest: false,
+      blending: THREE.AdditiveBlending,
+      ...extra,
+    });
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.userData.baseOpacity = opacity;
+    return mesh;
+  };
+  const makeDisc = (radius, col, opacity, extra = {}) => {
+    const geo = new THREE.CircleGeometry(radius * mobileScale, 24);
+    const mat = new THREE.MeshBasicMaterial({
+      color: col,
+      transparent: true,
+      opacity,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+      depthTest: false,
       blending: THREE.AdditiveBlending,
       ...extra,
     });
@@ -1048,32 +1063,25 @@ function makeHotspot(ev) {
     return mesh;
   };
 
-  const hitRadius = ((IS_MOBILE ? 0.045 : 0.032) + Math.min(0.012, (Number(ev.impactScore ?? ev.importanceScore ?? 40) / 100) * 0.015)) * sizeScale;
-  const hitArea = addDisc(0, hitRadius, 0xffffff, 0.01, { depthTest: false });
+  const hitRadius = ((IS_MOBILE ? 0.04 : 0.028) + Math.min(0.009, (Number(ev.impactScore ?? ev.importanceScore ?? 40) / 100) * 0.012)) * Math.max(1, sizeScale * 0.95);
+  const hitArea = makeDisc(hitRadius, 0xffffff, 0.01, { depthTest: false });
   hitArea.userData = { clickable: true, eventId: ev.id, objectType: "event", objectData: ev };
   hitArea.userData.markerGroup = group;
 
-  // White core dot
-  const core = addDisc(0, 0.0034, 0xffffff, 0.96);
+  const groundGlow = makeDisc(0.013, color, 0.1, { depthTest: true });
+  groundGlow.position.z = -0.002;
+  groundGlow.userData.baseOpacity = 0.1;
+
+  const hexFill = makeHex(0.0085, 0.12, true, { depthTest: true });
+  const hexOutline = makeHex(0.0105, 0.82, false);
+  const core = makeDisc(0.0028, 0xffffff, 0.92);
   core.userData = { clickable: true, eventId: ev.id, objectType: "event", objectData: ev };
   core.userData.markerGroup = group;
 
-  // Surface anchor glow to visually pin the marker to the terrain
-  const groundGlow = addDisc(0.0105, 0.019, color, 0.13, { depthTest: true });
-  groundGlow.position.z = -0.002;
-  groundGlow.userData.baseOpacity = 0.14;
+  const pulse1 = makeHex(0.0136, ev.intensity === "high" ? 0.22 : 0.14, false);
+  pulse1.userData = { pulse: true, speed: cfg.pulseSpeed * 0.82, base: ev.intensity === "high" ? 0.22 : 0.14, phase: 0 };
 
-  // Coloured inner ring
-  const ring1 = addDisc(0.0044, 0.0078, color, 0.78);
-  if (ev.lensMatched) {
-    ring1.userData.baseOpacity = 0.96;
-  }
-
-  // Animated pulse rings
-  const pulse1 = addDisc(0.0088, 0.0126, color, ev.intensity === "high" ? 0.34 : 0.24);
-  pulse1.userData = { pulse: true, speed: cfg.pulseSpeed, base: 0.36, phase: 0 };
-
-  group.add(hitArea, groundGlow, core, ring1, pulse1);
+  group.add(hitArea, groundGlow, hexFill, hexOutline, core, pulse1);
 
   // Position on sphere and orient outward
   group.position.copy(surfacePos);
@@ -1081,6 +1089,48 @@ function makeHotspot(ev) {
   group.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), outward);
 
   return group;
+}
+
+function hashString(input) {
+  let hash = 2166136261;
+  for (let i = 0; i < input.length; i += 1) {
+    hash ^= input.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return Math.abs(hash >>> 0);
+}
+
+function distributeContactPositions(events) {
+  const grouped = new Map();
+  events.forEach((event) => {
+    if (!Number.isFinite(event.lat) || !Number.isFinite(event.lng)) return;
+    const label = String(event.location?.label ?? "region").toLowerCase();
+    const key = `${label}|${Number(event.lat).toFixed(1)}|${Number(event.lng).toFixed(1)}`;
+    if (!grouped.has(key)) grouped.set(key, []);
+    grouped.get(key).push(event);
+  });
+
+  return events.map((event) => {
+    if (!Number.isFinite(event.lat) || !Number.isFinite(event.lng)) return event;
+    const label = String(event.location?.label ?? "region").toLowerCase();
+    const key = `${label}|${Number(event.lat).toFixed(1)}|${Number(event.lng).toFixed(1)}`;
+    const group = grouped.get(key) ?? [event];
+    if (group.length <= 1) {
+      return { ...event, displayLat: event.lat, displayLng: event.lng };
+    }
+    const ordered = [...group].sort((a, b) => String(a.id).localeCompare(String(b.id)));
+    const index = ordered.findIndex((item) => item.id === event.id);
+    const angle = ((hashString(String(event.id)) % 360) * Math.PI) / 180 + index * 2.399963229728653;
+    const ring = Math.floor(index / 6);
+    const radiusDeg = 0.42 + ring * 0.34;
+    const latOffset = Math.sin(angle) * radiusDeg;
+    const lngOffset = (Math.cos(angle) * radiusDeg) / Math.max(0.35, Math.cos((event.lat * Math.PI) / 180));
+    return {
+      ...event,
+      displayLat: Math.max(-82, Math.min(82, event.lat + latOffset)),
+      displayLng: ((((event.lng + lngOffset) + 540) % 360) - 180),
+    };
+  });
 }
 
 function deriveConflictZones(events) {
@@ -3753,9 +3803,11 @@ function MobileBottomSheet({ events, selectedEvent, activeScenario, onScenarioCh
                              onOpenIntelBoard, refreshState, adminUnlocked, onAdminUnlock,
                              onSelectObject, allEvents = [],
                              onAdminRefresh, systemStatus, selectedLens, onLensChange,
-                             strategicBrief, demoMode = false }) {
+                             strategicBrief, demoMode = false, topEvents = [],
+                             liveSunEnabled = true, onToggleLiveSun = () => {},
+                             onSelectMarketCategory = () => {}, marketData = null }) {
   const [sheetState, setSheetState] = useState("peek");
-  const [activeTab, setActiveTab] = useState("events");
+  const [activeTab, setActiveTab] = useState("signals");
   const sheetRef   = useRef(null);
   const dragRef    = useRef({ startY: 0, startH: 0, dragging: false });
 
@@ -3766,7 +3818,7 @@ function MobileBottomSheet({ events, selectedEvent, activeScenario, onScenarioCh
   }, [selectedEvent]);
 
   useEffect(() => {
-    if (selectedEvent) setActiveTab("events");
+    if (selectedEvent) setActiveTab("signals");
   }, [selectedEvent]);
 
   const snapVh  = SHEET_STATES[sheetState].snapVh;
@@ -3852,7 +3904,7 @@ function MobileBottomSheet({ events, selectedEvent, activeScenario, onScenarioCh
             <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
               <span style={{ color: "rgba(0,200,255,0.5)", fontSize: 9, fontFamily: mono,
                 letterSpacing: "0.18em", textTransform: "uppercase" }}>
-                {events.length} ACTIVE EVENTS
+                {events.length} ACTIVE SIGNALS
               </span>
             </div>
           )}
@@ -3874,24 +3926,14 @@ function MobileBottomSheet({ events, selectedEvent, activeScenario, onScenarioCh
       {/* ── Content area ── */}
       <div style={{ flex: 1, overflow: "hidden", display: "flex", flexDirection: "column" }}>
 
-        {/* Layer toggles — always visible in half/full */}
         {sheetState !== "peek" && (
-          <div style={{ padding: "4px 18px 10px", borderBottom: "1px solid rgba(0,180,255,0.08)",
-            flexShrink: 0 }}>
-            <div style={{ display: "flex", gap: 8, overflowX: "auto", paddingBottom: 2,
-              WebkitOverflowScrolling: "touch" }}>
-              {layerEntries.map(([key, def]) => (
-                <LayerToggleChip key={key} layerKey={key} def={def}
-                  active={activeLayers[key]} onToggle={onLayerToggle} />
-              ))}
-            </div>
-            <div style={{ display: "flex", gap: 8, overflowX: "auto", paddingTop: 10, WebkitOverflowScrolling: "touch" }}>
-              <MobileSheetTabButton active={activeTab === "events"} onClick={() => setActiveTab("events")}>Events</MobileSheetTabButton>
-              <MobileSheetTabButton active={activeTab === "briefing"} onClick={() => setActiveTab("briefing")}>Intel Board</MobileSheetTabButton>
-              <MobileSheetTabButton active={activeTab === "market"} onClick={() => setActiveTab("market")}>Market Impact</MobileSheetTabButton>
-              {activeLayers.flights ? <MobileSheetTabButton active={activeTab === "flights"} onClick={() => setActiveTab("flights")}>Flights</MobileSheetTabButton> : null}
-              {activeLayers.satellites ? <MobileSheetTabButton active={activeTab === "satellites"} onClick={() => setActiveTab("satellites")}>Satellites</MobileSheetTabButton> : null}
-              {activeLayers.social ? <MobileSheetTabButton active={activeTab === "social"} onClick={() => setActiveTab("social")}>Social</MobileSheetTabButton> : null}
+          <div style={{ padding: "8px 14px 10px", borderBottom: "1px solid rgba(0,180,255,0.08)",
+            flexShrink: 0, background: "rgba(4,10,24,0.78)" }}>
+            <div style={{ display: "flex", gap: 8, overflowX: "auto", WebkitOverflowScrolling: "touch" }}>
+              <MobileSheetTabButton active={activeTab === "signals"} onClick={() => setActiveTab("signals")}>Signals</MobileSheetTabButton>
+              <MobileSheetTabButton active={activeTab === "layers"} onClick={() => setActiveTab("layers")}>Layers</MobileSheetTabButton>
+              <MobileSheetTabButton active={activeTab === "market"} onClick={() => setActiveTab("market")}>Market</MobileSheetTabButton>
+              <MobileSheetTabButton active={activeTab === "warroom"} onClick={() => setActiveTab("warroom")}>War Room</MobileSheetTabButton>
             </div>
           </div>
         )}
@@ -3904,7 +3946,7 @@ function MobileBottomSheet({ events, selectedEvent, activeScenario, onScenarioCh
           </div>
         ) : sheetState !== "peek" ? (
           <div style={sharedPanelBodyStyle({ flex: 1, padding: 14 })}>
-            {activeTab === "events" ? (
+            {activeTab === "signals" ? (
               <div style={{ display: "grid", gap: 10 }}>
                 {events.map(ev => {
                   const c    = INTENSITY[ev.intensity];
@@ -3919,6 +3961,10 @@ function MobileBottomSheet({ events, selectedEvent, activeScenario, onScenarioCh
                       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
                         <TrafficPill level={ev.intensity === "high" ? "red" : ev.intensity === "medium" ? "amber" : "green"}>{ev.intensity}</TrafficPill>
                         <TrafficPill level={ev.tone === "Escalating" ? "red" : ev.tone === "Stable" ? "neutral" : "green"}>{ev.tone}</TrafficPill>
+                      </div>
+                      <div style={{ display: "flex", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
+                        <TrafficPill level="neutral">{ev.category ?? "Political"}</TrafficPill>
+                        <span style={{ color: "rgba(0,180,255,0.42)", fontSize: 9, fontFamily: mono }}>{Math.round(ev.impactScore ?? ev.importanceScore ?? 0)} impact</span>
                       </div>
                       <div style={{ color: "#d6ebff", fontSize: 14, fontFamily: display, fontWeight: 700, lineHeight: 1.35 }}>{ev.title}</div>
                       <div style={{ color: "rgba(150,205,245,0.72)", fontSize: 11, lineHeight: 1.55, fontFamily: bodyFont }}>
@@ -3938,9 +3984,26 @@ function MobileBottomSheet({ events, selectedEvent, activeScenario, onScenarioCh
                   );
                 })}
               </div>
-            ) : activeTab === "briefing" ? (
+            ) : activeTab === "layers" ? (
               <div style={{ display: "grid", gap: 12 }}>
-                <div style={{ display: "grid", gap: 10 }}>
+                <div style={{ display: "grid", gap: 10, background: "rgba(8,20,36,0.78)", border: "1px solid rgba(94,164,195,0.14)", borderRadius: 14, padding: 12 }}>
+                  <div style={{ color: "rgba(103,220,255,0.48)", fontSize: 10, fontFamily: mono, letterSpacing: "0.14em", textTransform: "uppercase" }}>
+                    Display Layers
+                  </div>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                    {layerEntries.map(([key, def]) => (
+                      <LayerToggleChip key={key} layerKey={key} def={def} active={activeLayers[key]} onToggle={onLayerToggle} />
+                    ))}
+                  </div>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, paddingTop: 8, borderTop: "1px solid rgba(94,164,195,0.12)" }}>
+                    <span style={{ color: "rgba(214,235,255,0.84)", fontSize: 12, fontFamily: bodyFont }}>Live Sun</span>
+                    <TopControlButton active={liveSunEnabled} onClick={onToggleLiveSun}>{liveSunEnabled ? "On" : "Off"}</TopControlButton>
+                  </div>
+                </div>
+                <div style={{ display: "grid", gap: 10, background: "rgba(8,20,36,0.78)", border: "1px solid rgba(94,164,195,0.14)", borderRadius: 14, padding: 12 }}>
+                  <div style={{ color: "rgba(103,220,255,0.48)", fontSize: 10, fontFamily: mono, letterSpacing: "0.14em", textTransform: "uppercase" }}>
+                    Lens
+                  </div>
                   <select
                     value={selectedLens}
                     onChange={(event) => onLensChange?.(event.target.value)}
@@ -3960,21 +4023,7 @@ function MobileBottomSheet({ events, selectedEvent, activeScenario, onScenarioCh
                       <option key={lens.id} value={lens.id}>{lens.label}</option>
                     ))}
                   </select>
-                  <div style={{ background: "rgba(8,20,36,0.78)", border: "1px solid rgba(94,164,195,0.14)", borderRadius: 14, padding: 12 }}>
-                    <div style={{ color: "rgba(103,220,255,0.48)", fontSize: 10, fontFamily: mono, letterSpacing: "0.14em", textTransform: "uppercase", marginBottom: 8 }}>
-                      Today’s Strategic Brief
-                    </div>
-                    <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8 }}>
-                      {(strategicBrief?.topEscalatingRegions?.length ? strategicBrief.topEscalatingRegions : ["Awaiting next intelligence refresh."]).map((region) => (
-                        <TrafficPill key={region} level="amber">{region}</TrafficPill>
-                      ))}
-                    </div>
-                    <div style={{ color: "#d6ebff", fontSize: 12, lineHeight: 1.7, fontFamily: bodyFont }}>
-                      Chokepoint to watch: {strategicBrief?.chokepointToWatch ?? "Awaiting next intelligence refresh."}
-                    </div>
-                  </div>
                 </div>
-                <MobileBriefingContent briefing={briefing} onSelect={(eventId) => { onBriefingSelect(eventId); setSheetState("full"); }} />
                 <div style={{ background: "rgba(8,20,36,0.78)", border: "1px solid rgba(94,164,195,0.14)", borderRadius: 14, padding: 12 }}>
                   <div style={{ color: "rgba(103,220,255,0.48)", fontSize: 10, fontFamily: mono, letterSpacing: "0.14em", textTransform: "uppercase", marginBottom: 8 }}>
                     System Pulse
@@ -3996,117 +4045,128 @@ function MobileBottomSheet({ events, selectedEvent, activeScenario, onScenarioCh
                   }}>
                     Open Intel Board
                   </button>
-                </div>
-              </div>
-            ) : activeTab === "market" ? (
-              <MobileMarketImpactContent aggregate={marketImpact} onSelectCategory={setSelectedMarketKey} />
-            ) : activeTab === "flights" ? (
-              <div style={{ display: "grid", gap: 10 }}>
-                {flights.length === 0 ? (
-                  <div style={{ color: "rgba(130,185,230,0.62)", fontSize: 11, fontFamily: mono }}>Flight layer is enabled, but no cached flights are available yet.</div>
-                ) : flights.map((flight) => (
-                  <ObjectRowButton
-                    key={flight.id}
-                    item={{ ...flight, title: flight.flightNumber }}
-                    subtitle={`${flight.airline} · ${flight.departureAirport} → ${flight.arrivalAirport}`}
-                    onClick={() => onSelectObject?.({ type: "flight", data: flight })}
-                  />
-                ))}
-              </div>
-            ) : activeTab === "satellites" ? (
-              <div style={{ display: "grid", gap: 10 }}>
-                {satellites.length === 0 ? (
-                  <div style={{ color: "rgba(130,185,230,0.62)", fontSize: 11, fontFamily: mono }}>No satellite cache available yet.</div>
-                ) : satellites.map((satellite) => (
-                  <ObjectRowButton
-                    key={satellite.id}
-                    item={{ ...satellite, title: satellite.name }}
-                    subtitle={`${satellite.satelliteType} · NORAD ${satellite.noradId}`}
-                    onClick={() => onSelectObject?.({ type: "satellite", data: satellite })}
-                  />
-                ))}
-              </div>
-            ) : activeTab === "social" ? (
-              <div style={{ display: "grid", gap: 10 }}>
-                {socialSignals.length === 0 ? (
-                  <div style={{ color: "rgba(130,185,230,0.62)", fontSize: 11, fontFamily: mono }}>Social signals are unavailable or not configured.</div>
-                ) : socialSignals.map((signal) => {
-                  const corroboration = deriveSocialCorroboration(signal, events);
-                  return (
-                    <div key={signal.id} style={{ background: "rgba(8,20,36,0.78)", border: "1px solid rgba(94,164,195,0.14)", borderRadius: 14, padding: "12px 13px" }}>
-                      <div style={{ display: "flex", justifyContent: "space-between", gap: 8, marginBottom: 6 }}>
-                        <span style={{ color: "#d6ebff", fontFamily: display, fontWeight: 700, fontSize: 13 }}>{signal.title}</span>
-                        <TrafficPill level={corroboration.label === "Corroborated" ? "green" : corroboration.label === "Partially corroborated" ? "amber" : "neutral"}>
-                          {corroboration.label}
-                        </TrafficPill>
-                      </div>
-                      <div style={{ color: "rgba(150,205,245,0.68)", fontSize: 11, lineHeight: 1.6, marginBottom: 8 }}>{signal.summary}</div>
-                      <a href={signal.url} target="_blank" rel="noreferrer" style={{ color: "#89ddff", fontSize: 11, textDecoration: "none" }}>
-                        View original post
-                      </a>
+                  {!demoMode && adminUnlocked ? (
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginTop: 10 }}>
+                      <button
+                        onClick={() => onAdminRefresh("news")}
+                        disabled={refreshState?.status === "running"}
+                        style={{
+                          minHeight: 40,
+                          borderRadius: 12,
+                          border: "1px solid rgba(87,216,255,0.18)",
+                          background: "rgba(10,31,52,0.76)",
+                          color: "#d6ebff",
+                          fontFamily: mono,
+                          fontSize: 10,
+                          letterSpacing: "0.1em",
+                          textTransform: "uppercase",
+                        }}
+                      >
+                        Refresh News
+                      </button>
+                      <button
+                        onClick={() => onAdminRefresh("ai")}
+                        disabled={refreshState?.status === "running"}
+                        style={{
+                          minHeight: 40,
+                          borderRadius: 12,
+                          border: "1px solid rgba(255,144,92,0.18)",
+                          background: "rgba(56,24,18,0.76)",
+                          color: "#ffd9cc",
+                          fontFamily: mono,
+                          fontSize: 10,
+                          letterSpacing: "0.1em",
+                          textTransform: "uppercase",
+                        }}
+                      >
+                        Refresh AI
+                      </button>
                     </div>
-                  );
-                })}
-              </div>
-            ) : null}
-
-            {sheetState !== "peek" ? (
-              <div style={{ marginTop: 14, display: "grid", gap: 10 }}>
-                {!demoMode && adminUnlocked ? (
-                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                  ) : !demoMode ? (
                     <button
-                      onClick={() => onAdminRefresh("news")}
-                      disabled={refreshState?.status === "running"}
+                      onClick={onAdminUnlock}
                       style={{
+                        marginTop: 10,
                         minHeight: 40,
+                        width: "100%",
                         borderRadius: 12,
                         border: "1px solid rgba(87,216,255,0.18)",
-                        background: "rgba(10,31,52,0.76)",
+                        background: "rgba(10,31,52,0.72)",
                         color: "#d6ebff",
                         fontFamily: mono,
                         fontSize: 10,
-                        letterSpacing: "0.1em",
+                        letterSpacing: "0.12em",
                         textTransform: "uppercase",
                       }}
                     >
-                      Refresh Newsfeed
+                      Admin Unlock
                     </button>
-                    <button
-                      onClick={() => onAdminRefresh("ai")}
-                      disabled={refreshState?.status === "running"}
-                      style={{
-                        minHeight: 40,
-                        borderRadius: 12,
-                        border: "1px solid rgba(255,144,92,0.18)",
-                        background: "rgba(56,24,18,0.76)",
-                        color: "#ffd9cc",
-                        fontFamily: mono,
-                        fontSize: 10,
-                        letterSpacing: "0.1em",
-                        textTransform: "uppercase",
-                      }}
-                    >
-                      Master Refresh with AI
-                    </button>
+                  ) : null}
+                </div>
+              </div>
+            ) : activeTab === "market" ? (
+              <div style={{ display: "grid", gap: 12 }}>
+                <div style={{ background: "rgba(8,20,36,0.78)", border: "1px solid rgba(94,164,195,0.14)", borderRadius: 14, padding: 12 }}>
+                  <div style={{ color: "rgba(103,220,255,0.48)", fontSize: 10, fontFamily: mono, letterSpacing: "0.14em", textTransform: "uppercase", marginBottom: 8 }}>
+                    Market Context
                   </div>
-                ) : !demoMode ? (
-                  <button
-                    onClick={onAdminUnlock}
-                    style={{
-                      minHeight: 40,
-                      borderRadius: 12,
-                      border: "1px solid rgba(87,216,255,0.18)",
-                      background: "rgba(10,31,52,0.72)",
-                      color: "#d6ebff",
-                      fontFamily: mono,
-                      fontSize: 10,
-                      letterSpacing: "0.12em",
-                      textTransform: "uppercase",
-                    }}
-                  >
-                    Admin Unlock
-                  </button>
-                ) : null}
+                  <MobileMarketImpactContent aggregate={marketImpact} onSelectCategory={onSelectMarketCategory} />
+                  <div style={{ color: "rgba(140,190,228,0.62)", fontSize: 10, lineHeight: 1.6, marginTop: 10, fontFamily: bodyFont }}>
+                    Market data and geopolitical scores are contextual intelligence signals, not financial advice.
+                  </div>
+                  {!marketData?.configured ? (
+                    <div style={{ color: "rgba(130,185,230,0.62)", fontSize: 11, fontFamily: mono, marginTop: 8 }}>
+                      Market price feed not configured yet.
+                    </div>
+                  ) : null}
+                </div>
+              </div>
+            ) : activeTab === "warroom" ? (
+              <div style={{ display: "grid", gap: 12 }}>
+                <div style={{ background: "rgba(8,20,36,0.78)", border: "1px solid rgba(94,164,195,0.14)", borderRadius: 14, padding: 12 }}>
+                  <div style={{ color: "rgba(103,220,255,0.48)", fontSize: 10, fontFamily: mono, letterSpacing: "0.14em", textTransform: "uppercase", marginBottom: 8 }}>
+                    Today’s Strategic Brief
+                  </div>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8 }}>
+                    {(strategicBrief?.topEscalatingRegions?.length ? strategicBrief.topEscalatingRegions : ["Awaiting next intelligence refresh."]).map((region) => (
+                      <TrafficPill key={region} level="amber">{region}</TrafficPill>
+                    ))}
+                  </div>
+                  <div style={{ color: "#d6ebff", fontSize: 12, lineHeight: 1.7, fontFamily: bodyFont }}>
+                    Chokepoint to watch: {strategicBrief?.chokepointToWatch ?? "Awaiting next intelligence refresh."}
+                  </div>
+                </div>
+                <MobileBriefingContent briefing={briefing} onSelect={(eventId) => { onBriefingSelect(eventId); setSheetState("full"); }} />
+                <div style={{ display: "grid", gap: 10 }}>
+                  {topEvents.map((event) => (
+                    <button
+                      key={event.id}
+                      onClick={() => { onSelectEvent(event); setSheetState("full"); }}
+                      style={{
+                        padding: "13px 14px",
+                        border: "1px solid rgba(94,164,195,0.14)",
+                        borderRadius: 14,
+                        background: "rgba(8,20,36,0.74)",
+                        display: "grid",
+                        gap: 7,
+                        textAlign: "left",
+                        width: "100%",
+                        cursor: "pointer",
+                      }}
+                    >
+                      <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "center" }}>
+                        <TrafficPill level={event.tone === "Escalating" ? "red" : event.tone === "Stable" ? "neutral" : "amber"}>{event.tone}</TrafficPill>
+                        <span style={{ color: "rgba(0,180,255,0.42)", fontSize: 9, fontFamily: mono }}>{Math.round(event.lensPriorityScore ?? event.priorityScore ?? 0)} pts</span>
+                      </div>
+                      <div style={{ color: "#d6ebff", fontSize: 13, fontFamily: display, fontWeight: 700, lineHeight: 1.35 }}>
+                        {event.title}
+                      </div>
+                      <div style={{ color: "rgba(150,205,245,0.68)", fontSize: 11, lineHeight: 1.55, fontFamily: bodyFont }}>
+                        {event.briefSummary}
+                      </div>
+                    </button>
+                  ))}
+                </div>
               </div>
             ) : null}
           </div>
@@ -4122,6 +4182,7 @@ function MobileBottomSheet({ events, selectedEvent, activeScenario, onScenarioCh
 
 const LAYER_DEFS = {
   events: { label: "EVENTS", icon: "✦", color: "#ff6b7d", desc: "Event hotspots" },
+  conflictZones: { label: "ZONES", icon: "⬡", color: "#8fdfff", desc: "Conflict-zone overlay" },
   flights: { label: "FLIGHTS", icon: "✈", color: "#7ad0ff", desc: "Live aviation layer" },
   vessels: { label: "VESSELS", icon: "◫", color: "#8cf0c9", desc: "Live vessel layer" },
   satellites: { label: "SATELLITES", icon: "◉", color: "#c68dff", desc: "Orbital layer" },
@@ -4478,20 +4539,21 @@ function TopBar({ counts, bordersLoaded, activeLayers, onLayerToggle, isMobile, 
 
         {compact ? (
           <div style={{
-            minWidth: 120,
-            padding: "8px 10px",
-            borderRadius: 14,
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            minWidth: 0,
+            padding: "8px 11px",
+            borderRadius: 999,
             background: "rgba(6, 15, 30, 0.76)",
             border: "1px solid rgba(87,216,255,0.14)",
           }}>
-            <div style={{ color: "rgba(171,208,228,0.72)", fontSize: 9, fontFamily: mono, letterSpacing: "0.14em", textTransform: "uppercase" }}>
-              Intel Status
-            </div>
-            <div style={{ color: "#4ed69f", fontFamily: mono, fontSize: 10, letterSpacing: "0.12em", textTransform: "uppercase", marginTop: 3 }}>
+            <span style={{ width: 7, height: 7, borderRadius: "50%", background: "#4ed69f", boxShadow: "0 0 10px rgba(78,214,159,0.8)", flexShrink: 0 }} />
+            <div style={{ color: "#d6ebff", fontFamily: mono, fontSize: 10, letterSpacing: "0.1em", textTransform: "uppercase", whiteSpace: "nowrap" }}>
               Operational
             </div>
             {demoMode ? (
-              <div style={{ color: "rgba(148,175,198,0.78)", fontFamily: mono, fontSize: 9, marginTop: 5 }}>
+              <div style={{ color: "rgba(148,175,198,0.78)", fontFamily: mono, fontSize: 9, whiteSpace: "nowrap" }}>
                 Public Preview
               </div>
             ) : null}
@@ -4504,90 +4566,6 @@ function TopBar({ counts, bordersLoaded, activeLayers, onLayerToggle, isMobile, 
         <div style={{ display: "flex", alignItems: "center", gap: 6, overflowX: "auto", flex: 1, paddingBottom: 2 }}>
             {navButtons}
           </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 8, justifyContent: "space-between", flexWrap: "wrap", position: "relative" }}>
-          <select
-            value={selectedLens}
-            onChange={(event) => onLensChange?.(event.target.value)}
-            style={{
-              minHeight: 34,
-              borderRadius: 12,
-              background: "rgba(6,15,30,0.76)",
-              border: "1px solid rgba(87,216,255,0.14)",
-              color: "#d6ebff",
-              fontFamily: mono,
-              fontSize: 10,
-              letterSpacing: "0.08em",
-              padding: "0 10px",
-              flex: "1 1 160px",
-            }}
-          >
-            {DECISION_LENSES.map((lens) => (
-              <option key={lens.id} value={lens.id}>{lens.label}</option>
-            ))}
-          </select>
-          <div style={{ display: "flex", gap: 8, flexShrink: 0, flexWrap: "wrap" }}>
-            <TopControlButton onClick={() => { setShowLayersMenu((value) => !value); setShowStatusMenu(false); setShowAdminMenu(false); }} active={showLayersMenu}>Layers</TopControlButton>
-            <TopControlButton onClick={onWarRoom} active={showWarRoom}>War Room</TopControlButton>
-            <TopControlButton onClick={() => { setShowStatusMenu((value) => !value); setShowLayersMenu(false); setShowAdminMenu(false); }} subtle>
-              Status
-            </TopControlButton>
-            {!demoMode ? (
-              <TopControlButton onClick={() => { setShowAdminMenu((value) => !value); setShowLayersMenu(false); setShowStatusMenu(false); }} subtle>
-                Admin
-              </TopControlButton>
-            ) : null}
-          </div>
-          {showLayersMenu ? (
-            <HeaderPopover right={demoMode ? 82 : 0} minWidth={238}>
-              <div style={{ padding: "12px", display: "grid", gap: 10 }}>
-                <div style={{ color: "rgba(103, 220, 255, 0.48)", fontSize: 10, fontFamily: mono, letterSpacing: "0.12em", textTransform: "uppercase" }}>Layers</div>
-                <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-                  {publicLayerEntries.map(([key, def]) => (
-                    <LayerToggleChip key={key} layerKey={key} def={def} active={activeLayers[key]} onToggle={onLayerToggle} />
-                  ))}
-                </div>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", paddingTop: 4, borderTop: "1px solid rgba(94,164,195,0.12)" }}>
-                  <span style={{ color: "rgba(214,235,255,0.84)", fontSize: 12, fontFamily: bodyFont }}>Live Sun</span>
-                  <TopControlButton active={liveSunEnabled} onClick={onToggleLiveSun}>{liveSunEnabled ? "On" : "Off"}</TopControlButton>
-                </div>
-              </div>
-            </HeaderPopover>
-          ) : null}
-          {showStatusMenu ? (
-            <HeaderPopover right={demoMode ? 0 : 76} minWidth={232}>
-              <div style={{ padding: "12px", display: "grid", gap: 8 }}>
-                <div style={{ color: "rgba(103, 220, 255, 0.48)", fontSize: 10, fontFamily: mono, letterSpacing: "0.12em", textTransform: "uppercase" }}>Operational status</div>
-                <div style={{ display: "flex", justifyContent: "space-between", gap: 12 }}>
-                  <span style={{ color: "#4ed69f", fontFamily: mono, fontSize: 10, letterSpacing: "0.08em", textTransform: "uppercase" }}>Operational</span>
-                  <span style={{ color: "rgba(148,175,198,0.78)", fontFamily: mono, fontSize: 10 }}>{time} UTC</span>
-                </div>
-                <div style={{ color: "rgba(214,235,255,0.84)", fontSize: 12, fontFamily: bodyFont }}>AI remaining today {aiRemaining}</div>
-                {adminUnlocked && systemStatus?.automation ? (
-                  <div style={{ display: "grid", gap: 4, paddingTop: 6, borderTop: "1px solid rgba(94,164,195,0.12)", color: "rgba(148,175,198,0.78)", fontFamily: mono, fontSize: 10 }}>
-                    <div>News {formatLayerTime(systemStatus.automation.lastNewsRefreshAt)}</div>
-                    <div>AI {formatLayerTime(systemStatus.automation.lastAiRefreshAt)}</div>
-                  </div>
-                ) : null}
-              </div>
-            </HeaderPopover>
-          ) : null}
-          {showAdminMenu && !demoMode ? (
-            <HeaderPopover right={0} minWidth={228}>
-              <div style={{ padding: "12px", display: "grid", gap: 10 }}>
-                <div style={{ color: "rgba(103, 220, 255, 0.48)", fontSize: 10, fontFamily: mono, letterSpacing: "0.12em", textTransform: "uppercase" }}>Admin</div>
-                {adminUnlocked ? (
-                  <>
-                    <TopControlButton onClick={() => onAdminRefresh("news")}>Refresh Newsfeed</TopControlButton>
-                    <TopControlButton onClick={() => onAdminRefresh("ai")}>Master Refresh with AI</TopControlButton>
-                    {feedState?.message ? <div style={{ color: "rgba(148,175,198,0.76)", fontFamily: mono, fontSize: 10 }}>{feedState.message}</div> : null}
-                  </>
-                ) : (
-                  <TopControlButton onClick={onAdminUnlock}>Unlock Admin</TopControlButton>
-                )}
-              </div>
-            </HeaderPopover>
-          ) : null}
-        </div>
         </>
       ) : (
         <div style={{ display: "flex", alignItems: "center", gap: 14, justifyContent: "center", flex: 1, minWidth: 0, flexWrap: "wrap" }}>
@@ -4845,7 +4823,7 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
   const [ready,          setReady]          = useState(false);
   const [liveSunEnabled, setLiveSunEnabled] = useState(true);
   const [activeLayers,   setActiveLayers]   = useState({
-    events: true, flights: false, vessels: false, satellites: false, social: false, intelBoard: true,
+    events: true, conflictZones: false, flights: false, vessels: false, satellites: false, social: false, intelBoard: true,
   });
   const [panelVisibility, setPanelVisibility] = useState({
     events: true,
@@ -5076,7 +5054,7 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
       ...event,
       watchlistMatch: eventMatchesWatchlist(event, watchlist),
     }));
-    return applyDecisionLens(filtered, selectedLens);
+    return distributeContactPositions(applyDecisionLens(filtered, selectedLens));
   }, [timelineEvents, prefs, watchlist, selectedLens]);
 
   const conflictZones = useMemo(
@@ -5119,6 +5097,7 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
   const visibleLayerEntries = useMemo(() => {
     return Object.entries(LAYER_DEFS).filter(([key]) => {
       if (key === "events" || key === "intelBoard") return true;
+      if (key === "conflictZones") return true;
       if (key === "flights") return Boolean(layersStatus.flights?.enabled && layersStatus.flights?.configured);
       if (key === "satellites") return Boolean(layersStatus.satellites?.enabled && layersStatus.satellites?.configured);
       if (key === "vessels") return Boolean(layersStatus.vessels?.enabled && layersStatus.vessels?.configured);
@@ -5767,7 +5746,7 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
       },
     };
 
-    syncVisibleEvents(filteredEvents, conflictZones);
+    syncVisibleEvents(filteredEvents, activeLayers.conflictZones ? conflictZones : []);
 
     // ── Animation loop ────────────────────────────────────────────────────────
     let rafId;
@@ -5907,8 +5886,8 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
   }, [selectedEvent]);
 
   useEffect(() => {
-    sceneRef.current.syncVisibleEvents?.(filteredEvents, conflictZones);
-  }, [filteredEvents, conflictZones]);
+    sceneRef.current.syncVisibleEvents?.(filteredEvents, activeLayers.conflictZones ? conflictZones : []);
+  }, [filteredEvents, conflictZones, activeLayers.conflictZones]);
 
   useEffect(() => {
     sceneRef.current.setLiveSunEnabled?.(liveSunEnabled);
@@ -5919,9 +5898,9 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
       sceneRef.current.hotspotLayer.visible = activeLayers.events;
     }
     if (sceneRef.current.zoneLayer) {
-      sceneRef.current.zoneLayer.visible = activeLayers.events;
+      sceneRef.current.zoneLayer.visible = activeLayers.events && activeLayers.conflictZones;
     }
-  }, [activeLayers.events]);
+  }, [activeLayers.events, activeLayers.conflictZones]);
 
   useEffect(() => {
     sceneRef.current.syncObjectLayer?.("flights", activeLayers.flights ? flights : []);
@@ -6113,7 +6092,9 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
         </div>
 
         <GlobalViewButton onReset={handleReturnToGlobalView} mobile={isMobile} />
-        <LiveSunButton enabled={liveSunEnabled} onToggle={() => setLiveSunEnabled((current) => !current)} mobile={isMobile} />
+        {!isMobile ? (
+          <LiveSunButton enabled={liveSunEnabled} onToggle={() => setLiveSunEnabled((current) => !current)} mobile={isMobile} />
+        ) : null}
 
         {/* DESKTOP: Left sidebar */}
         {!isMobile && panelVisibility.events && activeLayers.intelBoard && (
@@ -6253,6 +6234,11 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
             onLensChange={setSelectedLens}
             strategicBrief={strategicBrief}
             demoMode={DEMO_MODE}
+            topEvents={liveTopEvents}
+            liveSunEnabled={liveSunEnabled}
+            onToggleLiveSun={() => setLiveSunEnabled((current) => !current)}
+            onSelectMarketCategory={setSelectedMarketKey}
+            marketData={marketData}
           />
         )}
 

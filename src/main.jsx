@@ -85,10 +85,12 @@ function Shell() {
   };
 
   const ActiveView = view === "classic" ? ClassicApp : view === "reports" ? ReportsApp : GlobeApp;
+  const showFooter = !(isCompact && view === "globe");
 
   return (
     <div style={{ width: "100%", height: "100%", position: "relative", overflowY: view === "globe" ? "hidden" : "auto", overflowX: "hidden" }}>
       <ActiveView key={view} activeView={view} onNavigate={navigate} />
+      {showFooter ? (
       <div style={{
         position: "fixed",
         right: isCompact ? 12 : 18,
@@ -113,6 +115,7 @@ function Shell() {
       }}>
         Built by oryth.io · OSINT signals · Not financial advice
       </div>
+      ) : null}
     </div>
   );
 }
