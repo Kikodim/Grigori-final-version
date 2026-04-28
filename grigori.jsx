@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   buildEventBrief,
   deriveImportance,
@@ -7,6 +7,7 @@ import {
   getEventSourceSignals,
   getMarketImpactTags,
   inferLocationDetails,
+  sanitizeEventNarrative,
 } from "./event-insights.js";
 
 const EVENTS_ENDPOINT = "/api/v1/events?limit=50";
@@ -53,9 +54,10 @@ function normalizeScenario(scenario) {
 }
 
 function mapEvent(event) {
+  const sanitized = sanitizeEventNarrative(event).cleaned;
   const sourceSignals = getEventSourceSignals(event);
-  const scenarios = Array.isArray(event.scenarios) && event.scenarios.length > 0
-    ? event.scenarios.map(normalizeScenario)
+  const scenarios = Array.isArray(sanitized.scenarios) && sanitized.scenarios.length > 0
+    ? sanitized.scenarios.map(normalizeScenario)
     : [
         {
           name: "Escalation / Disruption",
@@ -73,18 +75,19 @@ function mapEvent(event) {
 
   return {
     ...event,
-    location: inferLocationDetails({ ...event, location: event.location ?? { label: "Region under review", lat: null, lng: null } }),
-    summary: event.summary ?? "Rule-based briefing generated from source signals.",
-    developments: Array.isArray(event.developments) ? event.developments : [],
-    tone: event.tone ?? "Stable",
-    confidence: event.confidence ?? "Low",
-    importanceScore: Number(event.importanceScore ?? event.importance_score ?? deriveImportance(event)),
+    ...sanitized,
+    location: inferLocationDetails({ ...event, ...sanitized, location: sanitized.location ?? event.location ?? { label: "Region under review", lat: null, lng: null } }),
+    summary: sanitized.summary ?? "Rule-based briefing generated from source signals.",
+    developments: Array.isArray(sanitized.developments) ? sanitized.developments : [],
+    tone: sanitized.tone ?? event.tone ?? "Stable",
+    confidence: sanitized.confidence ?? event.confidence ?? "Low",
+    importanceScore: Number(event.importanceScore ?? event.importance_score ?? deriveImportance({ ...event, ...sanitized })),
     sourceSignals,
     scenarios,
-    aiStatusLabel: mapAiStatusLabel(event.aiStatus ?? event.ai_status ?? "fallback"),
-    riskLevel: deriveRiskLevel(event),
-    confidenceExplanation: explainConfidence(event),
-    marketImpactTags: getMarketImpactTags(event),
+    aiStatusLabel: mapAiStatusLabel(sanitized.aiStatus ?? event.aiStatus ?? event.ai_status ?? "fallback"),
+    riskLevel: deriveRiskLevel({ ...event, ...sanitized }),
+    confidenceExplanation: explainConfidence({ ...event, ...sanitized }),
+    marketImpactTags: getMarketImpactTags({ ...event, ...sanitized }),
     sectorsImpacted: [...new Set(scenarios.flatMap((scenario) => scenario.impact.sectors ?? []))],
   };
 }
@@ -319,6 +322,8 @@ export default function ClassicIntelBoard({ activeView = "classic", onNavigate }
   const [loadState, setLoadState] = useState({ status: "loading", message: "Loading Grigori Intelligence Systems..." });
   const [refreshState, setRefreshState] = useState({ status: "idle", message: "" });
   const [viewportWidth, setViewportWidth] = useState(() => (typeof window === "undefined" ? 1280 : window.innerWidth));
+  const headerRef = useRef(null);
+  const [measuredHeaderHeight, setMeasuredHeaderHeight] = useState(0);
 
   const loadEvents = useCallback(async () => {
     setLoadState({ status: "loading", message: "Loading Grigori Intelligence Systems..." });
@@ -357,6 +362,26 @@ export default function ClassicIntelBoard({ activeView = "classic", onNavigate }
     return () => window.removeEventListener("resize", onResize);
   }, []);
 
+  useEffect(() => {
+    const node = headerRef.current;
+    if (!node) return undefined;
+
+    const measure = () => {
+      setMeasuredHeaderHeight(node.getBoundingClientRect().height);
+    };
+
+    measure();
+
+    if (typeof ResizeObserver !== "undefined") {
+      const observer = new ResizeObserver(() => measure());
+      observer.observe(node);
+      return () => observer.disconnect();
+    }
+
+    window.addEventListener("resize", measure);
+    return () => window.removeEventListener("resize", measure);
+  }, [viewportWidth]);
+
   const counts = useMemo(() => events.reduce((acc, event) => {
     acc.total += 1;
     if (event.tone === "Escalating") acc.escalating += 1;
@@ -393,7 +418,8 @@ export default function ClassicIntelBoard({ activeView = "classic", onNavigate }
   const isMobile = viewportWidth <= 768;
   const isTablet = viewportWidth > 768 && viewportWidth <= 1024;
   const shellPaddingX = isMobile ? 14 : isTablet ? 18 : 24;
-  const shellTopPadding = isMobile ? 130 : isTablet ? 118 : 112;
+  const fallbackHeaderHeight = isMobile ? 136 : isTablet ? 124 : 112;
+  const shellTopPadding = Math.max(measuredHeaderHeight || 0, fallbackHeaderHeight) + 14;
   const headerPadding = isMobile
     ? `calc(env(safe-area-inset-top, 0px) + 12px) ${shellPaddingX}px 12px`
     : "16px 24px 14px";
@@ -408,7 +434,7 @@ export default function ClassicIntelBoard({ activeView = "classic", onNavigate }
       overflowX: "hidden",
     }}>
       <div style={{ maxWidth: 1320, margin: "0 auto", display: "grid", gap: 18 }}>
-      <div style={{
+      <div ref={headerRef} style={{
         position: "fixed",
         top: 0,
         left: 0,

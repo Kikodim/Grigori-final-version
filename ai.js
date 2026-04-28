@@ -14,6 +14,7 @@
 
 import { createHash } from "crypto";
 import { describeEnvVar } from "./config.js";
+import { sanitizeEventNarrative, BRIEF_LIMITS } from "./event-insights.js";
 import { createLogger } from "./logger.js";
 import { getCachedMarketContextSummary } from "./market-data.js";
 import { buildRuleBasedBriefing } from "./rule-based-briefing.js";
@@ -208,6 +209,13 @@ You are not predicting the future. You are producing a structured intelligence a
 Use only the supplied article and event data. Do not invent facts. If evidence is weak, say so.
 Return structured JSON only. No markdown. No code fences. No commentary.
 No direct investment advice. Market impact is directional risk context, not trading advice.
+Do not copy or quote long passages from source articles.
+Do not output raw article sections or scraped feed fragments.
+Do not include source IDs, article IDs, UUIDs, or labels like "SECTIONS" in any user-facing field.
+Do not prefix developments with source names or domains.
+Developments must be original concise analytic bullets, not copied article text.
+Source links and domains belong only in sourceAssessment or sources fields, never inside analysis sections.
+Write like a senior strategic intelligence analyst. The goal is paid intelligence briefing quality, not scraped article reproduction.
 Scenario probabilities are analytic estimates, not statistical certainties, and must sum to 100.
 Allowed tone values: Stable, Escalating, Deteriorating, Volatile, De-escalating.
 Allowed confidence values: Low, Medium, High.
@@ -296,6 +304,21 @@ function _buildPrompt(pe, articles, marketContextSummary, { compact = false } = 
   return compact
     ? `Region: ${pe.region?.label ?? "Unknown"}\nKeywords: ${pe.keywords.slice(0, 8).join(", ")}\n${marketLine}\n${body}`
     : `Region: ${pe.region?.label ?? "Unknown"}\nKeywords: ${pe.keywords.slice(0, 10).join(", ")}\nSources: ${pe.sources.join(", ")}\n${marketLine}\n${body}`;
+}
+
+function _buildRepairPrompt(pe, articles, marketContextSummary) {
+  return `${_buildPrompt(pe, articles, marketContextSummary, { compact: true })}
+
+Rewrite from scratch.
+Keep title specific and under ${BRIEF_LIMITS.title} characters.
+Keep summary under ${BRIEF_LIMITS.summary} characters.
+Keep assessment under ${BRIEF_LIMITS.assessment} characters.
+Developments must be 3 to 5 concise bullets, each under ${BRIEF_LIMITS.development} characters, no more than 2 sentences, with no source prefixes, UUIDs, article IDs, "SECTIONS", or copied body text.
+WhyThisMatters bullets must be under ${BRIEF_LIMITS.whyThisMatters} characters.
+WatchIndicators bullets must be under ${BRIEF_LIMITS.watchIndicator} characters.
+Scenario descriptions must be under ${BRIEF_LIMITS.scenarioDescription} characters.
+ConfidenceRationale must be under ${BRIEF_LIMITS.confidenceRationale} characters.
+Do not reproduce source passages.`;
 }
 
 // ─── Validation ───────────────────────────────────────────────────────────────
@@ -457,7 +480,7 @@ function _validate(raw, fb) {
   }
 
   return {
-    title:        String(raw.title ?? fb.title).slice(0, 120),
+    title:        String(raw.title ?? fb.title).slice(0, BRIEF_LIMITS.title),
     summary:      String(raw.summary ?? fb.summary ?? ""),
     assessment:   String(raw.assessment ?? fb.assessment ?? ""),
     developments: Array.isArray(raw.developments) ? raw.developments.filter((d) => typeof d === "string").slice(0, 5) : (fb.developments ?? []),
@@ -515,6 +538,7 @@ export async function processCluster(pe, articles, { source = "automation" } = {
   const marketContextSummary = await getCachedMarketContextSummary();
   const prompt = _buildPrompt(pe, articles, marketContextSummary);
   const geminiConfigured = describeEnvVar("GEMINI_API_KEY").usable;
+  let usedRepairRetry = false;
 
   let response;
   try {
@@ -573,7 +597,39 @@ export async function processCluster(pe, articles, { source = "automation" } = {
     log.warn(`Gemini response for ${pe._clusterId} contained extra text; extracted first JSON object`);
   }
 
-  const result = _validate(parsed.value, fb);
+  let result = _validate(parsed.value, fb);
+  let sanitized = sanitizeEventNarrative(result, fb);
+  result = sanitized.cleaned;
+
+  if (sanitized.meta.requiresRetry && !usedRepairRetry) {
+    usedRepairRetry = true;
+    log.warn(`Retrying Gemini for ${pe._clusterId} due to scraped or overlong narrative fields`);
+    try {
+      const repairResponse = await _enqueue(() => _callWithRetry(SYS, _buildRepairPrompt(pe, articles, marketContextSummary), RETRY_MAX_OUTPUT_TOKENS));
+      raw = repairResponse?.text ?? "";
+      finishReason = repairResponse?.finishReason ?? null;
+      response = repairResponse;
+      parsed = parseGeminiJson(raw);
+      if (parsed.ok) {
+        result = _validate(parsed.value, fb);
+        sanitized = sanitizeEventNarrative(result, fb);
+        result = sanitized.cleaned;
+      }
+    } catch (err) {
+      log.warn(`Gemini repair retry failed for ${pe._clusterId}: ${err.message}`);
+    }
+  }
+
+  if (sanitized.meta.requiresRetry) {
+    return {
+      ...fb,
+      aiAttempted: true,
+      aiCallsUsed: 0,
+      aiSkippedReason: "provider_error",
+      aiProviderError: "sanitizer_rejected_raw_like_output",
+    };
+  }
+
   result.generationMethod = "ai";
   result.aiAttempted = true;
   result.aiCallsUsed = 1;

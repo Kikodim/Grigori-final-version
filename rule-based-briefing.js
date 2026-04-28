@@ -1,4 +1,4 @@
-import { buildWatchIndicators, buildWhyThisMatters, getEventSourceSignals, inferLocationDetails } from "./event-insights.js";
+import { buildWatchIndicators, buildWhyThisMatters, getEventSourceSignals, inferLocationDetails, sanitizeBulletList, sanitizeNarrativeText, BRIEF_LIMITS } from "./event-insights.js";
 
 const SECTOR_RULES = [
   { pattern: /\b(oil|tanker|hormuz|gulf|red sea|shipping|port|freight|strait|suez|maritime)\b/i, sectors: ["Energy", "Shipping"] },
@@ -94,10 +94,9 @@ function sentenceCase(text) {
 function buildDevelopments(preEvent, articles, locationLabel) {
   const directDevelopments = [];
   for (const article of articles.slice(0, 5)) {
-    const source = article.source ? `${article.source}: ` : "";
     const summary = compactText(article.summary || article.content || article.title);
     if (!summary) continue;
-    directDevelopments.push(`${source}${sentenceCase(summary).replace(/[.!?]+$/, "")}.`);
+    directDevelopments.push(sentenceCase(summary).replace(/[.!?]+$/, "."));
   }
 
   const keywordLine = (preEvent.keywords ?? []).slice(0, 4).join(", ");
@@ -105,7 +104,18 @@ function buildDevelopments(preEvent, articles, locationLabel) {
     directDevelopments.push(`Signal cluster centred on ${locationLabel} with recurring themes: ${keywordLine}.`);
   }
 
-  return unique(directDevelopments).slice(0, 3);
+  return sanitizeBulletList(unique(directDevelopments), {
+    maxItems: 5,
+    maxLen: BRIEF_LIMITS.development,
+    maxSentences: 2,
+    fallback: [
+      sanitizeNarrativeText(`Signal cluster remains active around ${locationLabel}.`, {
+        maxLen: BRIEF_LIMITS.development,
+        maxSentences: 1,
+        fallback: `Signal cluster remains active around ${locationLabel}.`,
+      }),
+    ],
+  });
 }
 
 function buildSummary(preEvent, locationLabel, tone, confidence, sectors, markets, articles) {

@@ -19,6 +19,7 @@ import {
   getMarketImpactTags,
   getOneLineSummary,
   inferLocationDetails,
+  sanitizeEventNarrative,
 } from "./event-insights.js";
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1517,13 +1518,16 @@ function normalizeBackendScenario(scenario) {
 }
 
 function normalizeBackendEvent(event) {
+  const sanitized = sanitizeEventNarrative(event).cleaned;
   const location = inferLocationDetails({
     ...event,
-    location: event.location ?? { label: "Region under review", lat: null, lng: null },
+    ...sanitized,
+    location: sanitized.location ?? event.location ?? { label: "Region under review", lat: null, lng: null },
   });
-  const scenarios = (event.scenarios ?? []).map(normalizeBackendScenario);
+  const scenarios = (sanitized.scenarios ?? event.scenarios ?? []).map(normalizeBackendScenario);
   const classification = deriveEventClassification({
     ...event,
+    ...sanitized,
     location,
     scenarios,
   });
@@ -1535,16 +1539,16 @@ function normalizeBackendEvent(event) {
 
   return {
     id: event.id,
-    title: event.title ?? "Untitled Event",
+    title: sanitized.title ?? event.title ?? "Untitled Event",
     lat: Number.isFinite(location.lat) ? location.lat : null,
     lng: Number.isFinite(location.lng) ? location.lng : null,
     location,
     intensity: impactDrivenIntensity || mapToneToGlobeIntensity(event.tone, event.confidence),
-    summary: event.summary ?? "",
-    assessment: event.assessment ?? "",
-    tone: event.tone ?? "Stable",
-    confidence: event.confidence ?? "Low",
-    developments: event.developments ?? [],
+    summary: sanitized.summary ?? event.summary ?? "",
+    assessment: sanitized.assessment ?? event.assessment ?? "",
+    tone: sanitized.tone ?? event.tone ?? "Stable",
+    confidence: sanitized.confidence ?? event.confidence ?? "Low",
+    developments: sanitized.developments ?? event.developments ?? [],
     scenarios: scenarios.length > 0 ? scenarios : [{
       name: "Monitoring",
       probability: 100,
@@ -1565,11 +1569,11 @@ function normalizeBackendEvent(event) {
     articleIds: event.articleIds ?? event.article_ids ?? [],
     keywords: event.keywords ?? [],
     aiStatus: event.aiStatus ?? event.ai_status ?? "fallback",
-    whyThisMatters: event.whyThisMatters ?? event.why_this_matters ?? [],
-    watchIndicators: event.watchIndicators ?? event.watch_indicators ?? [],
-    confidenceRationale: event.confidenceRationale ?? event.confidence_rationale ?? "",
-    marketImpact: event.marketImpact ?? event.market_impact ?? {},
-    sourceAssessment: event.sourceAssessment ?? event.source_assessment ?? {},
+    whyThisMatters: sanitized.whyThisMatters ?? event.whyThisMatters ?? event.why_this_matters ?? [],
+    watchIndicators: sanitized.watchIndicators ?? event.watchIndicators ?? event.watch_indicators ?? [],
+    confidenceRationale: sanitized.confidenceRationale ?? event.confidenceRationale ?? event.confidence_rationale ?? "",
+    marketImpact: sanitized.marketImpact ?? event.marketImpact ?? event.market_impact ?? {},
+    sourceAssessment: sanitized.sourceAssessment ?? event.sourceAssessment ?? event.source_assessment ?? {},
     category: event.category ?? classification.category,
     severityScore: Number(event.severityScore ?? event.severity_score ?? classification.severityScore),
     impactScore: Number(event.impactScore ?? event.impact_score ?? classification.impactScore),
@@ -2993,7 +2997,7 @@ function ScoreBreakdownPanel({ event }) {
             fontSize: 11, fontFamily: mono, fontWeight: 700, letterSpacing: "0.12em",
             marginBottom: 6 }}>{lvl}</span>
           <p style={{ color: "rgba(150,200,240,0.65)", fontSize: 11, lineHeight: 1.5,
-            margin: 0, fontFamily: mono }}>{event.whyThisMatters}</p>
+            margin: 0, fontFamily: mono }}>{Array.isArray(event.whyThisMatters) ? event.whyThisMatters[0] : event.whyThisMatters}</p>
         </div>
       </div>
 
@@ -3149,7 +3153,7 @@ function WarRoomPanel({ topEvents, onSelect, selectedEventId, onClose, marketImp
                     fontFamily: mono, lineHeight: 1.45, margin: 0,
                     display: "-webkit-box", WebkitLineClamp: 2,
                     WebkitBoxOrient: "vertical", overflow: "hidden" }}>
-                    {ev.whyThisMatters}
+                    {Array.isArray(ev.whyThisMatters) ? ev.whyThisMatters[0] : ev.whyThisMatters}
                   </p>
                 </div>
               </div>

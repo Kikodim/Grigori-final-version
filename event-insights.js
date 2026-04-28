@@ -159,6 +159,195 @@ function compactText(text = "") {
     .trim();
 }
 
+export const BRIEF_LIMITS = {
+  title: 140,
+  summary: 500,
+  assessment: 1200,
+  development: 280,
+  whyThisMatters: 240,
+  watchIndicator: 180,
+  scenarioDescription: 900,
+  marketImpactSummary: 900,
+  confidenceRationale: 500,
+  sourceLimitations: 320,
+};
+
+const UUID_LIKE_RE = /\b[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\b/i;
+const RAW_SECTION_RE = /\bSECTIONS\b[:\s-]*/gi;
+const SCRAPE_RESIDUE_RE = /\b(available on paid plans|newsletter|internal|email this|sign up for|continue reading|read more|all rights reserved)\b/i;
+const SOURCE_PREFIX_RE = /^\s*(?:[a-z0-9][a-z0-9._-]{1,36}|[A-Z][A-Za-z0-9 ._-]{1,36})\s*:\s+/;
+
+function clampText(value, maxLen) {
+  const text = compactText(value);
+  if (text.length <= maxLen) return text;
+  const clipped = text.slice(0, maxLen);
+  const lastBoundary = Math.max(clipped.lastIndexOf("."), clipped.lastIndexOf(";"), clipped.lastIndexOf(","), clipped.lastIndexOf(" "));
+  return compactText(clipped.slice(0, lastBoundary > maxLen * 0.55 ? lastBoundary : maxLen)) + "…";
+}
+
+function stripScrapeResidue(value) {
+  let text = compactText(value)
+    .replace(new RegExp(UUID_LIKE_RE.source, "gi"), " ")
+    .replace(RAW_SECTION_RE, " ")
+    .replace(/\b(?:source|feed|domain|uuid)\b\s*:/gi, " ")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+
+  if (SOURCE_PREFIX_RE.test(text)) {
+    text = text.replace(SOURCE_PREFIX_RE, "");
+  }
+
+  return compactText(text);
+}
+
+function countSentences(value) {
+  const matches = String(value ?? "").match(/[.!?](?:\s|$)/g);
+  return matches ? matches.length : (String(value ?? "").trim() ? 1 : 0);
+}
+
+function looksLikeRawSourceDump(value) {
+  const text = compactText(value);
+  if (!text) return true;
+  if (new RegExp(UUID_LIKE_RE.source, "i").test(text)) return true;
+  if (SCRAPE_RESIDUE_RE.test(text)) return true;
+  if (/^(?:[a-z0-9._-]{2,36}|[A-Z][A-Za-z0-9 ._-]{1,36})\s*:/.test(text) && text.length > 70) return true;
+  if ((text.match(/;/g) ?? []).length >= 4) return true;
+  if (countSentences(text) > 2) return true;
+  if (text.length > 280) return true;
+  return false;
+}
+
+export function sanitizeNarrativeText(value, { maxLen, maxSentences = null, fallback = "" } = {}) {
+  let text = stripScrapeResidue(value);
+  if (!text) return fallback;
+  if (maxSentences && countSentences(text) > maxSentences) {
+    const chunks = text.split(/(?<=[.!?])\s+/).slice(0, maxSentences);
+    text = compactText(chunks.join(" "));
+  }
+  text = clampText(text, maxLen);
+  return text || fallback;
+}
+
+export function sanitizeBulletList(items, { maxItems, maxLen, maxSentences = 2, fallback = [] } = {}) {
+  const cleaned = [];
+  for (const item of Array.isArray(items) ? items : []) {
+    const text = sanitizeNarrativeText(item, { maxLen, maxSentences, fallback: "" });
+    if (!text) continue;
+    if (looksLikeRawSourceDump(text)) continue;
+    cleaned.push(text);
+    if (cleaned.length >= maxItems) break;
+  }
+  return cleaned.length > 0 ? unique(cleaned).slice(0, maxItems) : fallback.slice(0, maxItems);
+}
+
+export function sanitizeEventNarrative(event, fallback = {}) {
+  const cleanedDevelopments = sanitizeBulletList(event.developments, {
+    maxItems: 5,
+    maxLen: BRIEF_LIMITS.development,
+    maxSentences: 2,
+    fallback: Array.isArray(fallback.developments) ? fallback.developments : [],
+  });
+  const cleanedWhy = sanitizeBulletList(event.whyThisMatters, {
+    maxItems: 5,
+    maxLen: BRIEF_LIMITS.whyThisMatters,
+    maxSentences: 2,
+    fallback: Array.isArray(fallback.whyThisMatters) ? fallback.whyThisMatters : [],
+  });
+  const cleanedWatch = sanitizeBulletList(event.watchIndicators ?? event.watchIndicators72h, {
+    maxItems: 7,
+    maxLen: BRIEF_LIMITS.watchIndicator,
+    maxSentences: 2,
+    fallback: Array.isArray(fallback.watchIndicators ?? fallback.watchIndicators72h) ? (fallback.watchIndicators ?? fallback.watchIndicators72h) : [],
+  });
+
+  const scenarios = Array.isArray(event.scenarios) ? event.scenarios.slice(0, 3).map((scenario, index) => {
+    const fbScenario = Array.isArray(fallback.scenarios) ? fallback.scenarios[index] ?? {} : {};
+    return {
+      ...scenario,
+      description: sanitizeNarrativeText(scenario?.description, {
+        maxLen: BRIEF_LIMITS.scenarioDescription,
+        maxSentences: 6,
+        fallback: fbScenario.description ?? "Monitoring for follow-on developments.",
+      }),
+      triggers: sanitizeBulletList(scenario?.triggers, {
+        maxItems: 4,
+        maxLen: 140,
+        maxSentences: 1,
+        fallback: Array.isArray(fbScenario.triggers) ? fbScenario.triggers : [],
+      }),
+    };
+  }) : (fallback.scenarios ?? []);
+
+  const title = sanitizeNarrativeText(event.title, {
+    maxLen: BRIEF_LIMITS.title,
+    maxSentences: 1,
+    fallback: sanitizeNarrativeText(fallback.title ?? "Untitled Event", { maxLen: BRIEF_LIMITS.title, maxSentences: 1, fallback: "Untitled Event" }),
+  });
+
+  const summary = sanitizeNarrativeText(event.summary, {
+    maxLen: BRIEF_LIMITS.summary,
+    maxSentences: 4,
+    fallback: sanitizeNarrativeText(fallback.summary ?? "", { maxLen: BRIEF_LIMITS.summary, maxSentences: 4, fallback: "" }),
+  });
+
+  const assessment = sanitizeNarrativeText(event.assessment, {
+    maxLen: BRIEF_LIMITS.assessment,
+    maxSentences: 8,
+    fallback: sanitizeNarrativeText(fallback.assessment ?? "", { maxLen: BRIEF_LIMITS.assessment, maxSentences: 8, fallback: "" }),
+  });
+
+  const confidenceRationale = sanitizeNarrativeText(event.confidenceRationale, {
+    maxLen: BRIEF_LIMITS.confidenceRationale,
+    maxSentences: 4,
+    fallback: sanitizeNarrativeText(fallback.confidenceRationale ?? "", { maxLen: BRIEF_LIMITS.confidenceRationale, maxSentences: 4, fallback: "" }),
+  });
+
+  const marketImpact = {
+    ...(fallback.marketImpact ?? {}),
+    ...(event.marketImpact ?? {}),
+    summary: sanitizeNarrativeText(event.marketImpact?.summary, {
+      maxLen: BRIEF_LIMITS.marketImpactSummary,
+      maxSentences: 6,
+      fallback: sanitizeNarrativeText(fallback.marketImpact?.summary ?? "", { maxLen: BRIEF_LIMITS.marketImpactSummary, maxSentences: 6, fallback: "" }),
+    }),
+  };
+
+  const sourceAssessment = {
+    ...(fallback.sourceAssessment ?? {}),
+    ...(event.sourceAssessment ?? {}),
+    limitations: sanitizeNarrativeText(event.sourceAssessment?.limitations, {
+      maxLen: BRIEF_LIMITS.sourceLimitations,
+      maxSentences: 3,
+      fallback: sanitizeNarrativeText(fallback.sourceAssessment?.limitations ?? "", { maxLen: BRIEF_LIMITS.sourceLimitations, maxSentences: 3, fallback: "" }),
+    }),
+  };
+
+  const usedFallbackDevelopments = cleanedDevelopments.length === 0 && Array.isArray(fallback.developments) && fallback.developments.length > 0;
+  const sourceDumpDetected = Array.isArray(event.developments) && event.developments.some((item) => looksLikeRawSourceDump(item));
+
+  return {
+    cleaned: {
+      ...event,
+      title,
+      summary,
+      assessment,
+      developments: cleanedDevelopments,
+      whyThisMatters: cleanedWhy,
+      watchIndicators: cleanedWatch,
+      watchIndicators72h: cleanedWatch,
+      confidenceRationale,
+      marketImpact,
+      sourceAssessment,
+      scenarios,
+    },
+    meta: {
+      sourceDumpDetected,
+      usedFallbackDevelopments,
+      requiresRetry: sourceDumpDetected || usedFallbackDevelopments,
+    },
+  };
+}
+
 function normalizeTitle(value) {
   return compactText(value).toLowerCase();
 }
@@ -355,14 +544,23 @@ export function deriveRiskLevel(event) {
 }
 
 export function getOneLineSummary(event) {
-  const summary = String(event.summary ?? "").trim();
+  const summary = sanitizeNarrativeText(event.summary ?? "", {
+    maxLen: BRIEF_LIMITS.summary,
+    maxSentences: 2,
+    fallback: "",
+  });
   if (summary) {
     const firstSentence = summary.split(/(?<=[.!?])\s+/)[0]?.trim();
     if (firstSentence) return firstSentence;
     return summary;
   }
 
-  const firstDevelopment = event.developments?.[0];
+  const firstDevelopment = sanitizeBulletList(event.developments ?? [], {
+    maxItems: 1,
+    maxLen: BRIEF_LIMITS.development,
+    maxSentences: 2,
+    fallback: [],
+  })[0];
   if (firstDevelopment) return firstDevelopment;
   return "Monitoring for material developments.";
 }
@@ -808,53 +1006,64 @@ export function aggregateMarketImpact(events, marketContext = null) {
 }
 
 export function buildEventBrief(event, allEvents = []) {
+  const sanitized = sanitizeEventNarrative(event).cleaned;
   const sourceTrace = getSourceTrace(event);
-  const location = inferLocationDetails(event);
-  const executiveSummary = getOneLineSummary(event);
-  const developments = (event.developments ?? []).slice(0, 3);
-  const scenarios = (event.scenarios ?? []).slice(0, 3);
-  const marketImpactTags = getMarketImpactTags(event);
-  const watchIndicators = buildWatchIndicators(event);
-  const relatedEvents = getRelatedEvents(event, allEvents);
-  const classification = deriveEventClassification(event);
+  const location = inferLocationDetails(sanitized);
+  const executiveSummary = getOneLineSummary(sanitized);
+  const developments = (sanitized.developments ?? []).slice(0, 5);
+  const scenarios = (sanitized.scenarios ?? []).slice(0, 3);
+  const marketImpactTags = getMarketImpactTags(sanitized);
+  const watchIndicators = sanitizeBulletList(buildWatchIndicators(sanitized), {
+    maxItems: 7,
+    maxLen: BRIEF_LIMITS.watchIndicator,
+    maxSentences: 2,
+    fallback: sanitized.watchIndicators ?? [],
+  });
+  const relatedEvents = getRelatedEvents(sanitized, allEvents);
+  const classification = deriveEventClassification(sanitized);
 
   return {
     executiveSummary,
-    whatHappened: sentenceCase(event.summary || executiveSummary),
+    whatHappened: sentenceCase(sanitized.summary || executiveSummary),
     whereItHappened: location.label,
-    assessment: event.assessment ?? "",
-    whyThisMatters: buildWhyThisMatters(event),
+    assessment: sanitized.assessment ?? "",
+    whyThisMatters: sanitizeBulletList(buildWhyThisMatters(sanitized), {
+      maxItems: 5,
+      maxLen: BRIEF_LIMITS.whyThisMatters,
+      maxSentences: 2,
+      fallback: sanitized.whyThisMatters ?? [],
+    }),
     keyDevelopments: developments.length > 0 ? developments : ["Monitoring for follow-on developments."],
     scenarios,
     marketImpactTags,
-    marketImpact: event.marketImpact ?? {},
+    marketImpact: sanitized.marketImpact ?? {},
     sectorImpact: unique(scenarios.flatMap((scenario) => scenario.impact?.sectors ?? [])).slice(0, 6),
     sourceTrace,
-    confidenceDrivers: buildConfidenceDrivers(event),
-    confidenceExplanation: explainConfidence(event),
-    confidenceRationale: event.confidenceRationale ?? explainConfidence(event),
+    confidenceDrivers: buildConfidenceDrivers(sanitized),
+    confidenceExplanation: explainConfidence(sanitized),
+    confidenceRationale: sanitized.confidenceRationale ?? explainConfidence(sanitized),
     locationConfidence: location.confidence,
     locationReason: location.reason,
     watchIndicators,
-    recentTrend: deriveRecentTrend(event, allEvents),
+    recentTrend: deriveRecentTrend(sanitized, allEvents),
     category: classification.category,
     severityScore: classification.severityScore,
     impactScore: classification.impactScore,
     confidenceScore: classification.confidenceScore,
     relatedEvents,
-    sourceAssessment: event.sourceAssessment ?? {
+    sourceAssessment: sanitized.sourceAssessment ?? {
       sourceCount: sourceTrace.sourceCount,
       corroborationLevel: sourceTrace.corroborationLabel,
       limitations: "Open-source reporting can remain incomplete or lag operational developments.",
     },
     aiStatusLabel:
-      (event.aiStatus ?? event.ai_status) === "enriched"
+      (sanitized.aiStatus ?? sanitized.ai_status) === "enriched"
         ? "AI enriched"
-        : (event.aiStatus ?? event.ai_status) === "cached"
+        : (sanitized.aiStatus ?? sanitized.ai_status) === "cached"
           ? "Cached intelligence"
-          : (event.aiStatus ?? event.ai_status) === "provider_error"
+          : (sanitized.aiStatus ?? sanitized.ai_status) === "provider_error"
             ? "Rule-based briefing after provider error"
-          : (event.aiStatus ?? event.ai_status) === "budget_exhausted"
+            : (sanitized.aiStatus ?? sanitized.ai_status) === "budget_exhausted"
             ? "Rule-based briefing, AI budget exhausted"
             : "Rule-based briefing",
   };
