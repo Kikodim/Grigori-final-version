@@ -2651,6 +2651,131 @@ function getDataFreshness(value) {
   return { label: `Stale · ${Math.round(hours)}h ago`, tone: "red", hours };
 }
 
+const ACTIVE_SIGNAL_SORT_OPTIONS = [
+  { key: "priority", label: "Priority" },
+  { key: "newest", label: "Newest" },
+  { key: "updated", label: "Updated" },
+  { key: "ai", label: "AI Enriched" },
+  { key: "impact", label: "High Impact" },
+];
+
+function getBestEventTimestamp(event, mode = "freshness") {
+  const aiUpdatedAt = event.aiUpdatedAt ?? event.ai_updated_at ?? null;
+  const updatedAt = event.updated_at ?? event.updatedAt ?? null;
+  const createdAt = event.created_at ?? event.createdAt ?? null;
+  const publishedAt = event.timestamp ?? null;
+
+  if (mode === "ai" && aiUpdatedAt) return { value: aiUpdatedAt, kind: "AI enriched" };
+  if (updatedAt) return { value: updatedAt, kind: "Updated" };
+  if (createdAt) return { value: createdAt, kind: "Created" };
+  if (publishedAt) return { value: publishedAt, kind: "Created" };
+  return { value: null, kind: "Updated" };
+}
+
+function getFreshnessScore(event) {
+  const { value } = getBestEventTimestamp(event);
+  if (!value) return 20;
+  const hours = Math.max(0, (Date.now() - new Date(value).getTime()) / 3600_000);
+  if (hours < 2) return 100;
+  if (hours < 6) return 78;
+  if (hours < 12) return 52;
+  return 24;
+}
+
+function computeActiveSignalPriority(event) {
+  const impactScore = Number(event.impactScore ?? event.importanceScore ?? event.priorityScore ?? 0);
+  const severityScore = Number(event.severityScore ?? 0);
+  const importanceScore = Number(event.importanceScore ?? event.priorityScore ?? 0);
+  const freshnessScore = getFreshnessScore(event);
+  const confidenceScore = Number(event.confidenceScore ?? 0);
+  const toneBoost = event.tone === "Escalating" ? 4 : event.tone === "Volatile" ? 2 : 0;
+
+  return (
+    impactScore * 0.4 +
+    severityScore * 0.3 +
+    importanceScore * 0.2 +
+    freshnessScore * 0.1 +
+    confidenceScore * 0.03 +
+    toneBoost
+  );
+}
+
+function getSignalFreshnessMeta(event) {
+  if (event.isHistorical) {
+    const historicalDate = event.timestamp ? new Date(event.timestamp).toLocaleDateString("en-US", { month: "short", day: "numeric" }) : "Historical";
+    return {
+      label: `Historical · ${historicalDate}`,
+      tone: "neutral",
+      state: "Historical",
+      detail: "Historical context",
+      relative: historicalDate,
+    };
+  }
+
+  const { value, kind } = getBestEventTimestamp(event, event.aiStatus === "enriched" ? "ai" : "freshness");
+  const freshness = getDataFreshness(value);
+  const age = formatShortAge(value);
+  const detail = kind === "AI enriched" ? `AI enriched ${age}` : `${kind} ${age}`;
+  if (freshness.tone === "red" && Number(event.impactScore ?? 0) >= 80) {
+    return {
+      label: `Stale but high-impact · ${detail}`,
+      tone: "amber",
+      state: "Stale",
+      detail,
+      relative: age,
+    };
+  }
+  return {
+    label: `${freshness.label.split(" · ")[0]} · ${detail}`,
+    tone: freshness.tone,
+    state: freshness.label.split(" · ")[0],
+    detail,
+    relative: age,
+  };
+}
+
+function sortActiveSignals(events, sortMode = "priority") {
+  const ranked = [...events];
+  ranked.sort((left, right) => {
+    const leftPriority = computeActiveSignalPriority(left);
+    const rightPriority = computeActiveSignalPriority(right);
+    const leftUpdated = new Date(getBestEventTimestamp(left).value ?? left.timestamp ?? 0).getTime();
+    const rightUpdated = new Date(getBestEventTimestamp(right).value ?? right.timestamp ?? 0).getTime();
+    const leftNewest = new Date(left.timestamp ?? left.created_at ?? 0).getTime();
+    const rightNewest = new Date(right.timestamp ?? right.created_at ?? 0).getTime();
+    const leftImpact = Number(left.impactScore ?? left.importanceScore ?? 0);
+    const rightImpact = Number(right.impactScore ?? right.importanceScore ?? 0);
+    const leftSeverity = Number(left.severityScore ?? 0);
+    const rightSeverity = Number(right.severityScore ?? 0);
+    const leftConfidence = Number(left.confidenceScore ?? 0);
+    const rightConfidence = Number(right.confidenceScore ?? 0);
+    const leftAi = left.aiStatus === "enriched" ? 1 : 0;
+    const rightAi = right.aiStatus === "enriched" ? 1 : 0;
+
+    if (sortMode === "newest") {
+      return rightNewest - leftNewest || rightPriority - leftPriority;
+    }
+    if (sortMode === "updated") {
+      return rightUpdated - leftUpdated || rightPriority - leftPriority;
+    }
+    if (sortMode === "ai") {
+      return rightAi - leftAi || rightPriority - leftPriority;
+    }
+    if (sortMode === "impact") {
+      return rightImpact - leftImpact || rightPriority - leftPriority;
+    }
+
+    return (
+      rightPriority - leftPriority ||
+      rightImpact - leftImpact ||
+      rightSeverity - leftSeverity ||
+      rightConfidence - leftConfidence ||
+      rightUpdated - leftUpdated
+    );
+  });
+  return ranked;
+}
+
 function formatShortAge(value) {
   if (!value) return "Awaiting refresh";
   const deltaMs = Math.max(0, Date.now() - new Date(value).getTime());
@@ -2773,6 +2898,30 @@ function TrafficPill({ level, children }) {
     }}>
       {children}
     </span>
+  );
+}
+
+function SegmentedFilterChip({ active = false, onClick, children, compact = false }) {
+  return (
+    <button
+      onClick={onClick}
+      style={{
+        minHeight: compact ? 30 : 32,
+        padding: compact ? "5px 9px" : "6px 10px",
+        borderRadius: 999,
+        border: `1px solid ${active ? "rgba(87,216,255,0.36)" : "rgba(83,148,182,0.16)"}`,
+        background: active ? "rgba(56,189,248,0.14)" : "rgba(8,20,36,0.66)",
+        color: active ? "#88ddff" : "rgba(150,200,240,0.62)",
+        fontSize: compact ? 9 : 10,
+        fontFamily: mono,
+        letterSpacing: "0.08em",
+        textTransform: "uppercase",
+        cursor: "pointer",
+        whiteSpace: "nowrap",
+      }}
+    >
+      {children}
+    </button>
   );
 }
 
@@ -3906,6 +4055,7 @@ function MobileBottomSheet({ events, selectedEvent, activeScenario, onScenarioCh
                              onSelectObject, allEvents = [],
                              onAdminRefresh, systemStatus, selectedLens, onLensChange,
                              strategicBrief, demoMode = false, topEvents = [],
+                             sortMode = "priority", onSortChange = () => {},
                              liveSunEnabled = true, onToggleLiveSun = () => {},
                              onSelectMarketCategory = () => {}, marketData = null }) {
   const [sheetState, setSheetState] = useState("peek");
@@ -4050,15 +4200,43 @@ function MobileBottomSheet({ events, selectedEvent, activeScenario, onScenarioCh
           <div style={sharedPanelBodyStyle({ flex: 1, padding: 14 })}>
             {activeTab === "signals" ? (
               <div style={{ display: "grid", gap: 10 }}>
+                <div style={{ display: "grid", gap: 8 }}>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                    <TrafficPill level={getDataFreshness(systemStatus?.automation?.lastNewsRefreshAt).tone}>
+                      News {getDataFreshness(systemStatus?.automation?.lastNewsRefreshAt).label}
+                    </TrafficPill>
+                    <TrafficPill level={getDataFreshness(systemStatus?.automation?.lastAiRefreshAt).tone}>
+                      AI {getDataFreshness(systemStatus?.automation?.lastAiRefreshAt).label}
+                    </TrafficPill>
+                  </div>
+                  {refreshState?.message ? (
+                    <div style={{ color: "rgba(150,205,245,0.72)", fontSize: 11, lineHeight: 1.55, fontFamily: bodyFont }}>
+                      {refreshState.message}
+                    </div>
+                  ) : null}
+                  <div style={{ display: "flex", gap: 6, overflowX: "auto", paddingBottom: 2 }}>
+                    {ACTIVE_SIGNAL_SORT_OPTIONS.map((option) => (
+                      <SegmentedFilterChip
+                        key={option.key}
+                        active={sortMode === option.key}
+                        onClick={() => onSortChange(option.key)}
+                        compact
+                      >
+                        {option.label}
+                      </SegmentedFilterChip>
+                    ))}
+                  </div>
+                </div>
                 {events.map(ev => {
                   const c    = INTENSITY[ev.intensity];
                   const pcfg = PRIORITY_CONFIG[ev.priorityLevel] || PRIORITY_CONFIG.LOW;
                   const sel = selectedEvent?.id === ev.id;
                   const eventLabels = getEventStateLabels(ev);
+                  const freshnessMeta = getSignalFreshnessMeta(ev);
                   return (
                     <button key={ev.id} onClick={() => { onSelectEvent(ev); setSheetState("full"); }}
                       style={{ padding: "13px 14px", border: "1px solid rgba(94,164,195,0.14)",
-                        borderLeft: `3px solid ${sel ? c.color : `${c.color}66`}`,
+                        borderLeft: `3px solid ${sel ? c.color : ev.impactScore >= 85 ? "rgba(255,102,119,0.78)" : ev.impactScore >= 65 ? "rgba(255,191,71,0.64)" : `${c.color}66`}`,
                         borderRadius: 14, background: sel ? "rgba(0,50,100,0.28)" : "rgba(8,20,36,0.74)",
                         display: "grid", gap: 8, textAlign: "left", width: "100%", cursor: "pointer" }}>
                       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
@@ -4067,6 +4245,7 @@ function MobileBottomSheet({ events, selectedEvent, activeScenario, onScenarioCh
                       </div>
                       <div style={{ display: "flex", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
                         <TrafficPill level="neutral">{ev.category ?? "Political"}</TrafficPill>
+                        <TrafficPill level={freshnessMeta.tone}>{freshnessMeta.label}</TrafficPill>
                         <span style={{ color: "rgba(0,180,255,0.42)", fontSize: 9, fontFamily: mono }}>{Math.round(ev.impactScore ?? ev.importanceScore ?? 0)} impact</span>
                       </div>
                       <div style={{ color: "#d6ebff", fontSize: 14, fontFamily: display, fontWeight: 700, lineHeight: 1.35 }}>{ev.title}</div>
@@ -4075,7 +4254,11 @@ function MobileBottomSheet({ events, selectedEvent, activeScenario, onScenarioCh
                       </div>
                       <div style={{ display: "flex", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
                         <span style={{ color: "rgba(0,180,255,0.38)", fontSize: 9, fontFamily: mono }}>{ev.location?.label ?? "Region under review"}</span>
-                        <span style={{ color: pcfg.color, fontSize: 9, fontFamily: mono, fontWeight: 700 }}>{Math.round(ev.lensPriorityScore ?? ev.priorityScore ?? 0)} pts</span>
+                        <span style={{ color: pcfg.color, fontSize: 9, fontFamily: mono, fontWeight: 700 }}>{Math.round(ev.priorityQueueScore ?? ev.lensPriorityScore ?? ev.priorityScore ?? 0)} pts</span>
+                      </div>
+                      <div style={{ display: "flex", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
+                        <span style={{ color: "rgba(150,200,240,0.58)", fontSize: 9, fontFamily: mono }}>{ev.sourceSignals?.sourceCount ?? 0} sources</span>
+                        <span style={{ color: "rgba(150,200,240,0.58)", fontSize: 9, fontFamily: mono }}>{ev.confidence}</span>
                       </div>
                       <div style={{ display: "flex", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
                         <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
@@ -4083,11 +4266,16 @@ function MobileBottomSheet({ events, selectedEvent, activeScenario, onScenarioCh
                             <TrafficPill key={`${ev.id}-${item.text}`} level={item.level}>{item.text}</TrafficPill>
                           ))}
                         </div>
-                        <span style={{ color: "rgba(150,200,240,0.5)", fontSize: 9, fontFamily: mono }}>{getDataFreshness(ev.timestamp).label}</span>
+                        <span style={{ color: "rgba(150,200,240,0.5)", fontSize: 9, fontFamily: mono }}>{freshnessMeta.detail}</span>
                       </div>
                     </button>
                   );
                 })}
+                {events.length === 0 ? (
+                  <div style={{ color: "rgba(150,200,240,0.58)", fontSize: 11, lineHeight: 1.6, fontFamily: bodyFont }}>
+                    {refreshState?.message ? "Board checked. No newer high-relevance signals found." : "No signals match this filter."}
+                  </div>
+                ) : null}
               </div>
             ) : activeTab === "layers" ? (
               <div style={{ display: "grid", gap: 12 }}>
@@ -4822,12 +5010,16 @@ function TopBar({ counts, bordersLoaded, activeLayers, onLayerToggle, isMobile, 
 // DESKTOP LEFT SIDEBAR
 // ═══════════════════════════════════════════════════════════════════════════════
 
-function DesktopSidebar({ events, selectedEvent, onSelect, modeHours, onModeChange, topOffset = TOP_BAR_HEIGHT }) {
+function DesktopSidebar({ events, selectedEvent, onSelect, modeHours, onModeChange, topOffset = TOP_BAR_HEIGHT, sortMode = "priority", onSortChange, systemStatus, refreshState, adminUnlocked = false }) {
   const options = [
     { label: "24h", value: 24 },
     { label: "7d", value: 24 * 7 },
     { label: "30d", value: 24 * 30 },
   ];
+  const newsFreshness = getDataFreshness(systemStatus?.automation?.lastNewsRefreshAt);
+  const aiFreshness = getDataFreshness(systemStatus?.automation?.lastAiRefreshAt);
+  const refreshMessage = refreshState?.message ?? "";
+  const sortOptions = ACTIVE_SIGNAL_SORT_OPTIONS;
   return (
     <div style={{
       position: "absolute", left: 0, top: topOffset, bottom: 0, width: 284,
@@ -4846,6 +5038,15 @@ function DesktopSidebar({ events, selectedEvent, onSelect, modeHours, onModeChan
         <div style={{ color: "rgba(148,175,198,0.72)", fontSize: 12, lineHeight: 1.5, marginTop: 4, fontFamily: bodyFont }}>
           Live geopolitical signals prioritized for the current lens.
         </div>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 12 }}>
+          <TrafficPill level={newsFreshness.tone}>News {newsFreshness.label}</TrafficPill>
+          <TrafficPill level={aiFreshness.tone}>AI {aiFreshness.label}</TrafficPill>
+        </div>
+        {refreshMessage ? (
+          <div style={{ marginTop: 8, color: "rgba(150,205,245,0.72)", fontSize: 11, lineHeight: 1.55, fontFamily: bodyFont }}>
+            {refreshMessage}
+          </div>
+        ) : null}
         <div style={{ display: "flex", gap: 8, marginTop: 14, flexWrap: "wrap" }}>
           <TrafficPill level="red">{events.filter((ev) => ev.intensity === "high").length} H</TrafficPill>
           <TrafficPill level="amber">{events.filter((ev) => ev.intensity === "medium").length} M</TrafficPill>
@@ -4870,11 +5071,22 @@ function DesktopSidebar({ events, selectedEvent, onSelect, modeHours, onModeChan
             </button>
           ))}
         </div>
+        <div style={{ marginTop: 12, display: "flex", flexWrap: "wrap", gap: 6 }}>
+          {sortOptions.map((option) => (
+            <SegmentedFilterChip
+              key={option.key}
+              active={sortMode === option.key}
+              onClick={() => onSortChange?.(option.key)}
+            >
+              {option.label}
+            </SegmentedFilterChip>
+          ))}
+        </div>
       </div>
       <div style={sharedPanelBodyStyle({ flex: 1 })}>
         {events.length === 0 ? (
           <div style={{ padding: "18px 18px", color: "rgba(150,200,240,0.55)", fontSize: 10, fontFamily: mono, lineHeight: 1.6 }}>
-            No events match the current timeline and focus filters.
+            {refreshMessage ? "Board checked. No newer high-relevance signals found." : "No signals match this filter."}
           </div>
         ) : null}
         {events.map(ev => {
@@ -4882,11 +5094,12 @@ function DesktopSidebar({ events, selectedEvent, onSelect, modeHours, onModeChan
           const pcfg = PRIORITY_CONFIG[ev.priorityLevel] || PRIORITY_CONFIG.LOW;
           const sel  = selectedEvent?.id === ev.id;
           const eventLabels = getEventStateLabels(ev);
+          const freshnessMeta = getSignalFreshnessMeta(ev);
           return (
             <div key={ev.id} onClick={() => onSelect(ev)} style={{
               padding: "16px 18px",
               borderBottom: "1px solid rgba(87,216,255,0.06)",
-              borderLeft: `3px solid ${sel ? cfg.color : "transparent"}`,
+              borderLeft: `3px solid ${sel ? cfg.color : ev.impactScore >= 85 ? "rgba(255,102,119,0.78)" : ev.impactScore >= 65 ? "rgba(255,191,71,0.64)" : "transparent"}`,
               background: sel ? "rgba(8,34,56,0.34)" : "transparent",
               cursor: "pointer", transition: "all 0.15s ease",
             }}
@@ -4898,6 +5111,7 @@ function DesktopSidebar({ events, selectedEvent, onSelect, modeHours, onModeChan
                   {ev.intensity}
                 </TrafficPill>
                 <TrafficPill level="neutral">{ev.category ?? "Political"}</TrafficPill>
+                <TrafficPill level={freshnessMeta.tone}>{freshnessMeta.label}</TrafficPill>
                 {ev.watchlistMatch?.matched ? <TrafficPill level="amber">Watchlist</TrafficPill> : null}
               </div>
               <div style={{ color: sel ? "#c8e8ff" : "rgba(235,244,255,0.9)", fontSize: 17,
@@ -4914,7 +5128,7 @@ function DesktopSidebar({ events, selectedEvent, onSelect, modeHours, onModeChan
                 <span style={{ color: pcfg.color, fontSize: 9, fontFamily: mono,
                   fontWeight: 700, background: pcfg.bg,
                   border: `1px solid ${pcfg.border}`, borderRadius: 999,
-                  padding: "4px 8px" }}>{Math.round(ev.lensPriorityScore ?? ev.priorityScore ?? 0)}</span>
+                  padding: "4px 8px" }}>{Math.round(ev.priorityQueueScore ?? ev.lensPriorityScore ?? ev.priorityScore ?? 0)}</span>
               </div>
               <div style={{ marginTop: 12, display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
                 <div style={{ padding: "8px 10px", borderRadius: 12, background: "rgba(8,20,36,0.58)", border: "1px solid rgba(94,164,195,0.1)" }}>
@@ -4929,7 +5143,7 @@ function DesktopSidebar({ events, selectedEvent, onSelect, modeHours, onModeChan
               <div style={{ marginTop: 10, display: "flex", justifyContent: "space-between", gap: 8, color: "rgba(150,200,240,0.54)", fontSize: 10, fontFamily: mono, flexWrap: "wrap" }}>
                 <span>{ev.sourceSignals?.sourceCount ?? 0} sources</span>
                 <span>{ev.recentTrend ?? "Stable"}</span>
-                <span>{getDataFreshness(ev.timestamp).label}</span>
+                <span>{freshnessMeta.detail}</span>
               </div>
               {eventLabels.length > 0 ? (
                 <div style={{ marginTop: 10, display: "flex", flexWrap: "wrap", gap: 6 }}>
@@ -4983,6 +5197,7 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
   const [showPersonalize, setShowPersonalize] = useState(false);
   const [prefs,           setPrefs]           = useState({ region: "all", sectors: [], riskLevel: "all" });
   const [selectedLens,    setSelectedLens]    = useState("global_risk");
+  const [activeSignalSort, setActiveSignalSort] = useState("priority");
   const [refreshState,    setRefreshState]    = useState({ status: "idle", message: "", detail: null });
   const [briefing,        setBriefing]        = useState(buildBriefing(SCORED_EVENTS));
   const [selectedMarketKey, setSelectedMarketKey] = useState(null);
@@ -5194,9 +5409,14 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
     const filtered = filterEvents(timelineEvents, prefs).map((event) => ({
       ...event,
       watchlistMatch: eventMatchesWatchlist(event, watchlist),
+      priorityQueueScore: computeActiveSignalPriority(event),
     }));
-    return distributeContactPositions(applyDecisionLens(filtered, selectedLens));
-  }, [timelineEvents, prefs, watchlist, selectedLens]);
+    const lensApplied = distributeContactPositions(applyDecisionLens(filtered, selectedLens));
+    return sortActiveSignals(lensApplied, activeSignalSort).map((event) => ({
+      ...event,
+      priorityQueueScore: computeActiveSignalPriority(event),
+    }));
+  }, [timelineEvents, prefs, watchlist, selectedLens, activeSignalSort]);
 
   const conflictZones = useMemo(
     () => deriveConflictZones(filteredEvents),
@@ -6246,6 +6466,11 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
             modeHours={timelineHours}
             onModeChange={setTimelineHours}
             topOffset={headerHeight}
+            sortMode={activeSignalSort}
+            onSortChange={setActiveSignalSort}
+            systemStatus={systemStatus}
+            refreshState={refreshState}
+            adminUnlocked={adminSession.unlocked}
           />
         )}
 
@@ -6376,6 +6601,8 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
             strategicBrief={strategicBrief}
             demoMode={DEMO_MODE}
             topEvents={liveTopEvents}
+            sortMode={activeSignalSort}
+            onSortChange={setActiveSignalSort}
             liveSunEnabled={liveSunEnabled}
             onToggleLiveSun={() => setLiveSunEnabled((current) => !current)}
             onSelectMarketCategory={setSelectedMarketKey}
