@@ -408,7 +408,7 @@ export default function ClassicIntelBoard({ activeView = "classic", onNavigate }
       }
 
       await loadEvents();
-      setRefreshState({ status: "success", message: "Intel board updated." });
+      setRefreshState({ status: "success", message: data?.result?.message ?? "Intel board updated." });
       window.setTimeout(() => setRefreshState({ status: "idle", message: "" }), 4000);
     } catch (err) {
       setRefreshState({ status: "error", message: err.message });

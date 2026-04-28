@@ -1569,6 +1569,9 @@ function normalizeBackendEvent(event) {
     articleIds: event.articleIds ?? event.article_ids ?? [],
     keywords: event.keywords ?? [],
     aiStatus: event.aiStatus ?? event.ai_status ?? "fallback",
+    aiUpdatedAt: event.aiUpdatedAt ?? event.ai_updated_at ?? null,
+    created_at: event.created_at ?? event.createdAt ?? null,
+    updated_at: event.updated_at ?? event.updatedAt ?? null,
     whyThisMatters: sanitized.whyThisMatters ?? event.whyThisMatters ?? event.why_this_matters ?? [],
     watchIndicators: sanitized.watchIndicators ?? event.watchIndicators ?? event.watch_indicators ?? [],
     confidenceRationale: sanitized.confidenceRationale ?? event.confidenceRationale ?? event.confidence_rationale ?? "",
@@ -2643,8 +2646,74 @@ function getDataFreshness(value) {
   if (!value) return { label: "Awaiting refresh", tone: "neutral", hours: null };
   const hours = Math.max(0, (Date.now() - new Date(value).getTime()) / 3600_000);
   if (hours < 2) return { label: `Fresh · ${hours < 1 ? "<1h" : `${Math.round(hours)}h`} ago`, tone: "green", hours };
+  if (hours < 6) return { label: `Recent · ${Math.round(hours)}h ago`, tone: "neutral", hours };
   if (hours <= 12) return { label: `Aging · ${Math.round(hours)}h ago`, tone: "amber", hours };
   return { label: `Stale · ${Math.round(hours)}h ago`, tone: "red", hours };
+}
+
+function formatShortAge(value) {
+  if (!value) return "Awaiting refresh";
+  const deltaMs = Math.max(0, Date.now() - new Date(value).getTime());
+  const minutes = Math.round(deltaMs / 60_000);
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return `${minutes} min ago`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.round(hours / 24);
+  return `${days}d ago`;
+}
+
+function formatRefreshMessage(result) {
+  if (!result) return "";
+  return result.message ?? "";
+}
+
+function formatProviderDiagnostics(result) {
+  if (!result) return "";
+  const providerChunks = Array.isArray(result.providerDiagnostics)
+    ? result.providerDiagnostics
+        .filter((item) => item && item.provider)
+        .map((item) => {
+          const base = `${item.provider} ${item.articlesFetched ?? 0} articles`;
+          if (item.status === "rate_limited") return `${item.provider} rate limited`;
+          if (item.status !== "ok") return `${item.provider} ${item.status.replace(/_/g, " ")}`;
+          return base;
+        })
+    : [];
+
+  const extras = [];
+  if (Number.isFinite(result.duplicatesSkipped)) extras.push(`${result.duplicatesSkipped} duplicates`);
+  if (Number.isFinite(result.filteredOutCount)) extras.push(`${result.filteredOutCount} filtered`);
+
+  return [...providerChunks, ...extras].join(" · ");
+}
+
+function getEventStateLabels(event) {
+  const labels = [];
+  const createdAt = event.created_at ?? event.createdAt ?? event.timestamp;
+  const updatedAt = event.updated_at ?? event.updatedAt ?? createdAt;
+  const aiUpdatedAt = event.aiUpdatedAt ?? event.ai_updated_at ?? null;
+  const createdHours = createdAt ? Math.max(0, (Date.now() - new Date(createdAt).getTime()) / 3600_000) : null;
+  const updatedHours = updatedAt ? Math.max(0, (Date.now() - new Date(updatedAt).getTime()) / 3600_000) : null;
+
+  if (createdHours !== null && createdHours < 2) {
+    labels.push({ text: "New signal", level: "green" });
+  } else if (updatedHours !== null && updatedHours < 6) {
+    labels.push({ text: `Updated ${formatShortAge(updatedAt)}`, level: "neutral" });
+  } else if (updatedAt) {
+    labels.push({ text: "Cached", level: "neutral" });
+  }
+
+  if (event.aiStatus === "enriched") labels.push({ text: "AI enriched", level: "green" });
+  else if (event.aiStatus === "rule_based" || event.aiStatus === "fallback") labels.push({ text: "Rule-based", level: "amber" });
+  else if (event.aiStatus === "cached") labels.push({ text: "Cached", level: "neutral" });
+  else if (event.aiStatus === "provider_error") labels.push({ text: "No material change", level: "neutral" });
+
+  if (aiUpdatedAt) {
+    labels.push({ text: `AI ${formatShortAge(aiUpdatedAt)}`, level: "neutral" });
+  }
+
+  return labels.slice(0, 3);
 }
 
 // ── Reusable atoms ────────────────────────────────────────────────────────────
@@ -3016,6 +3085,11 @@ function ScoreBreakdownPanel({ event }) {
 
 function WarRoomPanel({ topEvents, onSelect, selectedEventId, onClose, marketImpact, systemStatus, adminUnlocked, onAdminUnlock, onAdminRefresh, onOpenIntelBoard, refreshState, mobile = false, demoMode = false }) {
   const marketRows = marketImpact ? [marketImpact.oil, marketImpact.shipping, marketImpact.defense, marketImpact.equities] : [];
+  const newsFreshness = getDataFreshness(systemStatus?.automation?.lastNewsRefreshAt);
+  const aiFreshness = getDataFreshness(systemStatus?.automation?.lastAiRefreshAt);
+  const latestEventFreshness = getDataFreshness(refreshState?.detail?.newestEventAt ?? null);
+  const latestArticleFreshness = getDataFreshness(refreshState?.detail?.newestArticleAt ?? null);
+  const providerLine = adminUnlocked ? formatProviderDiagnostics(refreshState?.detail) : "";
   return (
     <div style={{
       position: mobile ? "fixed" : "absolute",
@@ -3063,12 +3137,32 @@ function WarRoomPanel({ topEvents, onSelect, selectedEventId, onClose, marketImp
             <div style={{ color: "#d6ebff", fontFamily: display, fontSize: 17, fontWeight: 700 }}>
               AI remaining today: {systemStatus?.aiRemainingToday ?? 0}
             </div>
-            <div style={{ color: "rgba(150,205,245,0.7)", fontSize: 11, lineHeight: 1.6, fontFamily: bodyFont }}>
-              News refresh: {formatStatusMoment(systemStatus?.automation?.lastNewsRefreshAt)}
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+              <TrafficPill level={newsFreshness.tone}>{newsFreshness.label}</TrafficPill>
+              <TrafficPill level={aiFreshness.tone}>AI {aiFreshness.label}</TrafficPill>
+              {refreshState?.detail?.newestArticleAt ? (
+                <TrafficPill level={latestArticleFreshness.tone}>Latest source · {formatShortAge(refreshState.detail.newestArticleAt)}</TrafficPill>
+              ) : null}
+              {refreshState?.detail?.newestEventAt ? (
+                <TrafficPill level={latestEventFreshness.tone}>Latest event · {formatShortAge(refreshState.detail.newestEventAt)}</TrafficPill>
+              ) : null}
             </div>
             <div style={{ color: "rgba(150,205,245,0.7)", fontSize: 11, lineHeight: 1.6, fontFamily: bodyFont }}>
-              AI refresh: {formatStatusMoment(systemStatus?.automation?.lastAiRefreshAt)}
+              Last news refresh: {formatShortAge(systemStatus?.automation?.lastNewsRefreshAt)}
             </div>
+            <div style={{ color: "rgba(150,205,245,0.7)", fontSize: 11, lineHeight: 1.6, fontFamily: bodyFont }}>
+              Last AI enrichment: {formatShortAge(systemStatus?.automation?.lastAiRefreshAt)}
+            </div>
+            {refreshState?.message ? (
+              <div style={{ color: "rgba(214,235,255,0.82)", fontSize: 11, lineHeight: 1.6, fontFamily: bodyFont }}>
+                {refreshState.message}
+              </div>
+            ) : null}
+            {adminUnlocked && providerLine ? (
+              <div style={{ color: "rgba(130,185,230,0.72)", fontSize: 10, lineHeight: 1.6, fontFamily: mono }}>
+                {providerLine}
+              </div>
+            ) : null}
           </div>
           <div style={{ display: "grid", gap: 8 }}>
             {marketRows.map((item) => (
@@ -3181,6 +3275,7 @@ function EventDetailContent({ event, activeScenario, onScenarioChange, allEvents
   const cfg = INTENSITY[event.intensity];
   const brief = buildEventBrief(event, allEvents);
   const sourceLine = brief.sourceTrace.domains.slice(0, 3).join(", ") || "No named sources";
+  const eventStateLabels = getEventStateLabels(event);
   const linkedSignals = socialSignals
     .map((signal) => ({ signal, corroboration: deriveSocialCorroboration(signal, [event, ...allEvents]) }))
     .filter(({ signal, corroboration }) =>
@@ -3215,6 +3310,9 @@ function EventDetailContent({ event, activeScenario, onScenarioChange, allEvents
           <span style={{ color: "rgba(0,180,255,0.38)", fontSize: 9, fontFamily: mono }}>
             {event.location?.lat != null && event.location?.lng != null ? `${event.location.lat.toFixed(2)}°, ${event.location.lng.toFixed(2)}°` : brief.whereItHappened}
           </span>
+          {eventStateLabels.map((item) => (
+            <TrafficPill key={`${event.id}-${item.text}`} level={item.level}>{item.text}</TrafficPill>
+          ))}
         </div>
       </div>
 
@@ -3956,6 +4054,7 @@ function MobileBottomSheet({ events, selectedEvent, activeScenario, onScenarioCh
                   const c    = INTENSITY[ev.intensity];
                   const pcfg = PRIORITY_CONFIG[ev.priorityLevel] || PRIORITY_CONFIG.LOW;
                   const sel = selectedEvent?.id === ev.id;
+                  const eventLabels = getEventStateLabels(ev);
                   return (
                     <button key={ev.id} onClick={() => { onSelectEvent(ev); setSheetState("full"); }}
                       style={{ padding: "13px 14px", border: "1px solid rgba(94,164,195,0.14)",
@@ -3979,9 +4078,11 @@ function MobileBottomSheet({ events, selectedEvent, activeScenario, onScenarioCh
                         <span style={{ color: pcfg.color, fontSize: 9, fontFamily: mono, fontWeight: 700 }}>{Math.round(ev.lensPriorityScore ?? ev.priorityScore ?? 0)} pts</span>
                       </div>
                       <div style={{ display: "flex", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
-                        <TrafficPill level={ev.aiStatus === "enriched" ? "green" : ev.aiStatus === "budget_exhausted" ? "amber" : "neutral"}>
-                          {ev.aiStatus === "enriched" ? "AI enriched" : ev.aiStatus === "cached" ? "Cached intelligence" : ev.aiStatus === "budget_exhausted" ? "Budget exhausted" : "Rule-based"}
-                        </TrafficPill>
+                        <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                          {eventLabels.map((item) => (
+                            <TrafficPill key={`${ev.id}-${item.text}`} level={item.level}>{item.text}</TrafficPill>
+                          ))}
+                        </div>
                         <span style={{ color: "rgba(150,200,240,0.5)", fontSize: 9, fontFamily: mono }}>{getDataFreshness(ev.timestamp).label}</span>
                       </div>
                     </button>
@@ -4036,12 +4137,24 @@ function MobileBottomSheet({ events, selectedEvent, activeScenario, onScenarioCh
                   <div style={{ color: "#d6ebff", fontSize: 12, lineHeight: 1.7, fontFamily: bodyFont }}>
                     AI remaining today: {systemStatus?.aiRemainingToday ?? 0}
                   </div>
-                  <div style={{ color: "rgba(150,205,245,0.68)", fontSize: 11, lineHeight: 1.7, fontFamily: bodyFont }}>
-                    News refresh: {formatStatusMoment(systemStatus?.automation?.lastNewsRefreshAt)}
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 8 }}>
+                    <TrafficPill level={getDataFreshness(systemStatus?.automation?.lastNewsRefreshAt).tone}>
+                      {getDataFreshness(systemStatus?.automation?.lastNewsRefreshAt).label}
+                    </TrafficPill>
+                    <TrafficPill level={getDataFreshness(systemStatus?.automation?.lastAiRefreshAt).tone}>
+                      AI {getDataFreshness(systemStatus?.automation?.lastAiRefreshAt).label}
+                    </TrafficPill>
                   </div>
-                  <div style={{ color: "rgba(150,205,245,0.68)", fontSize: 11, lineHeight: 1.7, fontFamily: bodyFont }}>
-                    AI refresh: {formatStatusMoment(systemStatus?.automation?.lastAiRefreshAt)}
-                  </div>
+                  {refreshState?.message ? (
+                    <div style={{ color: "rgba(214,235,255,0.82)", fontSize: 11, lineHeight: 1.6, fontFamily: bodyFont, marginTop: 8 }}>
+                      {refreshState.message}
+                    </div>
+                  ) : null}
+                  {adminUnlocked && formatProviderDiagnostics(refreshState?.detail) ? (
+                    <div style={{ color: "rgba(150,205,245,0.68)", fontSize: 10, lineHeight: 1.6, fontFamily: mono, marginTop: 8 }}>
+                      {formatProviderDiagnostics(refreshState?.detail)}
+                    </div>
+                  ) : null}
                   <button onClick={onOpenIntelBoard} style={{
                     marginTop: 10, width: "100%", minHeight: 38, borderRadius: 12,
                     border: "1px solid rgba(87,216,255,0.18)", background: "rgba(10,31,52,0.76)",
@@ -4464,6 +4577,9 @@ function TopBar({ counts, bordersLoaded, activeLayers, onLayerToggle, isMobile, 
   const headerHeight = getHeaderHeight(isMobile, isTablet);
   const publicLayerEntries = layerEntries.filter(([key]) => key !== "intelBoard");
   const aiRemaining = systemStatus?.aiRemainingToday ?? systemStatus?.automation?.aiRemainingToday ?? 0;
+  const newsFreshness = getDataFreshness(systemStatus?.automation?.lastNewsRefreshAt);
+  const aiFreshness = getDataFreshness(systemStatus?.automation?.lastAiRefreshAt);
+  const providerLine = adminUnlocked ? formatProviderDiagnostics(refreshState?.detail) : "";
   const navButtons = APP_VIEWS.map((item) => {
     const active = activeView === item.key;
     return (
@@ -4657,11 +4773,21 @@ function TopBar({ counts, bordersLoaded, activeLayers, onLayerToggle, isMobile, 
                 <span style={{ color: "rgba(148,175,198,0.78)", fontFamily: mono, fontSize: 10 }}>{time} UTC</span>
               </div>
               <div style={{ color: "rgba(214,235,255,0.84)", fontSize: 12, fontFamily: bodyFont }}>AI remaining today {aiRemaining}</div>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                <TrafficPill level={newsFreshness.tone}>{newsFreshness.label}</TrafficPill>
+                <TrafficPill level={aiFreshness.tone}>AI {aiFreshness.label}</TrafficPill>
+              </div>
+              {refreshState?.message ? (
+                <div style={{ color: "rgba(214,235,255,0.84)", fontSize: 12, fontFamily: bodyFont, lineHeight: 1.55 }}>
+                  {refreshState.message}
+                </div>
+              ) : null}
               {demoMode ? <TrafficPill level="neutral">Public Preview</TrafficPill> : null}
               {adminUnlocked && systemStatus?.automation ? (
                 <div style={{ display: "grid", gap: 4, paddingTop: 6, borderTop: "1px solid rgba(94,164,195,0.12)", color: "rgba(148,175,198,0.78)", fontFamily: mono, fontSize: 10 }}>
                   <div>News {formatLayerTime(systemStatus.automation.lastNewsRefreshAt)}</div>
                   <div>AI {formatLayerTime(systemStatus.automation.lastAiRefreshAt)}</div>
+                  {providerLine ? <div>{providerLine}</div> : null}
                 </div>
               ) : null}
             </div>
@@ -4676,6 +4802,8 @@ function TopBar({ counts, bordersLoaded, activeLayers, onLayerToggle, isMobile, 
                 <>
                   <TopControlButton onClick={() => onAdminRefresh("news")}>Refresh Newsfeed</TopControlButton>
                   <TopControlButton onClick={() => onAdminRefresh("ai")}>Master Refresh with AI</TopControlButton>
+                  {refreshState?.message ? <div style={{ color: "rgba(214,235,255,0.82)", fontFamily: bodyFont, fontSize: 12, lineHeight: 1.55 }}>{refreshState.message}</div> : null}
+                  {providerLine ? <div style={{ color: "rgba(148,175,198,0.76)", fontFamily: mono, fontSize: 10, lineHeight: 1.5 }}>{providerLine}</div> : null}
                   {feedState?.message ? <div style={{ color: "rgba(148,175,198,0.76)", fontFamily: mono, fontSize: 10 }}>{feedState.message}</div> : null}
                 </>
               ) : (
@@ -4753,6 +4881,7 @@ function DesktopSidebar({ events, selectedEvent, onSelect, modeHours, onModeChan
           const cfg  = INTENSITY[ev.intensity];
           const pcfg = PRIORITY_CONFIG[ev.priorityLevel] || PRIORITY_CONFIG.LOW;
           const sel  = selectedEvent?.id === ev.id;
+          const eventLabels = getEventStateLabels(ev);
           return (
             <div key={ev.id} onClick={() => onSelect(ev)} style={{
               padding: "16px 18px",
@@ -4802,6 +4931,13 @@ function DesktopSidebar({ events, selectedEvent, onSelect, modeHours, onModeChan
                 <span>{ev.recentTrend ?? "Stable"}</span>
                 <span>{getDataFreshness(ev.timestamp).label}</span>
               </div>
+              {eventLabels.length > 0 ? (
+                <div style={{ marginTop: 10, display: "flex", flexWrap: "wrap", gap: 6 }}>
+                  {eventLabels.map((item) => (
+                    <TrafficPill key={`${ev.id}-${item.text}`} level={item.level}>{item.text}</TrafficPill>
+                  ))}
+                </div>
+              ) : null}
             </div>
           );
         })}
@@ -4847,7 +4983,7 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
   const [showPersonalize, setShowPersonalize] = useState(false);
   const [prefs,           setPrefs]           = useState({ region: "all", sectors: [], riskLevel: "all" });
   const [selectedLens,    setSelectedLens]    = useState("global_risk");
-  const [refreshState,    setRefreshState]    = useState({ status: "idle", message: "" });
+  const [refreshState,    setRefreshState]    = useState({ status: "idle", message: "", detail: null });
   const [briefing,        setBriefing]        = useState(buildBriefing(SCORED_EVENTS));
   const [selectedMarketKey, setSelectedMarketKey] = useState(null);
   const [timelineHours,   setTimelineHours]   = useState(24 * 7);
@@ -5024,7 +5160,7 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
       setAdminSession({ unlocked: true, secret });
     }
 
-    setRefreshState({ status: "running", message: "Triggering pipeline..." });
+    setRefreshState({ status: "running", message: mode === "ai" ? "Checking AI enrichment status..." : "Checking live feeds...", detail: null });
     try {
       const query = mode && mode !== "full" ? `?mode=${encodeURIComponent(mode)}` : "";
       const res = await fetch(resolveBackendUrl(`/api/v1/admin/refresh${query}`), {
@@ -5040,10 +5176,11 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
       }
 
       await refreshData();
-      setRefreshState({ status: "success", message: "Pipeline refresh completed." });
-      window.setTimeout(() => setRefreshState({ status: "idle", message: "" }), 4000);
+      const result = data.result ?? {};
+      setRefreshState({ status: "success", message: formatRefreshMessage(result) || "Refresh complete.", detail: result });
+      window.setTimeout(() => setRefreshState({ status: "idle", message: "", detail: result }), 6000);
     } catch (err) {
-      setRefreshState({ status: "error", message: err.message });
+      setRefreshState({ status: "error", message: err.message, detail: null });
     }
   }, [adminSession.secret, refreshData]);
 

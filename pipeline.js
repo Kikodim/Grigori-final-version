@@ -142,6 +142,66 @@ function getElapsed(startedAt) {
   return `${((Date.now() - startedAt) / 1000).toFixed(1)}s`;
 }
 
+function newestIso(values = []) {
+  const latest = values.reduce((best, value) => {
+    const timestamp = value ? new Date(value).getTime() : 0;
+    return timestamp > best ? timestamp : best;
+  }, 0);
+  return latest ? new Date(latest).toISOString() : null;
+}
+
+function buildNewsRefreshMessage({
+  eventsCreated = 0,
+  eventsUpdated = 0,
+  eventsUnchanged = 0,
+  articlesFetched = 0,
+  filteredOutCount = 0,
+  lowRelevanceCount = 0,
+}) {
+  if (eventsCreated > 0) {
+    return `News refreshed. ${eventsCreated} new signal${eventsCreated === 1 ? "" : "s"} added.`;
+  }
+  if (eventsUpdated > 0) {
+    return `News refreshed. ${eventsUpdated} existing signal${eventsUpdated === 1 ? "" : "s"} updated.`;
+  }
+  if (lowRelevanceCount > 0 && articlesFetched > 0) {
+    return "Feeds checked, but new articles did not meet geopolitical relevance threshold.";
+  }
+  if (filteredOutCount > 0 && articlesFetched > 0) {
+    return "News refreshed. No new relevant signals found.";
+  }
+  if (eventsUnchanged > 0) {
+    return "News refreshed. Existing events are already current.";
+  }
+  if (articlesFetched > 0) {
+    return "Refresh complete. No new relevant signals found.";
+  }
+  return "Signals checked. Current board remains up to date.";
+}
+
+function buildAiRefreshMessage({
+  aiCalls = 0,
+  changed = false,
+  aiSkippedReason = null,
+}) {
+  if (changed && aiCalls === 0 && aiSkippedReason === "provider_error") {
+    return "AI refresh checked one event; rule-based briefing applied.";
+  }
+  if (aiSkippedReason === "no_eligible_event" || aiSkippedReason === "event_already_enriched") {
+    return "AI refresh checked events, but no eligible stale event needed enrichment.";
+  }
+  if (aiSkippedReason && aiCalls === 0 && !changed) {
+    return "AI refresh checked events, but no eligible stale event needed enrichment.";
+  }
+  if (aiCalls > 0 && !changed) {
+    return "AI reviewed one event; no material change.";
+  }
+  if (aiCalls > 0 && changed) {
+    return "AI refreshed one high-priority event.";
+  }
+  return "AI refresh checked events, but no eligible stale event needed enrichment.";
+}
+
 function shouldPublishPreEvent(preEvent, articles = []) {
   const relevanceScore = Number(preEvent.relevanceScore ?? 0);
   const sourceCount = new Set(preEvent.sources ?? []).size;
@@ -256,6 +316,8 @@ async function runAiOnlyRefresh({ source, noAi, startedAt }) {
       reason: "Automated AI disabled",
       ...baseDiagnostics,
       aiSkippedReason: "automated_ai_disabled",
+      lastAiRefreshAt: null,
+      message: buildAiRefreshMessage({ aiCalls: 0, changed: false, aiSkippedReason: "automated_ai_disabled" }),
     };
   }
 
@@ -276,6 +338,8 @@ async function runAiOnlyRefresh({ source, noAi, startedAt }) {
       reason: "Gemini is not configured",
       ...baseDiagnostics,
       aiSkippedReason: "gemini_not_configured",
+      lastAiRefreshAt: null,
+      message: buildAiRefreshMessage({ aiCalls: 0, changed: false, aiSkippedReason: "gemini_not_configured" }),
     };
   }
 
@@ -296,6 +360,8 @@ async function runAiOnlyRefresh({ source, noAi, startedAt }) {
       reason: "MAX_AI_CALLS_PER_RUN is zero",
       ...baseDiagnostics,
       aiSkippedReason: "max_ai_calls_per_run_zero",
+      lastAiRefreshAt: null,
+      message: buildAiRefreshMessage({ aiCalls: 0, changed: false, aiSkippedReason: "max_ai_calls_per_run_zero" }),
     };
   }
 
@@ -316,6 +382,8 @@ async function runAiOnlyRefresh({ source, noAi, startedAt }) {
       reason: "AI daily budget exhausted",
       ...baseDiagnostics,
       aiSkippedReason: "daily_budget_exhausted",
+      lastAiRefreshAt: null,
+      message: buildAiRefreshMessage({ aiCalls: 0, changed: false, aiSkippedReason: "daily_budget_exhausted" }),
     };
   }
 
@@ -348,6 +416,8 @@ async function runAiOnlyRefresh({ source, noAi, startedAt }) {
       targetHadScenariosBefore: Array.isArray(previousTarget?.scenarios) && previousTarget.scenarios.length > 0,
       targetUpdatedAt: previousTarget?.aiUpdatedAt ?? previousTarget?.updated_at ?? previousTarget?.timestamp ?? null,
       aiSkippedReason: skipReason,
+      lastAiRefreshAt: null,
+      message: buildAiRefreshMessage({ aiCalls: 0, changed: false, aiSkippedReason: skipReason }),
     };
   }
 
@@ -371,7 +441,7 @@ async function runAiOnlyRefresh({ source, noAi, startedAt }) {
       mode: "ai",
       refreshMode: "ai",
       elapsed: getElapsed(startedAt),
-      changed: true,
+      changed: false,
       reason: "AI automation budget exhausted",
       ...baseDiagnostics,
       targetEventId: target.event.id,
@@ -380,6 +450,9 @@ async function runAiOnlyRefresh({ source, noAi, startedAt }) {
       targetHadScenariosBefore: Array.isArray(target.event.scenarios) && target.event.scenarios.length > 0,
       targetUpdatedAt: target.event.aiUpdatedAt ?? target.event.updated_at ?? target.event.timestamp ?? null,
       aiSkippedReason: "automation_budget_exhausted",
+      targetAiStatusAfter: "budget_exhausted",
+      lastAiRefreshAt: null,
+      message: buildAiRefreshMessage({ aiCalls: 0, changed: false, aiSkippedReason: "automation_budget_exhausted" }),
     };
   }
 
@@ -397,6 +470,17 @@ async function runAiOnlyRefresh({ source, noAi, startedAt }) {
     log.info(`AI skipped reason ${aiSkippedReason}`);
   }
 
+  const targetAiStatusAfter = result.generationMethod === "rule-based"
+    ? (result.aiSkippedReason === "provider_error" ? "provider_error" : "rule_based")
+    : "enriched";
+  const lastAiRefreshAt = new Date().toISOString();
+
+  const titleChanged = normalizeText(result.title) !== normalizeText(target.event.title);
+  const summaryChanged = normalizeText(result.summary) !== normalizeText(target.event.summary);
+  const developmentsChanged = JSON.stringify(result.developments ?? []) !== JSON.stringify(target.event.developments ?? []);
+  const scenariosChanged = JSON.stringify(result.scenarios ?? []) !== JSON.stringify(target.event.scenarios ?? []);
+  const changed = titleChanged || summaryChanged || developmentsChanged || scenariosChanged || target.event.aiStatus !== targetAiStatusAfter;
+
   await insertEvent({
     ...target.event,
     title: result.title,
@@ -413,9 +497,9 @@ async function runAiOnlyRefresh({ source, noAi, startedAt }) {
     marketImpact: result.marketImpact ?? target.event.marketImpact ?? {},
     sourceAssessment: result.sourceAssessment ?? target.event.sourceAssessment ?? {},
     aiStatus: result.generationMethod === "rule-based"
-      ? (result.aiSkippedReason === "provider_error" ? "provider_error" : "fallback")
+      ? (result.aiSkippedReason === "provider_error" ? "provider_error" : "rule_based")
       : "enriched",
-    aiUpdatedAt: new Date().toISOString(),
+    aiUpdatedAt: lastAiRefreshAt,
     clusterSignature: target.preEvent._clusterSignature,
     importanceScore: target.importanceScore,
   });
@@ -431,7 +515,7 @@ async function runAiOnlyRefresh({ source, noAi, startedAt }) {
     mode: "ai",
     refreshMode: "ai",
     elapsed: getElapsed(startedAt),
-    changed: true,
+    changed,
     targetEventId: target.event.id,
     targetTitle: target.event.title,
     ...baseDiagnostics,
@@ -440,10 +524,13 @@ async function runAiOnlyRefresh({ source, noAi, startedAt }) {
     targetAiStatusBefore: target.event.aiStatus ?? null,
     targetHadScenariosBefore: Array.isArray(target.event.scenarios) && target.event.scenarios.length > 0,
     targetUpdatedAt: target.event.aiUpdatedAt ?? target.event.updated_at ?? target.event.timestamp ?? null,
+    targetAiStatusAfter,
     aiAttempted: true,
     aiCallsUsed,
     aiSkippedReason,
     aiProviderError,
+    lastAiRefreshAt,
+    message: buildAiRefreshMessage({ aiCalls: result.generationMethod === "rule-based" ? 0 : 1, changed, aiSkippedReason }),
   };
 }
 
@@ -605,20 +692,43 @@ export async function runPipeline({ source = "manual", noAi = false, mode = "ful
   if (publishablePreEvents.length === 0) {
     const purged = await deleteOldEvents(parseInt(process.env.EVENT_MAX_AGE_HOURS ?? "24", 10));
     cachePrune();
+    const message = buildNewsRefreshMessage({
+      eventsCreated: 0,
+      eventsUpdated: 0,
+      eventsUnchanged: 0,
+      articlesFetched: ingestResult.fetched ?? 0,
+      filteredOutCount: ingestResult.filteredOutCount ?? 0,
+      lowRelevanceCount: ingestResult.lowRelevanceCount ?? 0,
+    });
     return {
       ok: true,
       events: 0,
       articles: ingestResult.saved,
+      articlesFetched: ingestResult.fetched,
+      articlesSaved: ingestResult.saved,
       clusters: 0,
+      clustersCreated: 0,
       cached: cachedCount,
       aiCalls: 0,
       purged,
       mode: mode === "news" ? "news" : ingestResult.mode,
       refreshMode: mode,
+      duplicatesSkipped: ingestResult.duplicatesSkipped ?? 0,
+      eventsCreated: 0,
+      eventsUpdated: 0,
+      eventsUnchanged: 0,
       filteredOutCount: ingestResult.filteredOutCount ?? 0,
       lowRelevanceCount: ingestResult.lowRelevanceCount ?? 0,
       regionUnderReviewCount: 0,
       suppressedClusterCount: preEvents.length,
+      newestArticleAt: ingestResult.newestArticleAt ?? null,
+      newestEventAt: null,
+      providerDiagnostics: ingestResult.providerDiagnostics ?? [],
+      providersUsed: ingestResult.providersUsed ?? [],
+      skippedProviders: ingestResult.skippedProviders ?? [],
+      rateLimitedProviders: ingestResult.rateLimitedProviders ?? [],
+      lastNewsRefreshAt: new Date().toISOString(),
+      message,
       elapsed: getElapsed(startedAt),
     };
   }
@@ -712,6 +822,9 @@ export async function runPipeline({ source = "manual", noAi = false, mode = "ful
   }
 
   let created = 0;
+  let eventsUpdated = 0;
+  let eventsUnchanged = 0;
+  const eventTimestamps = [];
   for (const preEvent of publishablePreEvents) {
     const result = results.get(preEvent._clusterId);
     if (!result) continue;
@@ -753,6 +866,15 @@ export async function runPipeline({ source = "manual", noAi = false, mode = "ful
       isHistorical: false,
     });
     created++;
+    eventTimestamps.push(preEvent.timestamp);
+    const matchedCandidate = enrichedCandidates.find((candidate) => candidate.preEvent._clusterId === preEvent._clusterId);
+    if (matchedCandidate?.existingEvent) {
+      if (matchedCandidate.canReuse || !matchedCandidate.needsMeaningfulRefresh) {
+        eventsUnchanged++;
+      } else {
+        eventsUpdated++;
+      }
+    }
   }
 
   const purged = await deleteOldEvents(parseInt(process.env.EVENT_MAX_AGE_HOURS ?? "24", 10));
@@ -762,11 +884,17 @@ export async function runPipeline({ source = "manual", noAi = false, mode = "ful
     return !label || label === "region under review" || label === "unknown region";
   }).length;
 
+  const eventsCreated = Math.max(0, created - eventsUpdated - eventsUnchanged);
+  const newestEventAt = newestIso(eventTimestamps);
+  const lastNewsRefreshAt = new Date().toISOString();
   const summary = {
     ok: true,
     events: created,
     articles: ingestResult.saved,
+    articlesFetched: ingestResult.fetched,
+    articlesSaved: ingestResult.saved,
     clusters: publishablePreEvents.length,
+    clustersCreated: publishablePreEvents.length,
     cached: cachedCount,
     aiCalls: actualAiCalls,
     purged,
@@ -774,10 +902,29 @@ export async function runPipeline({ source = "manual", noAi = false, mode = "ful
     refreshMode: mode,
     automatedAiEnabled,
     noAi,
+    duplicatesSkipped: ingestResult.duplicatesSkipped ?? 0,
+    eventsCreated,
+    eventsUpdated,
+    eventsUnchanged,
     filteredOutCount: ingestResult.filteredOutCount ?? 0,
     lowRelevanceCount: ingestResult.lowRelevanceCount ?? 0,
     regionUnderReviewCount,
     suppressedClusterCount: Math.max(0, preEvents.length - publishablePreEvents.length),
+    newestArticleAt: ingestResult.newestArticleAt ?? null,
+    newestEventAt,
+    providerDiagnostics: ingestResult.providerDiagnostics ?? [],
+    providersUsed: ingestResult.providersUsed ?? [],
+    skippedProviders: ingestResult.skippedProviders ?? [],
+    rateLimitedProviders: ingestResult.rateLimitedProviders ?? [],
+    lastNewsRefreshAt,
+    message: buildNewsRefreshMessage({
+      eventsCreated,
+      eventsUpdated,
+      eventsUnchanged,
+      articlesFetched: ingestResult.fetched ?? 0,
+      filteredOutCount: ingestResult.filteredOutCount ?? 0,
+      lowRelevanceCount: ingestResult.lowRelevanceCount ?? 0,
+    }),
     elapsed: getElapsed(startedAt),
   };
 

@@ -272,18 +272,30 @@ export async function handlePipelineRun(req, res) {
   const result = await runPipeline({ source, noAi, mode, days });
   const nextNewsRefresh = new Date(Date.now() + 60 * 60 * 1000).toISOString();
   const nextAiRefresh = new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString();
+  let enrichedResult = { ...result };
   if (result.ok) {
     if (mode === "news" || mode === "full") {
-      await setRefreshState("news", {
+      const refreshState = await setRefreshState("news", {
         mode,
         source,
         events: result.events,
         articles: result.articles,
         aiCalls: result.aiCalls,
+        articlesFetched: result.articlesFetched ?? result.articles ?? 0,
+        articlesSaved: result.articlesSaved ?? result.articles ?? 0,
+        duplicatesSkipped: result.duplicatesSkipped ?? 0,
+        filteredOutCount: result.filteredOutCount ?? 0,
+        message: result.message ?? null,
+        providerDiagnostics: result.providerDiagnostics ?? [],
       }, nextNewsRefresh);
+      enrichedResult = {
+        ...enrichedResult,
+        lastNewsRefreshAt: refreshState.record?.lastRefresh ?? result.lastNewsRefreshAt ?? null,
+        nextEstimatedNewsRefresh: nextNewsRefresh,
+      };
     }
     if (mode === "ai" || (mode === "full" && !noAi)) {
-      await setRefreshState("ai", {
+      const refreshState = await setRefreshState("ai", {
         mode,
         source,
         events: result.events,
@@ -291,7 +303,15 @@ export async function handlePipelineRun(req, res) {
         targetEventId: result.targetEventId ?? null,
         targetTitle: result.targetTitle ?? null,
         reason: result.reason ?? null,
+        changed: result.changed ?? null,
+        aiSkippedReason: result.aiSkippedReason ?? null,
+        message: result.message ?? null,
       }, nextAiRefresh);
+      enrichedResult = {
+        ...enrichedResult,
+        lastAiRefreshAt: refreshState.record?.lastRefresh ?? result.lastAiRefreshAt ?? null,
+        nextEstimatedAiRefresh: nextAiRefresh,
+      };
     }
     if (mode === "backfill") {
       await setRefreshState("backfill", {
@@ -306,5 +326,5 @@ export async function handlePipelineRun(req, res) {
   }
   const status = result.ok ? 202 : 500;
   log.info(`Pipeline run completed: ok=${result.ok} mode=${result.mode} refreshMode=${mode} events=${result.events}`);
-  return res.status(status).json({ success: result.ok, result });
+  return res.status(status).json({ success: result.ok, result: enrichedResult });
 }

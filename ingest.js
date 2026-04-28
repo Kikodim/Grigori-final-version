@@ -408,25 +408,37 @@ function finalizeArticles(rawArticles, maxItems, { seedIfEmpty = false } = {}) {
     const seeded = seedArticles(maxItems);
     saveArticles(seeded);
     const added = Math.max(0, getAllArticles().length - beforeCount);
+    const seededNewest = seeded.reduce((latest, article) => {
+      const publishedAt = article?.publishedAt ? new Date(article.publishedAt).getTime() : 0;
+      return publishedAt > latest ? publishedAt : latest;
+    }, 0);
     return {
       mode: "seed",
       fetched: seeded.length,
       saved: added,
+      keptCount: seeded.length,
       filteredOutCount: 0,
       lowRelevanceCount: 0,
       duplicatesSkipped: 0,
+      newestArticleAt: seededNewest ? new Date(seededNewest).toISOString() : null,
     };
   }
 
   saveArticles(normalised);
   const afterCount = getAllArticles().length;
+  const newestArticleAt = scored.reduce((latest, article) => {
+    const publishedAt = article?.publishedAt ? new Date(article.publishedAt).getTime() : 0;
+    return publishedAt > latest ? publishedAt : latest;
+  }, 0);
   return {
     mode: "external",
     fetched: rawArticles.length,
     saved: Math.max(0, afterCount - beforeCount),
+    keptCount: normalised.length,
     filteredOutCount: Math.max(0, deduped.length - normalised.length),
     lowRelevanceCount: Math.max(0, deduped.length - relevant.length),
     duplicatesSkipped: Math.max(0, rawArticles.length - Math.max(0, afterCount - beforeCount)),
+    newestArticleAt: newestArticleAt ? new Date(newestArticleAt).toISOString() : null,
   };
 }
 
@@ -459,13 +471,35 @@ export async function ingest({ apiKey, maxPerRun = 40 }) {
   const final = finalizeArticles(fetchedBySource, maxPerRun, { seedIfEmpty: true });
   log.info(`[ingest] Filtered ${final.lowRelevanceCount} low-relevance articles; kept ${Math.max(0, final.fetched - final.filteredOutCount)}`);
 
+  const providerDiagnostics = results.map((result) => ({
+    provider: result.sourceName,
+    status: result.status,
+    articlesFetched: result.articles?.length ?? 0,
+    error: result.error ?? null,
+  }));
+  const providersUsed = providerDiagnostics
+    .filter((item) => item.status === "ok" && item.articlesFetched > 0)
+    .map((item) => item.provider);
+  const rateLimitedProviders = providerDiagnostics
+    .filter((item) => item.status === "rate_limited")
+    .map((item) => item.provider);
+  const skippedProviders = providerDiagnostics
+    .filter((item) => item.status !== "ok" && item.status !== "rate_limited")
+    .map((item) => ({ provider: item.provider, reason: item.error ?? item.status }));
+
   return {
     fetched: final.fetched,
     saved: final.saved,
+    keptCount: final.keptCount,
     mode: final.mode === "seed" ? "seed" : "live",
     filteredOutCount: final.filteredOutCount,
     lowRelevanceCount: final.lowRelevanceCount,
     duplicatesSkipped: final.duplicatesSkipped,
+    newestArticleAt: final.newestArticleAt ?? null,
+    providerDiagnostics,
+    providersUsed,
+    rateLimitedProviders,
+    skippedProviders,
   };
 }
 
