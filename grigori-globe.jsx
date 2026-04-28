@@ -850,23 +850,23 @@ function buildDarkEarthCompositeTexture(albedoImage, maskImage, anisotropy = 4) 
     const landMask = smoothstep(0.35, 0.62, maskPixels[i] / 255);
     const oceanMask = 1 - landMask;
 
-    const oceanLift = Math.pow(Math.min(1, luminance * 1.1), 0.88);
-    const landLift = Math.pow(Math.min(1, luminance * 1.02), 0.92);
+    const oceanLift = Math.pow(Math.min(1, luminance * 1.16), 0.84);
+    const landLift = Math.pow(Math.min(1, luminance * 1.08), 0.88);
 
     const ocean = [
-      mix(0.012, 0.058, oceanLift),
-      mix(0.022, 0.108, oceanLift),
-      mix(0.042, 0.165, oceanLift),
+      mix(0.022, 0.082, oceanLift),
+      mix(0.034, 0.122, oceanLift),
+      mix(0.058, 0.19, oceanLift),
     ];
     const land = [
-      mix(0.105, 0.315, landLift),
-      mix(0.112, 0.33, landLift),
-      mix(0.116, 0.305, landLift),
+      mix(0.138, 0.355, landLift),
+      mix(0.144, 0.368, landLift),
+      mix(0.138, 0.332, landLift),
     ];
     const cooledGray = [
-      grayscale * 0.46,
-      grayscale * 0.48,
       grayscale * 0.5,
+      grayscale * 0.52,
+      grayscale * 0.54,
     ];
 
     const landRgb = [
@@ -879,9 +879,9 @@ function buildDarkEarthCompositeTexture(albedoImage, maskImage, anisotropy = 4) 
     const outG = mix(ocean[1], landRgb[1], landMask);
     const outB = mix(ocean[2], landRgb[2], landMask);
 
-    pixels[i] = Math.max(0, Math.min(255, Math.round((outR + (oceanMask * 0.01)) * 255)));
-    pixels[i + 1] = Math.max(0, Math.min(255, Math.round((outG + (oceanMask * 0.01)) * 255)));
-    pixels[i + 2] = Math.max(0, Math.min(255, Math.round((outB + (oceanMask * 0.014)) * 255)));
+    pixels[i] = Math.max(0, Math.min(255, Math.round((outR + (oceanMask * 0.012) + (landMask * 0.01)) * 255)));
+    pixels[i + 1] = Math.max(0, Math.min(255, Math.round((outG + (oceanMask * 0.012) + (landMask * 0.012)) * 255)));
+    pixels[i + 2] = Math.max(0, Math.min(255, Math.round((outB + (oceanMask * 0.018) + (landMask * 0.01)) * 255)));
     pixels[i + 3] = 255;
   }
 
@@ -924,20 +924,22 @@ function applyPremiumEarthMaterial(material, uniforms) {
       `vec3 outgoingLight = totalDiffuse + totalSpecular + totalEmissiveRadiance;
       vec3 worldNormal = normalize(vWorldNormalGrigori);
       float sunAmount = dot(worldNormal, normalize(uSunDirection));
-      float dayMix = smoothstep(-0.14, 0.24, sunAmount);
-      float nightMix = 1.0 - smoothstep(-0.02, 0.26, sunAmount);
-      float twilightMix = 1.0 - smoothstep(0.08, 0.52, abs(sunAmount));
+      float dayMix = smoothstep(-0.18, 0.24, sunAmount);
+      float nightMix = 1.0 - smoothstep(-0.03, 0.22, sunAmount);
+      float twilightMix = 1.0 - smoothstep(0.04, 0.44, abs(sunAmount));
       vec3 maskSample = texture2D(uLandMask, vMapUv).rgb;
       float landMask = clamp(maskSample.r, 0.0, 1.0);
       vec3 nightSample = texture2D(uNightMap, vMapUv).rgb;
       float cityLuma = dot(nightSample, vec3(0.2126, 0.7152, 0.0722));
       float cityMask = smoothstep(0.035, 0.38, cityLuma);
-      float cityStrength = smoothstep(0.24, 1.0, nightMix) * (0.22 + cityMask * 0.78) * uNightStrength;
-      vec3 cityLights = nightSample * cityStrength * (0.68 + 0.32 * twilightMix);
-      vec3 terrainFloor = diffuseColor.rgb * (uAmbientFloor + landMask * 0.08) * nightMix;
-      vec3 twilightLift = diffuseColor.rgb * mix(0.025, 0.085, landMask) * twilightMix;
-      outgoingLight = mix(outgoingLight * 0.76 + diffuseColor.rgb * 0.12, outgoingLight, dayMix);
-      outgoingLight += terrainFloor + twilightLift + cityLights;`
+      float cityStrength = smoothstep(0.18, 1.0, nightMix) * (0.18 + cityMask * 0.52) * uNightStrength;
+      vec3 cityLights = nightSample * cityStrength * (0.64 + 0.22 * twilightMix);
+      vec3 baseSurface = diffuseColor.rgb;
+      vec3 nightSurface = baseSurface * (uAmbientFloor + landMask * 0.09 + (1.0 - landMask) * 0.04);
+      vec3 daySurface = outgoingLight * 0.9 + baseSurface * 0.22;
+      vec3 litSurface = mix(nightSurface, daySurface, dayMix);
+      vec3 twilightLift = baseSurface * mix(0.02, 0.07, landMask) * twilightMix;
+      outgoingLight = litSurface + twilightLift + cityLights;`
     );
 
     material.userData.shader = shader;
@@ -5244,7 +5246,7 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
         depthWrite: false,
         roughness: 1,
         metalness: 0,
-        color: new THREE.Color(0xdbe7f4),
+        color: new THREE.Color(0xd6e2ef),
       })
     );
     cloudLayer.material.map.anisotropy = Math.min(renderer.capabilities.getMaxAnisotropy(), 2);
@@ -5307,7 +5309,7 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
 
       if (cloudTexture) {
         cloudLayer.material.map = cloudTexture;
-        cloudLayer.material.opacity = 0.11;
+        cloudLayer.material.opacity = 0.055;
       }
 
       globeMesh.material.needsUpdate = true;
