@@ -7,6 +7,38 @@
     {
       "source": "/api/v1/:path*",
       "destination": "/api/v1/[...path]?path=:path*"
+    },
+    {
+      "source": "/reports",
+      "destination": "/"
+    },
+    {
+      "source": "/intel",
+      "destination": "/"
+    },
+    {
+      "source": "/intel-board",
+      "destination": "/"
+    },
+    {
+      "source": "/classic",
+      "destination": "/"
+    },
+    {
+      "source": "/geopolitical-risk-dashboard",
+      "destination": "/"
+    },
+    {
+      "source": "/osint-dashboard",
+      "destination": "/"
+    },
+    {
+      "source": "/strategic-intelligence-dashboard",
+      "destination": "/"
+    },
+    {
+      "source": "/personalized-intelligence-reports",
+      "destination": "/"
     }
   ],
   "crons": [
