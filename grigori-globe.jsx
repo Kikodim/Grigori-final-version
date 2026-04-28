@@ -893,61 +893,6 @@ function buildDarkEarthCompositeTexture(albedoImage, maskImage, anisotropy = 4) 
   return texture;
 }
 
-function applyPremiumEarthMaterial(material, uniforms) {
-  material.onBeforeCompile = (shader) => {
-    shader.uniforms.uSunDirection = uniforms.sunDirection;
-    shader.uniforms.uNightMap = uniforms.nightMap;
-    shader.uniforms.uLandMask = uniforms.landMask;
-    shader.uniforms.uNightStrength = uniforms.nightStrength;
-    shader.uniforms.uAmbientFloor = uniforms.ambientFloor;
-
-    shader.vertexShader = `
-      varying vec3 vWorldNormalGrigori;
-      varying vec3 vWorldPositionGrigori;
-    ` + shader.vertexShader.replace(
-      "#include <worldpos_vertex>",
-      `#include <worldpos_vertex>
-      vWorldPositionGrigori = worldPosition.xyz;
-      vWorldNormalGrigori = normalize(mat3(modelMatrix) * normal);`
-    );
-
-    shader.fragmentShader = `
-      uniform vec3 uSunDirection;
-      uniform sampler2D uNightMap;
-      uniform sampler2D uLandMask;
-      uniform float uNightStrength;
-      uniform float uAmbientFloor;
-      varying vec3 vWorldNormalGrigori;
-      varying vec3 vWorldPositionGrigori;
-    ` + shader.fragmentShader.replace(
-      "vec3 outgoingLight = totalDiffuse + totalSpecular + totalEmissiveRadiance;",
-      `vec3 outgoingLight = totalDiffuse + totalSpecular + totalEmissiveRadiance;
-      vec3 worldNormal = normalize(vWorldNormalGrigori);
-      float sunAmount = dot(worldNormal, normalize(uSunDirection));
-      float dayMix = smoothstep(-0.18, 0.24, sunAmount);
-      float nightMix = 1.0 - smoothstep(-0.03, 0.22, sunAmount);
-      float twilightMix = 1.0 - smoothstep(0.04, 0.44, abs(sunAmount));
-      vec3 maskSample = texture2D(uLandMask, vMapUv).rgb;
-      float landMask = clamp(maskSample.r, 0.0, 1.0);
-      vec3 nightSample = texture2D(uNightMap, vMapUv).rgb;
-      float cityLuma = dot(nightSample, vec3(0.2126, 0.7152, 0.0722));
-      float cityMask = smoothstep(0.035, 0.38, cityLuma);
-      float cityStrength = smoothstep(0.18, 1.0, nightMix) * (0.18 + cityMask * 0.52) * uNightStrength;
-      vec3 cityLights = nightSample * cityStrength * (0.64 + 0.22 * twilightMix);
-      vec3 baseSurface = diffuseColor.rgb;
-      vec3 nightSurface = baseSurface * (uAmbientFloor + landMask * 0.09 + (1.0 - landMask) * 0.04);
-      vec3 daySurface = outgoingLight * 0.9 + baseSurface * 0.22;
-      vec3 litSurface = mix(nightSurface, daySurface, dayMix);
-      vec3 twilightLift = baseSurface * mix(0.02, 0.07, landMask) * twilightMix;
-      outgoingLight = litSurface + twilightLift + cityLights;`
-    );
-
-    material.userData.shader = shader;
-  };
-  material.customProgramCacheKey = () => "grigori-premium-earth-v2";
-  material.needsUpdate = true;
-}
-
 // ═══════════════════════════════════════════════════════════════════════════════
 // ATMOSPHERE GLOW SHADER
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -5180,13 +5125,6 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
     let sunLive = true;
     let lastSunMinute = -1;
     const fixedSunDirection = new THREE.Vector3(5.8, 2.6, 4.4).normalize();
-    const earthShaderUniforms = {
-      sunDirection: { value: fixedSunDirection.clone() },
-      nightMap: { value: makeTransparentTexture() },
-      landMask: { value: makeFlatScalarTexture(214) },
-      nightStrength: { value: 0.68 },
-      ambientFloor: { value: 0.14 },
-    };
     const computeSunDirection = () => {
       if (!sunLive) return fixedSunDirection.clone();
       const now = new Date();
@@ -5204,7 +5142,6 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
       const sunDir = computeSunDirection();
       sun.position.copy(sunDir.clone().multiplyScalar(6.2));
       fill.position.copy(sunDir.clone().multiplyScalar(-4.5));
-      earthShaderUniforms.sunDirection.value.copy(sunDir);
     };
     updateSunLighting(true);
 
@@ -5221,16 +5158,15 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
         bumpMap: globeRelief,
         roughnessMap: globeRoughness,
         bumpScale: mob ? 0.03 : 0.048,
-        roughness: 0.97,
+        roughness: 0.94,
         metalness: 0.0,
         color: new THREE.Color(0xffffff),
         emissive: new THREE.Color(0x010203),
-        emissiveIntensity: 0.01,
+        emissiveIntensity: 0.012,
         transparent: false,
         opacity: 1.0,
       })
     );
-    applyPremiumEarthMaterial(globeMesh.material, earthShaderUniforms);
     globeMesh.material.map.anisotropy = Math.min(renderer.capabilities.getMaxAnisotropy(), mob ? 4 : 8);
     globeMesh.material.bumpMap.anisotropy = Math.min(renderer.capabilities.getMaxAnisotropy(), 4);
     globeMesh.material.roughnessMap.anisotropy = Math.min(renderer.capabilities.getMaxAnisotropy(), 4);
@@ -5267,10 +5203,6 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
       loadTextureAsync(textureLoader, "/assets/globe/earth-bump.jpg", {
         anisotropy: Math.min(maxAnisotropy, 4),
       }),
-      loadTextureAsync(textureLoader, "/assets/globe/earth-night-lights.jpg", {
-        colorSpace: THREE.SRGBColorSpace,
-        anisotropy: Math.min(maxAnisotropy, mob ? 4 : 8),
-      }),
       loadTextureAsync(textureLoader, "/assets/globe/earth-clouds.jpg", {
         colorSpace: THREE.SRGBColorSpace,
         anisotropy: Math.min(maxAnisotropy, 2),
@@ -5278,11 +5210,10 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
     ]).then((results) => {
       if (cancelled) return;
 
-      const [albedoResult, maskResult, bumpResult, nightResult, cloudResult] = results;
+      const [albedoResult, maskResult, bumpResult, cloudResult] = results;
       const albedoTexture = albedoResult.status === "fulfilled" ? albedoResult.value : null;
       const maskTexture = maskResult.status === "fulfilled" ? maskResult.value : null;
       const bumpTexture = bumpResult.status === "fulfilled" ? bumpResult.value : null;
-      const nightTexture = nightResult.status === "fulfilled" ? nightResult.value : null;
       const cloudTexture = cloudResult.status === "fulfilled" ? cloudResult.value : null;
 
       if (albedoTexture?.image && maskTexture?.image) {
@@ -5300,16 +5231,11 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
 
       if (maskTexture) {
         globeMesh.material.roughnessMap = maskTexture;
-        earthShaderUniforms.landMask.value = maskTexture;
-      }
-
-      if (nightTexture) {
-        earthShaderUniforms.nightMap.value = nightTexture;
       }
 
       if (cloudTexture) {
         cloudLayer.material.map = cloudTexture;
-        cloudLayer.material.opacity = 0.055;
+        cloudLayer.material.opacity = 0.0;
       }
 
       globeMesh.material.needsUpdate = true;
