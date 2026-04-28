@@ -116,7 +116,7 @@ function PremiumBadge({ children, tone = "info" }) {
 
 function HeaderNav({ activeView, onNavigate }) {
   return (
-    <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+    <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", overflowX: "auto", maxWidth: "100%", paddingBottom: 2 }}>
       {APP_VIEWS.map((item) => {
         const active = activeView === item.key;
         return (
@@ -135,6 +135,8 @@ function HeaderNav({ activeView, onNavigate }) {
               fontSize: 11,
               letterSpacing: "0.12em",
               textTransform: "uppercase",
+              whiteSpace: "nowrap",
+              flexShrink: 0,
             }}
           >
             {item.label}
@@ -216,10 +218,11 @@ function AuthField({ label, type = "text", value, onChange, placeholder }) {
 function InterestForm({ form, setForm, onSubmit, status }) {
   const labelStyle = { display: "grid", gap: 8 };
   const helperStyle = { color: "#94a3b8", fontSize: 10, fontFamily: MONO_FONT, letterSpacing: "0.14em", textTransform: "uppercase" };
+  const isCompact = typeof window !== "undefined" && window.innerWidth < 768;
 
   return (
     <form onSubmit={onSubmit} style={{ display: "grid", gap: 14 }}>
-      <div style={{ display: "grid", gridTemplateColumns: "1.2fr 1fr", gap: 12 }}>
+      <div style={{ display: "grid", gridTemplateColumns: isCompact ? "1fr" : "1.2fr 1fr", gap: 12 }}>
         <AuthField label="Email" type="email" value={form.email} onChange={(value) => setForm((current) => ({ ...current, email: value }))} placeholder="you@company.com" />
         <label style={labelStyle}>
           <span style={helperStyle}>Interested Tier</span>
@@ -234,7 +237,7 @@ function InterestForm({ form, setForm, onSubmit, status }) {
           </select>
         </label>
       </div>
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+      <div style={{ display: "grid", gridTemplateColumns: isCompact ? "1fr" : "1fr 1fr", gap: 12 }}>
         <label style={labelStyle}>
           <span style={helperStyle}>Region of Interest</span>
           <select
@@ -256,7 +259,7 @@ function InterestForm({ form, setForm, onSubmit, status }) {
           </select>
         </label>
       </div>
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+      <div style={{ display: "grid", gridTemplateColumns: isCompact ? "1fr" : "1fr 1fr", gap: 12 }}>
         <AuthField label="Intended Use Case" value={form.intendedUseCase} onChange={(value) => setForm((current) => ({ ...current, intendedUseCase: value }))} placeholder="Board briefings, investing, security planning..." />
         <AuthField label="LinkedIn Profile (Optional)" value={form.linkedinProfile} onChange={(value) => setForm((current) => ({ ...current, linkedinProfile: value }))} placeholder="https://linkedin.com/in/..." />
       </div>
@@ -279,7 +282,7 @@ function InterestForm({ form, setForm, onSubmit, status }) {
         />
       </div>
       <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
-        <button type="submit" style={{ border: "1px solid rgba(125,211,252,0.28)", borderRadius: 999, background: "rgba(56,189,248,0.16)", color: "#f8fafc", padding: "11px 16px", cursor: "pointer", fontFamily: MONO_FONT, letterSpacing: "0.12em", textTransform: "uppercase" }}>
+        <button type="submit" style={{ border: "1px solid rgba(125,211,252,0.28)", borderRadius: 999, background: "rgba(56,189,248,0.16)", color: "#f8fafc", padding: "11px 16px", cursor: "pointer", fontFamily: MONO_FONT, letterSpacing: isCompact ? "0.08em" : "0.12em", textTransform: "uppercase", width: isCompact ? "100%" : "auto" }}>
           Request Early Access
         </button>
         {status ? (
@@ -303,10 +306,11 @@ function ReportBuilderPreview({ form, setForm, onGenerate, status }) {
   };
   const labelStyle = { display: "grid", gap: 8 };
   const headerStyle = { color: "#94a3b8", fontSize: 10, fontFamily: MONO_FONT, letterSpacing: "0.14em", textTransform: "uppercase" };
+  const isCompact = typeof window !== "undefined" && window.innerWidth < 768;
 
   return (
     <form onSubmit={onGenerate} style={{ display: "grid", gap: 18 }}>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 14 }}>
+      <div style={{ display: "grid", gridTemplateColumns: isCompact ? "1fr" : "repeat(3, minmax(0, 1fr))", gap: 14 }}>
         <label style={labelStyle}>
           <span style={headerStyle}>Region / Area of Interest</span>
           <select value={form.region} onChange={(event) => setForm((current) => ({ ...current, region: event.target.value }))} style={selectStyle}>
@@ -339,7 +343,7 @@ function ReportBuilderPreview({ form, setForm, onGenerate, status }) {
         </label>
       </div>
       <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
-        <button type="submit" style={{ border: "1px solid rgba(125,211,252,0.28)", borderRadius: 999, background: "rgba(56,189,248,0.16)", color: "#f8fafc", padding: "11px 16px", cursor: "pointer", fontFamily: MONO_FONT, letterSpacing: "0.12em", textTransform: "uppercase" }}>
+        <button type="submit" style={{ border: "1px solid rgba(125,211,252,0.28)", borderRadius: 999, background: "rgba(56,189,248,0.16)", color: "#f8fafc", padding: "11px 16px", cursor: "pointer", fontFamily: MONO_FONT, letterSpacing: isCompact ? "0.08em" : "0.12em", textTransform: "uppercase", width: isCompact ? "100%" : "auto" }}>
           Preview Report Output
         </button>
         <PremiumBadge tone="warning">{REPORT_STATUS_BADGE}</PremiumBadge>
@@ -503,6 +507,7 @@ function AuthPanel({ configured, session, authMode, setAuthMode, authForm, setAu
 
 export default function ReportsApp({ activeView = "reports", onNavigate }) {
   const supabase = useMemo(() => getSupabaseBrowserClient(), []);
+  const [viewportWidth, setViewportWidth] = useState(() => (typeof window === "undefined" ? 1280 : window.innerWidth));
   const [session, setSession] = useState(null);
   const [authMode, setAuthMode] = useState("login");
   const [authForm, setAuthForm] = useState({ email: "", password: "" });
@@ -544,6 +549,12 @@ export default function ReportsApp({ activeView = "reports", onNavigate }) {
 
   useEffect(() => {
     document.title = `${BRAND.pageTitle} | Personalized Reports`;
+  }, []);
+
+  useEffect(() => {
+    const onResize = () => setViewportWidth(window.innerWidth);
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
   }, []);
 
   useEffect(() => {
@@ -668,14 +679,24 @@ export default function ReportsApp({ activeView = "reports", onNavigate }) {
   }, [loadPremiumData, reportForm, session]);
 
   const usage = subscription?.usage;
+  const isMobile = viewportWidth < 768;
+  const isTablet = viewportWidth >= 768 && viewportWidth <= 1024;
+  const shellPaddingX = isMobile ? 14 : isTablet ? 18 : 24;
+  const shellTopPadding = isMobile ? 136 : isTablet ? 124 : 112;
+  const headerPadding = isMobile ? "14px 14px 12px" : isTablet ? "16px 18px 14px" : "16px 24px 14px";
+  const heroGrid = isMobile ? "1fr" : "1.1fr 0.9fr";
+  const planGrid = isMobile ? "1fr" : "repeat(2, minmax(0, 1fr))";
+  const historyGrid = isMobile ? "1fr" : "1.15fr 0.85fr";
+  const previewUsageGrid = isMobile ? "1fr" : "1fr 1fr";
 
   return (
     <div style={{
       minHeight: "100vh",
       background: "radial-gradient(circle at top, rgba(125, 211, 252, 0.05), transparent 26%), linear-gradient(180deg, #020817 0%, #061120 100%)",
       color: "#e2e8f0",
-      padding: "112px 24px 48px",
+      padding: `${shellTopPadding}px ${shellPaddingX}px calc(env(safe-area-inset-bottom, 0px) + 72px)`,
       fontFamily: BODY_FONT,
+      overflowX: "hidden",
     }}>
       <div style={{ maxWidth: 1320, margin: "0 auto", display: "grid", gap: 26 }}>
         <div style={{
@@ -687,27 +708,27 @@ export default function ReportsApp({ activeView = "reports", onNavigate }) {
           background: "linear-gradient(180deg, rgba(4,9,18,0.95) 0%, rgba(4,10,22,0.88) 100%)",
           backdropFilter: "blur(18px)",
           borderBottom: "1px solid rgba(87, 216, 255, 0.12)",
-          padding: "16px 24px 14px",
+          padding: `${isMobile ? "calc(env(safe-area-inset-top, 0px) + 12px)" : "16px"} ${shellPaddingX}px 14px`,
           display: "flex",
           justifyContent: "space-between",
-          alignItems: "center",
+          alignItems: isMobile ? "stretch" : "center",
           gap: 16,
           flexWrap: "wrap",
         }}>
           <div>
-            <div style={{ color: "#f8fafc", fontFamily: DISPLAY_FONT, fontSize: 30, fontWeight: 700, letterSpacing: "0.16em", textTransform: "uppercase", lineHeight: 1 }}>
+            <div style={{ color: "#f8fafc", fontFamily: DISPLAY_FONT, fontSize: isMobile ? 22 : 30, fontWeight: 700, letterSpacing: isMobile ? "0.12em" : "0.16em", textTransform: "uppercase", lineHeight: 1 }}>
               Grigori
             </div>
-            <div style={{ color: "rgba(191,219,254,0.78)", fontFamily: BODY_FONT, fontSize: 13, letterSpacing: "0.06em", marginTop: 4 }}>
+            <div style={{ color: "rgba(191,219,254,0.78)", fontFamily: BODY_FONT, fontSize: isMobile ? 12 : 13, letterSpacing: "0.06em", marginTop: 4 }}>
               by oryth.io
             </div>
-            <div style={{ color: "#70d7f2", fontFamily: MONO_FONT, fontSize: 11, letterSpacing: "0.16em", textTransform: "uppercase", marginTop: 8 }}>
+            <div style={{ color: "#70d7f2", fontFamily: MONO_FONT, fontSize: isMobile ? 10 : 11, letterSpacing: isMobile ? "0.12em" : "0.16em", textTransform: "uppercase", marginTop: 8 }}>
               Strategic Intelligence Dashboard
             </div>
           </div>
-          <div style={{ display: "grid", gap: 12, justifyItems: "end" }}>
+          <div style={{ display: "grid", gap: 12, justifyItems: isMobile ? "stretch" : "end", width: isMobile ? "100%" : "auto" }}>
             <HeaderNav activeView={activeView} onNavigate={onNavigate} />
-            <div style={{ display: "flex", gap: 10, flexWrap: "wrap", justifyContent: "flex-end" }}>
+            <div style={{ display: "flex", gap: 10, flexWrap: "wrap", justifyContent: isMobile ? "flex-start" : "flex-end" }}>
               <PremiumBadge tone="warning">Work in Progress</PremiumBadge>
               <PremiumBadge>Public Preview</PremiumBadge>
               <PremiumBadge tone="success">Operational</PremiumBadge>
@@ -716,34 +737,34 @@ export default function ReportsApp({ activeView = "reports", onNavigate }) {
         </div>
 
         <ShellCard title="Intelligence Tailored To Your Priorities" eyebrow={`${BRAND.fullName} · ${BRAND.subtitle}`} accent="rgba(125, 211, 252, 0.32)">
-          <div style={{ display: "flex", justifyContent: "space-between", gap: 20, flexWrap: "wrap", alignItems: "flex-start" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", gap: isMobile ? 16 : 20, flexWrap: "wrap", alignItems: "flex-start" }}>
             <div style={{ maxWidth: 760 }}>
               <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 16 }}>
                 <PremiumBadge tone="warning">{REPORT_STATUS_BADGE}</PremiumBadge>
                 <PremiumBadge>Personalized Reports</PremiumBadge>
               </div>
-              <p style={{ color: "#cbd5e1", lineHeight: 1.8, fontSize: 16, margin: 0, fontFamily: BODY_FONT }}>
+              <p style={{ color: "#cbd5e1", lineHeight: 1.8, fontSize: isMobile ? 15 : 16, margin: 0, fontFamily: BODY_FONT }}>
                 Receive executive-grade geopolitical and strategic risk reports generated from Grigori’s live intelligence engine.
               </p>
-              <p style={{ color: "#94a3b8", lineHeight: 1.8, fontSize: 15, marginTop: 12, fontFamily: BODY_FONT }}>
+              <p style={{ color: "#94a3b8", lineHeight: 1.8, fontSize: isMobile ? 14 : 15, marginTop: 12, fontFamily: BODY_FONT }}>
                 {REPORTS_WIP_COPY}
               </p>
             </div>
-            <div style={{ display: "grid", gap: 10 }}>
-              <button style={{ border: "1px solid rgba(125,211,252,0.28)", borderRadius: 999, background: "rgba(56,189,248,0.16)", color: "#f8fafc", padding: "11px 16px", cursor: "pointer", fontFamily: MONO_FONT, textTransform: "uppercase", letterSpacing: "0.12em" }}>
+            <div style={{ display: "grid", gap: 10, width: isMobile ? "100%" : "auto", minWidth: isMobile ? 0 : 260 }}>
+              <button style={{ border: "1px solid rgba(125,211,252,0.28)", borderRadius: 999, background: "rgba(56,189,248,0.16)", color: "#f8fafc", padding: "11px 16px", cursor: "pointer", fontFamily: MONO_FONT, textTransform: "uppercase", letterSpacing: isMobile ? "0.08em" : "0.12em", width: "100%" }}>
                 Upgrade to Confidential
               </button>
-              <button style={{ border: "1px solid rgba(196,181,253,0.28)", borderRadius: 999, background: "rgba(76,29,149,0.16)", color: "#f8fafc", padding: "11px 16px", cursor: "pointer", fontFamily: MONO_FONT, textTransform: "uppercase", letterSpacing: "0.12em" }}>
+              <button style={{ border: "1px solid rgba(196,181,253,0.28)", borderRadius: 999, background: "rgba(76,29,149,0.16)", color: "#f8fafc", padding: "11px 16px", cursor: "pointer", fontFamily: MONO_FONT, textTransform: "uppercase", letterSpacing: isMobile ? "0.08em" : "0.12em", width: "100%" }}>
                 Upgrade to Top Secret
               </button>
-              <button onClick={() => setAuthMode("login")} style={{ border: "1px solid rgba(71,85,105,0.82)", borderRadius: 999, background: "rgba(15,23,42,0.82)", color: "#f8fafc", padding: "11px 16px", cursor: "pointer", fontFamily: MONO_FONT, textTransform: "uppercase", letterSpacing: "0.12em" }}>
+              <button onClick={() => setAuthMode("login")} style={{ border: "1px solid rgba(71,85,105,0.82)", borderRadius: 999, background: "rgba(15,23,42,0.82)", color: "#f8fafc", padding: "11px 16px", cursor: "pointer", fontFamily: MONO_FONT, textTransform: "uppercase", letterSpacing: isMobile ? "0.08em" : "0.12em", width: "100%" }}>
                 Sign In
               </button>
             </div>
           </div>
         </ShellCard>
 
-        <div style={{ display: "grid", gridTemplateColumns: "1.1fr 0.9fr", gap: 22 }}>
+        <div style={{ display: "grid", gridTemplateColumns: heroGrid, gap: 22 }}>
           <AuthPanel
             configured={Boolean(supabase)}
             session={session}
@@ -764,7 +785,7 @@ export default function ReportsApp({ activeView = "reports", onNavigate }) {
           </ShellCard>
         </div>
 
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 18 }}>
+        <div style={{ display: "grid", gridTemplateColumns: planGrid, gap: 18 }}>
           {PREMIUM_PLANS.map((plan, index) => (
             <PlanCard key={plan.tier} plan={plan} emphasized={index === 1} actionLabel={plan.tier === "top_secret" ? "Priority Access" : "Request Access"} />
           ))}
@@ -775,7 +796,7 @@ export default function ReportsApp({ activeView = "reports", onNavigate }) {
             The full report engine will synthesize live events, historical storage, scenario drift, transport context, and market logic into a concise strategic briefing.
           </div>
           <ReportBuilderPreview form={reportForm} setForm={setReportForm} onGenerate={handlePreviewGenerate} status={previewStatus} />
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 18, marginTop: 24 }}>
+          <div style={{ display: "grid", gridTemplateColumns: previewUsageGrid, gap: 18, marginTop: 24 }}>
             <div>
               <div style={{ color: "#7dd3fc", fontSize: 11, fontFamily: "monospace", letterSpacing: "0.14em", textTransform: "uppercase", marginBottom: 10 }}>
                 Planned Output Sections
@@ -803,7 +824,7 @@ export default function ReportsApp({ activeView = "reports", onNavigate }) {
           </div>
         </ShellCard>
 
-        <div style={{ display: "grid", gridTemplateColumns: "1.15fr 0.85fr", gap: 22 }}>
+        <div style={{ display: "grid", gridTemplateColumns: historyGrid, gap: 22 }}>
           <ShellCard title="Report History Preview" eyebrow="Saved drafts and generated briefs">
             {historyState.message ? (
               <div style={{ color: historyState.status === "error" ? "#fda4af" : "#93c5fd", fontFamily: "monospace", fontSize: 12, marginBottom: 12 }}>

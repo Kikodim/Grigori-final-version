@@ -893,6 +893,59 @@ function buildDarkEarthCompositeTexture(albedoImage, maskImage, anisotropy = 4) 
   return texture;
 }
 
+function applyPremiumEarthMaterial(material, uniforms) {
+  material.onBeforeCompile = (shader) => {
+    shader.uniforms.uSunDirection = uniforms.sunDirection;
+    shader.uniforms.uNightMap = uniforms.nightMap;
+    shader.uniforms.uLandMask = uniforms.landMask;
+    shader.uniforms.uNightStrength = uniforms.nightStrength;
+    shader.uniforms.uAmbientFloor = uniforms.ambientFloor;
+
+    shader.vertexShader = `
+      varying vec3 vWorldNormalGrigori;
+      varying vec3 vWorldPositionGrigori;
+    ` + shader.vertexShader.replace(
+      "#include <worldpos_vertex>",
+      `#include <worldpos_vertex>
+      vWorldPositionGrigori = worldPosition.xyz;
+      vWorldNormalGrigori = normalize(mat3(modelMatrix) * normal);`
+    );
+
+    shader.fragmentShader = `
+      uniform vec3 uSunDirection;
+      uniform sampler2D uNightMap;
+      uniform sampler2D uLandMask;
+      uniform float uNightStrength;
+      uniform float uAmbientFloor;
+      varying vec3 vWorldNormalGrigori;
+      varying vec3 vWorldPositionGrigori;
+    ` + shader.fragmentShader.replace(
+      "vec3 outgoingLight = totalDiffuse + totalSpecular + totalEmissiveRadiance;",
+      `vec3 outgoingLight = totalDiffuse + totalSpecular + totalEmissiveRadiance;
+      vec3 worldNormal = normalize(vWorldNormalGrigori);
+      float sunAmount = dot(worldNormal, normalize(uSunDirection));
+      float dayMix = smoothstep(-0.14, 0.24, sunAmount);
+      float nightMix = 1.0 - smoothstep(-0.02, 0.26, sunAmount);
+      float twilightMix = 1.0 - smoothstep(0.08, 0.52, abs(sunAmount));
+      vec3 maskSample = texture2D(uLandMask, vMapUv).rgb;
+      float landMask = clamp(maskSample.r, 0.0, 1.0);
+      vec3 nightSample = texture2D(uNightMap, vMapUv).rgb;
+      float cityLuma = dot(nightSample, vec3(0.2126, 0.7152, 0.0722));
+      float cityMask = smoothstep(0.035, 0.38, cityLuma);
+      float cityStrength = smoothstep(0.24, 1.0, nightMix) * (0.22 + cityMask * 0.78) * uNightStrength;
+      vec3 cityLights = nightSample * cityStrength * (0.68 + 0.32 * twilightMix);
+      vec3 terrainFloor = diffuseColor.rgb * (uAmbientFloor + landMask * 0.08) * nightMix;
+      vec3 twilightLift = diffuseColor.rgb * mix(0.025, 0.085, landMask) * twilightMix;
+      outgoingLight = mix(outgoingLight * 0.76 + diffuseColor.rgb * 0.12, outgoingLight, dayMix);
+      outgoingLight += terrainFloor + twilightLift + cityLights;`
+    );
+
+    material.userData.shader = shader;
+  };
+  material.customProgramCacheKey = () => "grigori-premium-earth-v2";
+  material.needsUpdate = true;
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // ATMOSPHERE GLOW SHADER
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -2520,8 +2573,8 @@ const useViewport = () => {
 };
 
 function getHeaderHeight(isMobile, isTablet = false) {
-  if (isMobile) return 86;
-  if (isTablet) return 74;
+  if (isMobile) return 126;
+  if (isTablet) return 92;
   return TOP_BAR_HEIGHT;
 }
 
@@ -3608,7 +3661,7 @@ function GlobalViewButton({ onReset, mobile = false }) {
       style={{
         position: "absolute",
         left: mobile ? 12 : 18,
-        bottom: mobile ? 108 : 22,
+        bottom: mobile ? "calc(env(safe-area-inset-bottom, 0px) + 108px)" : 22,
         zIndex: 38,
         borderRadius: 14,
         minHeight: mobile ? 40 : 36,
@@ -3636,7 +3689,7 @@ function LiveSunButton({ enabled, onToggle, mobile = false }) {
       style={{
         position: "absolute",
         left: mobile ? 12 : 18,
-        bottom: mobile ? 58 : 70,
+        bottom: mobile ? "calc(env(safe-area-inset-bottom, 0px) + 58px)" : 70,
         zIndex: 38,
         borderRadius: 14,
         minHeight: mobile ? 36 : 34,
@@ -3664,7 +3717,7 @@ function LiveSunButton({ enabled, onToggle, mobile = false }) {
 const SHEET_STATES = {
   peek: { label: "peek",  snapVh: 10  },   // just a handle bar + count
   half: { label: "half",  snapVh: 44  },   // event list
-  full: { label: "full",  snapVh: 88  },   // event detail
+  full: { label: "full",  snapVh: 84  },   // event detail
 };
 
 function MobileBottomSheet({ events, selectedEvent, activeScenario, onScenarioChange,
@@ -3738,6 +3791,7 @@ function MobileBottomSheet({ events, selectedEvent, activeScenario, onScenarioCh
       transition: "height 0.35s cubic-bezier(0.32,0.72,0,1)",
       boxShadow: "0 -8px 40px rgba(0,0,0,0.6)",
       overflow: "hidden",
+      paddingBottom: "env(safe-area-inset-bottom, 0px)",
     }}>
 
       {/* ── Drag handle ── */}
@@ -4358,7 +4412,7 @@ function TopBar({ counts, bordersLoaded, activeLayers, onLayerToggle, isMobile, 
       borderBottom: "1px solid rgba(87,216,255,0.12)",
       display: "flex", alignItems: compact ? "stretch" : "center", justifyContent: "space-between",
       flexDirection: compact ? "column" : "row",
-      padding: compact ? "8px 12px 6px" : "0 18px", zIndex: 40, flexShrink: 0, gap: compact ? 8 : 16,
+      padding: compact ? "calc(env(safe-area-inset-top, 0px) + 8px) 12px 8px" : "0 18px", zIndex: 40, flexShrink: 0, gap: compact ? 8 : 16,
       WebkitBackdropFilter: "blur(18px)",
     }}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 14, minWidth: 0 }}>
@@ -4407,10 +4461,11 @@ function TopBar({ counts, bordersLoaded, activeLayers, onLayerToggle, isMobile, 
       </div>
 
       {compact ? (
-        <div style={{ display: "flex", alignItems: "center", gap: 10, justifyContent: "space-between" }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 6, overflowX: "auto", flex: 1 }}>
+        <>
+        <div style={{ display: "flex", alignItems: "center", gap: 6, overflowX: "auto", flex: 1, paddingBottom: 2 }}>
             {navButtons}
           </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, justifyContent: "space-between", flexWrap: "wrap" }}>
           <select
             value={selectedLens}
             onChange={(event) => onLensChange?.(event.target.value)}
@@ -4424,14 +4479,14 @@ function TopBar({ counts, bordersLoaded, activeLayers, onLayerToggle, isMobile, 
               fontSize: 10,
               letterSpacing: "0.08em",
               padding: "0 10px",
-              maxWidth: 170,
+              flex: "1 1 160px",
             }}
           >
             {DECISION_LENSES.map((lens) => (
               <option key={lens.id} value={lens.id}>{lens.label}</option>
             ))}
           </select>
-          <div style={{ display: "flex", gap: 8, flexShrink: 0 }}>
+          <div style={{ display: "flex", gap: 8, flexShrink: 0, flexWrap: "wrap" }}>
             <button onClick={onWarRoom} style={{
               padding: "8px 10px",
               borderRadius: 12,
@@ -4460,6 +4515,7 @@ function TopBar({ counts, bordersLoaded, activeLayers, onLayerToggle, isMobile, 
             </button> : null}
           </div>
         </div>
+        </>
       ) : (
         <div style={{ display: "flex", alignItems: "center", gap: 14, justifyContent: "center", flex: 1, minWidth: 0, flexWrap: "wrap" }}>
           {navButtons}
@@ -5102,6 +5158,9 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
     renderer.setPixelRatio(mob ? Math.min(window.devicePixelRatio, 1.5) : Math.min(window.devicePixelRatio, 2));
     renderer.setSize(W, H);
     renderer.setClearColor(0x020810, 1);
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = mob ? 0.92 : 0.97;
     container.appendChild(renderer.domElement);
 
     const scene  = new THREE.Scene();
@@ -5119,6 +5178,13 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
     let sunLive = true;
     let lastSunMinute = -1;
     const fixedSunDirection = new THREE.Vector3(5.8, 2.6, 4.4).normalize();
+    const earthShaderUniforms = {
+      sunDirection: { value: fixedSunDirection.clone() },
+      nightMap: { value: makeTransparentTexture() },
+      landMask: { value: makeFlatScalarTexture(214) },
+      nightStrength: { value: 0.68 },
+      ambientFloor: { value: 0.14 },
+    };
     const computeSunDirection = () => {
       if (!sunLive) return fixedSunDirection.clone();
       const now = new Date();
@@ -5136,6 +5202,7 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
       const sunDir = computeSunDirection();
       sun.position.copy(sunDir.clone().multiplyScalar(6.2));
       fill.position.copy(sunDir.clone().multiplyScalar(-4.5));
+      earthShaderUniforms.sunDirection.value.copy(sunDir);
     };
     updateSunLighting(true);
 
@@ -5152,15 +5219,16 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
         bumpMap: globeRelief,
         roughnessMap: globeRoughness,
         bumpScale: mob ? 0.03 : 0.048,
-        roughness: 0.94,
+        roughness: 0.97,
         metalness: 0.0,
         color: new THREE.Color(0xffffff),
         emissive: new THREE.Color(0x010203),
-        emissiveIntensity: 0.012,
+        emissiveIntensity: 0.01,
         transparent: false,
         opacity: 1.0,
       })
     );
+    applyPremiumEarthMaterial(globeMesh.material, earthShaderUniforms);
     globeMesh.material.map.anisotropy = Math.min(renderer.capabilities.getMaxAnisotropy(), mob ? 4 : 8);
     globeMesh.material.bumpMap.anisotropy = Math.min(renderer.capabilities.getMaxAnisotropy(), 4);
     globeMesh.material.roughnessMap.anisotropy = Math.min(renderer.capabilities.getMaxAnisotropy(), 4);
@@ -5197,6 +5265,10 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
       loadTextureAsync(textureLoader, "/assets/globe/earth-bump.jpg", {
         anisotropy: Math.min(maxAnisotropy, 4),
       }),
+      loadTextureAsync(textureLoader, "/assets/globe/earth-night-lights.jpg", {
+        colorSpace: THREE.SRGBColorSpace,
+        anisotropy: Math.min(maxAnisotropy, mob ? 4 : 8),
+      }),
       loadTextureAsync(textureLoader, "/assets/globe/earth-clouds.jpg", {
         colorSpace: THREE.SRGBColorSpace,
         anisotropy: Math.min(maxAnisotropy, 2),
@@ -5204,10 +5276,11 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
     ]).then((results) => {
       if (cancelled) return;
 
-      const [albedoResult, maskResult, bumpResult, cloudResult] = results;
+      const [albedoResult, maskResult, bumpResult, nightResult, cloudResult] = results;
       const albedoTexture = albedoResult.status === "fulfilled" ? albedoResult.value : null;
       const maskTexture = maskResult.status === "fulfilled" ? maskResult.value : null;
       const bumpTexture = bumpResult.status === "fulfilled" ? bumpResult.value : null;
+      const nightTexture = nightResult.status === "fulfilled" ? nightResult.value : null;
       const cloudTexture = cloudResult.status === "fulfilled" ? cloudResult.value : null;
 
       if (albedoTexture?.image && maskTexture?.image) {
@@ -5225,11 +5298,16 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
 
       if (maskTexture) {
         globeMesh.material.roughnessMap = maskTexture;
+        earthShaderUniforms.landMask.value = maskTexture;
+      }
+
+      if (nightTexture) {
+        earthShaderUniforms.nightMap.value = nightTexture;
       }
 
       if (cloudTexture) {
         cloudLayer.material.map = cloudTexture;
-        cloudLayer.material.opacity = 0.14;
+        cloudLayer.material.opacity = 0.11;
       }
 
       globeMesh.material.needsUpdate = true;
@@ -5950,7 +6028,7 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
         {/* GLOBE ROW — fills all remaining space between topbar and (on mobile) bottom sheet */}
         <div style={{
           position: "absolute",
-          top: headerHeight,
+      top: headerHeight,
           left: (!isMobile && panelVisibility.events && activeLayers.intelBoard) ? 284 : 0,
           right: (!isMobile && selectedDetail && panelVisibility.selectedObjectDetail) ? (selectedDetail.type === "event" ? 420 : 340) : 0,
           bottom: 0,
@@ -5969,7 +6047,7 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
               color: "rgba(0,180,255,0.25)", fontSize: 10, fontFamily: mono,
               letterSpacing: "0.12em", textAlign: "center", pointerEvents: "none",
               whiteSpace: "nowrap", animation: "fadeUp 1.2s ease 0.8s both" }}>
-              {isMobile ? "TAP A HOTSPOT TO ANALYSE" : "DRAG · SCROLL TO ZOOM · CLICK HOTSPOT"}
+              {isMobile ? "TAP A SIGNAL OR ZONE TO OPEN THE BRIEF" : "DRAG · SCROLL TO ZOOM · CLICK SIGNAL"}
             </div>
           )}
         </div>

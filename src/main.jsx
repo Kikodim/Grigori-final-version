@@ -54,11 +54,18 @@ function setPropertyMeta(name, value) {
 
 function Shell() {
   const [view, setView] = useState(() => pathToView(window.location.pathname));
+  const [isCompact, setIsCompact] = useState(() => (typeof window !== "undefined" ? window.innerWidth < 768 : false));
 
   useEffect(() => {
     const onPopState = () => setView(pathToView(window.location.pathname));
     window.addEventListener("popstate", onPopState);
     return () => window.removeEventListener("popstate", onPopState);
+  }, []);
+
+  useEffect(() => {
+    const onResize = () => setIsCompact(window.innerWidth < 768);
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
   }, []);
 
   useEffect(() => {
@@ -84,20 +91,25 @@ function Shell() {
       <ActiveView key={view} activeView={view} onNavigate={navigate} />
       <div style={{
         position: "fixed",
-        right: 18,
-        bottom: 14,
+        right: isCompact ? 12 : 18,
+        left: isCompact ? 12 : "auto",
+        bottom: isCompact ? "calc(env(safe-area-inset-bottom, 0px) + 10px)" : "calc(env(safe-area-inset-bottom, 0px) + 14px)",
         zIndex: 2500,
         color: "rgba(148,163,184,0.68)",
-        fontSize: 10,
-        letterSpacing: "0.18em",
+        fontSize: isCompact ? 9 : 10,
+        letterSpacing: isCompact ? "0.12em" : "0.18em",
         textTransform: "uppercase",
         fontFamily: "'Share Tech Mono', 'IBM Plex Mono', monospace",
         pointerEvents: "none",
-        padding: "8px 12px",
+        padding: isCompact ? "8px 10px" : "8px 12px",
         borderRadius: 999,
         background: "rgba(3, 9, 22, 0.62)",
         border: "1px solid rgba(86, 146, 180, 0.18)",
         backdropFilter: "blur(14px)",
+        textAlign: "center",
+        whiteSpace: isCompact ? "normal" : "nowrap",
+        maxWidth: isCompact ? "calc(100vw - 24px)" : "min(78vw, 560px)",
+        lineHeight: 1.45,
       }}>
         Built by oryth.io · Open-source intelligence signals. Not financial advice.
       </div>
