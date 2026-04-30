@@ -6,7 +6,7 @@ import { describeEnvVar, getConfig } from "./config.js";
 import { inferLocationDetails } from "./event-insights.js";
 import { getAllArticles } from "./store.js";
 import { buildRuleBasedBriefing } from "./rule-based-briefing.js";
-import { deleteOldEvents, getRecentEvents, insertEvent } from "./supabase.js";
+import { deleteOldEvents, getRecentEvents, getStats, insertEvent } from "./supabase.js";
 import { createLogger } from "./logger.js";
 
 const log = createLogger("pipeline");
@@ -171,7 +171,7 @@ function buildNewsRefreshMessage({
     return "News refreshed. No new relevant signals found.";
   }
   if (eventsUnchanged > 0) {
-    return "News refreshed. Existing events are already current.";
+    return "Feeds checked. Existing signals remain current.";
   }
   if (articlesFetched > 0) {
     return "Refresh complete. No new relevant signals found.";
@@ -692,6 +692,7 @@ export async function runPipeline({ source = "manual", noAi = false, mode = "ful
   if (publishablePreEvents.length === 0) {
     const purged = await deleteOldEvents(parseInt(process.env.EVENT_MAX_AGE_HOURS ?? "24", 10));
     cachePrune();
+    const stats = await getStats();
     const message = buildNewsRefreshMessage({
       eventsCreated: 0,
       eventsUpdated: 0,
@@ -728,6 +729,7 @@ export async function runPipeline({ source = "manual", noAi = false, mode = "ful
       skippedProviders: ingestResult.skippedProviders ?? [],
       rateLimitedProviders: ingestResult.rateLimitedProviders ?? [],
       lastNewsRefreshAt: new Date().toISOString(),
+      activeEventCount: stats.activeEventCount ?? 0,
       message,
       elapsed: getElapsed(startedAt),
     };
@@ -887,6 +889,7 @@ export async function runPipeline({ source = "manual", noAi = false, mode = "ful
   const eventsCreated = Math.max(0, created - eventsUpdated - eventsUnchanged);
   const newestEventAt = newestIso(eventTimestamps);
   const lastNewsRefreshAt = new Date().toISOString();
+  const stats = await getStats();
   const summary = {
     ok: true,
     events: created,
@@ -917,6 +920,7 @@ export async function runPipeline({ source = "manual", noAi = false, mode = "ful
     skippedProviders: ingestResult.skippedProviders ?? [],
     rateLimitedProviders: ingestResult.rateLimitedProviders ?? [],
     lastNewsRefreshAt,
+    activeEventCount: stats.activeEventCount ?? 0,
     message: buildNewsRefreshMessage({
       eventsCreated,
       eventsUpdated,

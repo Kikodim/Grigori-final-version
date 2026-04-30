@@ -28,6 +28,13 @@ const log = createLogger("api");
 
 const VALID_TONES = new Set(["Stable", "Escalating", "Deteriorating", "Volatile", "De-escalating"]);
 const VALID_CONFIDENCE = new Set(["Low", "Medium", "High"]);
+const VALID_EVENT_SCOPES = new Set(["active", "historical", "all"]);
+
+function applyNoStore(res) {
+  res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
+  res.setHeader("Pragma", "no-cache");
+  res.setHeader("Expires", "0");
+}
 
 function applyRateLimit(req, res) {
   const ip = getClientIp(req);
@@ -48,15 +55,17 @@ function missingProductionSecret() {
 }
 
 export async function handleHealth(_req, res) {
+  applyNoStore(res);
   const config = getConfig();
   const integrations = getIntegrationConfigStatus();
-  const [layers, ai, newsRefresh, aiRefresh, newsRefreshUsage, aiRefreshUsage] = await Promise.all([
+  const [layers, ai, newsRefresh, aiRefresh, newsRefreshUsage, aiRefreshUsage, stats] = await Promise.all([
     getLayersStatus(),
     getAIStatus(),
     getRefreshState("news"),
     getRefreshState("ai"),
     getRefreshUsageStats("news"),
     getRefreshUsageStats("ai"),
+    getStats(),
   ]);
   const missing = [
     ["NEWS_API_KEY", integrations.newsApi],
@@ -68,6 +77,17 @@ export async function handleHealth(_req, res) {
     .filter(([, status]) => !status.usable)
     .map(([name]) => name);
   const storage = await healthCheck();
+  const newestArticleAt = newsRefresh.record?.metadata?.newestArticleAt ?? null;
+  const newestEventAt = newsRefresh.record?.metadata?.newestEventAt ?? stats.newestUpdatedEvent ?? stats.newestEvent ?? null;
+  const lastNewsRefreshAt = newsRefresh.record?.lastRefresh ?? null;
+  const refreshAgeHours = lastNewsRefreshAt
+    ? Math.max(0, (Date.now() - new Date(lastNewsRefreshAt).getTime()) / 3600_000)
+    : null;
+  const cacheStatus = storage.mode === "memory"
+    ? "memory_fallback"
+    : refreshAgeHours === null
+      ? "stale"
+      : refreshAgeHours <= 12 ? "fresh" : "stale";
 
   return res.status(200).json({
     ok: true,
@@ -102,26 +122,46 @@ export async function handleHealth(_req, res) {
       nodeEnv: config.nodeEnv,
     },
     layers,
+    data: {
+      eventsDataSource: stats.mode ?? storage.mode ?? "memory",
+      newestArticleAt,
+      newestEventAt,
+      activeEventCount: stats.activeEventCount ?? 0,
+      staleEventCount: stats.staleEventCount ?? 0,
+      historicalEventCount: stats.historicalEventCount ?? 0,
+      cacheStatus,
+    },
     automation: {
       aiCallsToday: ai.aiCallsToday,
       aiRemainingToday: ai.aiRemainingToday,
-      lastNewsRefreshAt: newsRefresh.record?.lastRefresh ?? null,
+      lastNewsRefreshAt,
       lastAiRefreshAt: aiRefresh.record?.lastRefresh ?? null,
       nextEstimatedNewsRefresh: newsRefresh.record?.nextRefresh ?? null,
       nextEstimatedAiRefresh: aiRefresh.record?.nextRefresh ?? null,
       newsRefreshesToday: newsRefreshUsage.callsToday ?? 0,
       aiRefreshesToday: aiRefreshUsage.callsToday ?? 0,
+      newestArticleAt,
+      newestEventAt,
+      activeEventCount: stats.activeEventCount ?? 0,
+      staleEventCount: stats.staleEventCount ?? 0,
+      historicalEventCount: stats.historicalEventCount ?? 0,
+      eventsDataSource: stats.mode ?? storage.mode ?? "memory",
+      cacheStatus,
     },
     timestamp: new Date().toISOString(),
   });
 }
 
 export async function handleEvents(req, res) {
+  applyNoStore(res);
   if (!applyRateLimit(req, res)) return;
 
   const { limit, offset } = parsePagination(req.query ?? {});
   const { tone, confidence } = req.query ?? {};
   const region = sanitizeRegion(req.query?.region);
+  const scope = VALID_EVENT_SCOPES.has(String(req.query?.scope ?? "active").toLowerCase())
+    ? String(req.query?.scope ?? "active").toLowerCase()
+    : "active";
 
   if (tone && !VALID_TONES.has(tone)) {
     return sendError(res, 400, `tone must be one of: ${[...VALID_TONES].join(", ")}`);
@@ -131,13 +171,14 @@ export async function handleEvents(req, res) {
     return sendError(res, 400, `confidence must be one of: ${[...VALID_CONFIDENCE].join(", ")}`);
   }
 
-  const result = await getEvents({ limit, offset, tone, confidence, region });
+  const result = await getEvents({ limit, offset, tone, confidence, region, scope });
   return res.status(200).json({
     ok: true,
     total: result.total,
     limit,
     offset,
     mode: result.mode,
+    scope: result.scope ?? scope,
     events: result.events,
   });
 }
@@ -159,6 +200,7 @@ export async function handleEventById(req, res) {
 }
 
 export async function handleEventStats(_req, res) {
+  applyNoStore(res);
   const [stats, ai, newsRefresh, aiRefresh, newsRefreshUsage, aiRefreshUsage] = await Promise.all([
     getStats(),
     getAIStatus(),
@@ -178,6 +220,8 @@ export async function handleEventStats(_req, res) {
       nextEstimatedAiRefresh: aiRefresh.record?.nextRefresh ?? null,
       newsRefreshesToday: newsRefreshUsage.callsToday ?? 0,
       aiRefreshesToday: aiRefreshUsage.callsToday ?? 0,
+      newestArticleAt: newsRefresh.record?.metadata?.newestArticleAt ?? null,
+      newestEventAt: newsRefresh.record?.metadata?.newestEventAt ?? stats.newestUpdatedEvent ?? stats.newestEvent ?? null,
     },
   });
 }
@@ -256,6 +300,7 @@ export async function handleReportsWaitlist(req, res) {
 }
 
 export async function handlePipelineRun(req, res) {
+  applyNoStore(res);
   if (missingProductionSecret()) {
     return sendError(res, 503, "Pipeline trigger disabled: ADMIN_SECRET is not configured");
   }
@@ -284,7 +329,13 @@ export async function handlePipelineRun(req, res) {
         articlesFetched: result.articlesFetched ?? result.articles ?? 0,
         articlesSaved: result.articlesSaved ?? result.articles ?? 0,
         duplicatesSkipped: result.duplicatesSkipped ?? 0,
+        eventsCreated: result.eventsCreated ?? 0,
+        eventsUpdated: result.eventsUpdated ?? 0,
+        eventsUnchanged: result.eventsUnchanged ?? 0,
+        activeEventCount: result.activeEventCount ?? 0,
         filteredOutCount: result.filteredOutCount ?? 0,
+        newestArticleAt: result.newestArticleAt ?? null,
+        newestEventAt: result.newestEventAt ?? null,
         message: result.message ?? null,
         providerDiagnostics: result.providerDiagnostics ?? [],
       }, nextNewsRefresh);
@@ -305,6 +356,7 @@ export async function handlePipelineRun(req, res) {
         reason: result.reason ?? null,
         changed: result.changed ?? null,
         aiSkippedReason: result.aiSkippedReason ?? null,
+        lastAiRefreshAt: result.lastAiRefreshAt ?? null,
         message: result.message ?? null,
       }, nextAiRefresh);
       enrichedResult = {

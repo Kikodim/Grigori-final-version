@@ -34,15 +34,21 @@ create table if not exists events (
   cluster_signature text,
   importance_score integer   not null default 0,
   is_historical boolean      not null default false,
-  created_at   timestamptz   not null default now()
+  created_at   timestamptz   not null default now(),
+  updated_at   timestamptz   not null default now(),
+  last_seen_at timestamptz,
+  refreshed_at timestamptz,
+  freshness_status text      not null default 'Fresh'
 );
 
 create index if not exists events_timestamp_desc on events (timestamp desc);
 create index if not exists events_tone           on events (tone);
 create index if not exists events_confidence     on events (confidence);
 create index if not exists events_created_at     on events (created_at);
+create index if not exists events_updated_at     on events (updated_at desc);
 create index if not exists events_cluster_signature on events (cluster_signature);
 create index if not exists events_is_historical on events (is_historical);
+create index if not exists events_refreshed_at on events (refreshed_at desc);
 
 create table if not exists ai_usage_logs (
   id                bigint generated always as identity primary key,

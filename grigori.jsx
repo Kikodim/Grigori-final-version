@@ -10,7 +10,7 @@ import {
   sanitizeEventNarrative,
 } from "./event-insights.js";
 
-const EVENTS_ENDPOINT = "/api/v1/events?limit=50";
+const EVENTS_ENDPOINT = "/api/v1/events?limit=50&scope=active";
 const DISPLAY_FONT = "'Rajdhani', 'Space Grotesk', sans-serif";
 const BODY_FONT = "'Inter', 'Space Grotesk', sans-serif";
 const MONO_FONT = "'Share Tech Mono', 'IBM Plex Mono', monospace";
@@ -325,9 +325,13 @@ export default function ClassicIntelBoard({ activeView = "classic", onNavigate }
   const headerRef = useRef(null);
   const [measuredHeaderHeight, setMeasuredHeaderHeight] = useState(0);
 
-  const loadEvents = useCallback(async () => {
+  const loadEvents = useCallback(async (forceFresh = false) => {
     setLoadState({ status: "loading", message: "Loading Grigori Intelligence Systems..." });
-    const res = await fetch(resolveBackendUrl(EVENTS_ENDPOINT), { signal: AbortSignal.timeout(8000) });
+    const suffix = forceFresh ? `${EVENTS_ENDPOINT.includes("?") ? "&" : "?"}t=${Date.now()}` : "";
+    const res = await fetch(resolveBackendUrl(`${EVENTS_ENDPOINT}${suffix}`), {
+      signal: AbortSignal.timeout(8000),
+      cache: "no-store",
+    });
     if (!res.ok) {
       throw new Error(`Failed to load events (${res.status})`);
     }
@@ -407,7 +411,7 @@ export default function ClassicIntelBoard({ activeView = "classic", onNavigate }
         throw new Error(data.error ?? `Request failed with ${res.status}`);
       }
 
-      await loadEvents();
+      await loadEvents(true);
       setRefreshState({ status: "success", message: data?.result?.message ?? "Intel board updated." });
       window.setTimeout(() => setRefreshState({ status: "idle", message: "" }), 4000);
     } catch (err) {

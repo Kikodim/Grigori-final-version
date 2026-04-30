@@ -74,7 +74,72 @@ function normalizeEvent(row) {
     marketImpact: row.marketImpact ?? row.market_impact ?? {},
     sourceAssessment: row.sourceAssessment ?? row.source_assessment ?? {},
     isHistorical: row.isHistorical ?? row.is_historical ?? false,
+    createdAt: row.createdAt ?? row.created_at ?? null,
+    updatedAt: row.updatedAt ?? row.updated_at ?? null,
+    lastSeenAt: row.lastSeenAt ?? row.last_seen_at ?? null,
+    refreshedAt: row.refreshedAt ?? row.refreshed_at ?? null,
+    freshnessStatus: row.freshnessStatus ?? row.freshness_status ?? null,
   };
+}
+
+function getEventActivityTimestamp(event) {
+  if (!event) return null;
+  return (
+    event.refreshedAt ??
+    event.refreshed_at ??
+    event.lastSeenAt ??
+    event.last_seen_at ??
+    event.updatedAt ??
+    event.updated_at ??
+    event.aiUpdatedAt ??
+    event.ai_updated_at ??
+    event.createdAt ??
+    event.created_at ??
+    event.timestamp ??
+    null
+  );
+}
+
+function computeFreshnessStatus(event) {
+  if (event.isHistorical ?? event.is_historical) return "Historical";
+  const value = getEventActivityTimestamp(event);
+  if (!value) return "Stale";
+  const hours = Math.max(0, (Date.now() - new Date(value).getTime()) / 3600_000);
+  if (hours < 2) return "Fresh";
+  if (hours < 6) return "Recent";
+  if (hours <= 12) return "Aging";
+  return "Stale";
+}
+
+function scoreFreshness(event) {
+  switch (computeFreshnessStatus(event)) {
+    case "Fresh":
+      return 100;
+    case "Recent":
+      return 74;
+    case "Aging":
+      return 48;
+    case "Historical":
+      return 8;
+    default:
+      return 18;
+  }
+}
+
+function scoreActivePriority(event) {
+  const impactScore = Number(event.impactScore ?? event.impact_score ?? event.importanceScore ?? event.importance_score ?? 0);
+  const severityScore = Number(event.severityScore ?? event.severity_score ?? 0);
+  const importanceScore = Number(event.importanceScore ?? event.importance_score ?? 0);
+  const confidenceScore = Number(event.confidenceScore ?? event.confidence_score ?? 0);
+  const freshnessScore = scoreFreshness(event);
+
+  return (
+    impactScore * 0.4 +
+    severityScore * 0.3 +
+    importanceScore * 0.2 +
+    freshnessScore * 0.1 +
+    confidenceScore * 0.03
+  );
 }
 
 function normalizeArticleIds(articleIds) {
@@ -130,6 +195,13 @@ function mergeEvent(existing, incoming) {
 }
 
 function buildSupabaseRow(event, id = event.id) {
+  const now = new Date().toISOString();
+  const createdAt = event.createdAt ?? event.created_at ?? event.timestamp ?? now;
+  const updatedAt = event.updatedAt ?? event.updated_at ?? now;
+  const lastSeenAt = event.lastSeenAt ?? event.last_seen_at ?? updatedAt;
+  const refreshedAt = event.refreshedAt ?? event.refreshed_at ?? updatedAt;
+  const isHistorical = Boolean(event.isHistorical ?? event.is_historical);
+
   return {
     id,
     title: event.title,
@@ -153,7 +225,18 @@ function buildSupabaseRow(event, id = event.id) {
     ai_updated_at: event.aiUpdatedAt ?? null,
     cluster_signature: event.clusterSignature ?? null,
     importance_score: event.importanceScore ?? 0,
-    is_historical: Boolean(event.isHistorical),
+    is_historical: isHistorical,
+    created_at: createdAt,
+    updated_at: updatedAt,
+    last_seen_at: lastSeenAt,
+    refreshed_at: refreshedAt,
+    freshness_status: computeFreshnessStatus({
+      ...event,
+      isHistorical,
+      updatedAt,
+      lastSeenAt,
+      refreshedAt,
+    }),
   };
 }
 
@@ -208,7 +291,7 @@ function findEquivalentMemoryEvent(event) {
 async function findEquivalentSupabaseEvent(db, event) {
   const lookbackMs = event.isHistorical
     ? 45 * 24 * 60 * 60 * 1000
-    : EQUIVALENT_EVENT_WINDOW_MS;
+    : 14 * 24 * 60 * 60 * 1000;
   const cutoff = new Date(Date.now() - lookbackMs).toISOString();
 
   const { data, error } = await db
@@ -260,8 +343,14 @@ export async function getSupabaseServiceClient() {
   return getClient();
 }
 
-function filterMemoryEvents(events, { tone, confidence, region } = {}) {
+function filterMemoryEvents(events, { tone, confidence, region, scope = "active" } = {}) {
   let filtered = [...events];
+
+  if (scope === "active") {
+    filtered = filtered.filter((event) => !(event.isHistorical ?? event.is_historical));
+  } else if (scope === "historical") {
+    filtered = filtered.filter((event) => Boolean(event.isHistorical ?? event.is_historical));
+  }
 
   if (tone) {
     filtered = filtered.filter((event) => event.tone === tone);
@@ -281,27 +370,85 @@ function filterMemoryEvents(events, { tone, confidence, region } = {}) {
   return filtered;
 }
 
+function sortEventsForScope(events, scope = "active") {
+  const ranked = [...events];
+  ranked.sort((left, right) => {
+    const leftHistorical = Boolean(left.isHistorical ?? left.is_historical);
+    const rightHistorical = Boolean(right.isHistorical ?? right.is_historical);
+    const leftActivity = new Date(getEventActivityTimestamp(left) ?? left.timestamp ?? 0).getTime();
+    const rightActivity = new Date(getEventActivityTimestamp(right) ?? right.timestamp ?? 0).getTime();
+    const leftPriority = scoreActivePriority(left);
+    const rightPriority = scoreActivePriority(right);
+    const leftImpact = Number(left.impactScore ?? left.impact_score ?? left.importanceScore ?? left.importance_score ?? 0);
+    const rightImpact = Number(right.impactScore ?? right.impact_score ?? right.importanceScore ?? right.importance_score ?? 0);
+    const leftSeverity = Number(left.severityScore ?? left.severity_score ?? 0);
+    const rightSeverity = Number(right.severityScore ?? right.severity_score ?? 0);
+    const leftTimestamp = new Date(left.timestamp ?? 0).getTime();
+    const rightTimestamp = new Date(right.timestamp ?? 0).getTime();
+
+    if (scope === "historical") {
+      return rightTimestamp - leftTimestamp || rightActivity - leftActivity;
+    }
+
+    if (scope === "all" && leftHistorical !== rightHistorical) {
+      return leftHistorical ? 1 : -1;
+    }
+
+    return (
+      rightActivity - leftActivity ||
+      rightPriority - leftPriority ||
+      rightImpact - leftImpact ||
+      rightSeverity - leftSeverity ||
+      rightTimestamp - leftTimestamp
+    );
+  });
+  return ranked;
+}
+
 function getMemoryStatsSnapshot() {
   const currentEvents = getAllEvents();
   const currentStoreStats = memoryStats();
+  const activeEvents = currentEvents.filter((event) => !(event.isHistorical ?? event.is_historical));
+  const historicalEvents = currentEvents.filter((event) => event.isHistorical ?? event.is_historical);
+  const staleEventCount = activeEvents.filter((event) => computeFreshnessStatus(event) === "Stale").length;
+  const newestUpdatedEvent = sortEventsForScope(currentEvents, "all")[0] ?? null;
 
   return {
     mode: "memory",
     eventCount: currentEvents.length,
     oldestEvent: currentEvents.at(-1)?.timestamp ?? null,
     newestEvent: currentEvents[0]?.timestamp ?? null,
+    newestUpdatedEvent: getEventActivityTimestamp(newestUpdatedEvent),
+    activeEventCount: activeEvents.length,
+    historicalEventCount: historicalEvents.length,
+    staleEventCount,
     articles: currentStoreStats.articles,
     unclustered: currentStoreStats.unclustered,
   };
 }
 
 export async function insertEvent(event) {
+  const now = new Date().toISOString();
   const equivalentMemoryEvent = findEquivalentMemoryEvent(event);
   const memoryEvent = equivalentMemoryEvent
     ? mergeEvent(equivalentMemoryEvent, event)
     : { ...event, articleIds: normalizeArticleIds(event.articleIds) };
+  const hydratedMemoryEvent = normalizeEvent({
+    ...memoryEvent,
+    created_at: memoryEvent.createdAt ?? memoryEvent.created_at ?? equivalentMemoryEvent?.createdAt ?? equivalentMemoryEvent?.created_at ?? event.timestamp ?? now,
+    updated_at: now,
+    last_seen_at: event.lastSeenAt ?? event.last_seen_at ?? now,
+    refreshed_at: event.refreshedAt ?? event.refreshed_at ?? now,
+    freshness_status: computeFreshnessStatus({
+      ...memoryEvent,
+      isHistorical: memoryEvent.isHistorical ?? memoryEvent.is_historical,
+      updatedAt: now,
+      lastSeenAt: event.lastSeenAt ?? event.last_seen_at ?? now,
+      refreshedAt: event.refreshedAt ?? event.refreshed_at ?? now,
+    }),
+  });
 
-  saveMemoryEvent(memoryEvent);
+  saveMemoryEvent(hydratedMemoryEvent);
 
   const db = await getClient();
   if (!db) {
@@ -309,14 +456,25 @@ export async function insertEvent(event) {
       persisted: false,
       mode: "memory",
       action: equivalentMemoryEvent ? "updated" : "inserted",
-      id: memoryEvent.id,
+      id: hydratedMemoryEvent.id,
     };
   }
 
   try {
     const equivalentSupabaseEvent = await findEquivalentSupabaseEvent(db, event);
+    const mergedForDb = equivalentSupabaseEvent
+      ? mergeEvent(equivalentSupabaseEvent, event)
+      : {
+          ...event,
+          createdAt: event.createdAt ?? event.created_at ?? event.timestamp ?? now,
+        };
     const row = buildSupabaseRow(
-      equivalentSupabaseEvent ? mergeEvent(equivalentSupabaseEvent, event) : event,
+      {
+        ...mergedForDb,
+        updatedAt: now,
+        lastSeenAt: event.lastSeenAt ?? event.last_seen_at ?? now,
+        refreshedAt: event.refreshedAt ?? event.refreshed_at ?? now,
+      },
       equivalentSupabaseEvent?.id ?? event.id
     );
 
@@ -338,28 +496,32 @@ export async function insertEvent(event) {
   }
 }
 
-export async function getEvents({ limit = 50, offset = 0, tone, confidence, region } = {}) {
+export async function getEvents({ limit = 50, offset = 0, tone, confidence, region, scope = "active" } = {}) {
   const db = await getClient();
 
   if (!db) {
-    const filtered = filterMemoryEvents(getAllEvents(), { tone, confidence, region });
+    const filtered = sortEventsForScope(
+      filterMemoryEvents(getAllEvents(), { tone, confidence, region, scope }),
+      scope
+    );
     return {
       events: filtered.slice(offset, offset + limit),
       total: filtered.length,
       mode: "memory",
+      scope,
     };
   }
 
   try {
     let query = db
       .from("events")
-      .select("*", { count: "exact" })
-      .order("timestamp", { ascending: false })
-      .range(offset, offset + limit - 1);
+      .select("*", { count: "exact" });
 
     if (tone) query = query.eq("tone", tone);
     if (confidence) query = query.eq("confidence", confidence);
     if (region) query = query.ilike("location->>label", `%${region}%`);
+    if (scope === "active") query = query.eq("is_historical", false);
+    if (scope === "historical") query = query.eq("is_historical", true);
 
     const { data, error, count } = await query;
 
@@ -369,17 +531,22 @@ export async function getEvents({ limit = 50, offset = 0, tone, confidence, regi
     }
 
     return {
-      events: (data ?? []).map(normalizeEvent),
+      events: sortEventsForScope((data ?? []).map(normalizeEvent), scope).slice(offset, offset + limit),
       total: count ?? 0,
       mode: "supabase",
+      scope,
     };
   } catch (err) {
     log.warn(`Supabase query failed — serving in-memory events instead (${err.message})`);
-    const filtered = filterMemoryEvents(getAllEvents(), { tone, confidence, region });
+    const filtered = sortEventsForScope(
+      filterMemoryEvents(getAllEvents(), { tone, confidence, region, scope }),
+      scope
+    );
     return {
       events: filtered.slice(offset, offset + limit),
       total: filtered.length,
       mode: "memory",
+      scope,
     };
   }
 }
@@ -411,7 +578,9 @@ export async function getEventById(id) {
 }
 
 export async function deleteOldEvents(hours = 24) {
-  const removedInMemory = clearStaleEvents(hours * 3600_000);
+  const maxAgeMs = hours * 3600_000;
+  const cutoff = Date.now() - maxAgeMs;
+  const removedInMemory = clearStaleEvents(maxAgeMs);
   const db = await getClient();
 
   if (!db) {
@@ -419,15 +588,32 @@ export async function deleteOldEvents(hours = 24) {
   }
 
   try {
-    const cutoff = new Date(Date.now() - hours * 3600_000).toISOString();
-    const { error, count } = await db
+    const { data, error } = await db
       .from("events")
-      .delete({ count: "exact" })
-      .lt("timestamp", cutoff)
+      .select("id, timestamp, updated_at, last_seen_at, refreshed_at, is_historical")
       .eq("is_historical", false);
 
     if (error) {
       log.warn(`Supabase purge failed — retained in-memory cleanup (${error.message})`);
+      return removedInMemory;
+    }
+
+    const staleIds = (data ?? [])
+      .filter((event) => {
+        const activity = getEventActivityTimestamp(event);
+        return new Date(activity ?? event.timestamp ?? 0).getTime() < cutoff;
+      })
+      .map((event) => event.id);
+
+    if (staleIds.length === 0) return removedInMemory;
+
+    const { error: deleteError, count } = await db
+      .from("events")
+      .delete({ count: "exact" })
+      .in("id", staleIds);
+
+    if (deleteError) {
+      log.warn(`Supabase purge failed — retained in-memory cleanup (${deleteError.message})`);
       return removedInMemory;
     }
 
@@ -446,22 +632,36 @@ export async function getStats() {
   }
 
   try {
-    const [countRes, oldestRes, newestRes] = await Promise.all([
+    const [countRes, oldestRes, newestRes, eventRowsRes] = await Promise.all([
       db.from("events").select("id", { count: "exact", head: true }),
       db.from("events").select("timestamp").order("timestamp", { ascending: true }).limit(1).maybeSingle(),
       db.from("events").select("timestamp").order("timestamp", { ascending: false }).limit(1).maybeSingle(),
+      db
+        .from("events")
+        .select("id, is_historical, timestamp, created_at, updated_at, last_seen_at, refreshed_at, ai_updated_at, importance_score")
+        .limit(1000),
     ]);
 
-    if (countRes.error) {
-      log.warn(`Supabase stats failed — falling back to memory (${countRes.error.message})`);
+    if (countRes.error || eventRowsRes.error) {
+      log.warn(`Supabase stats failed — falling back to memory (${countRes.error?.message ?? eventRowsRes.error?.message})`);
       return getMemoryStatsSnapshot();
     }
+
+    const normalizedRows = (eventRowsRes.data ?? []).map(normalizeEvent);
+    const activeEvents = normalizedRows.filter((event) => !event.isHistorical);
+    const historicalEvents = normalizedRows.filter((event) => event.isHistorical);
+    const staleEventCount = activeEvents.filter((event) => computeFreshnessStatus(event) === "Stale").length;
+    const newestUpdatedEvent = sortEventsForScope(normalizedRows, "all")[0] ?? null;
 
     return {
       mode: "supabase",
       eventCount: countRes.count ?? 0,
       oldestEvent: oldestRes.data?.timestamp ?? null,
       newestEvent: newestRes.data?.timestamp ?? null,
+      newestUpdatedEvent: getEventActivityTimestamp(newestUpdatedEvent),
+      activeEventCount: activeEvents.length,
+      historicalEventCount: historicalEvents.length,
+      staleEventCount,
       articles: memoryStats().articles,
       unclustered: memoryStats().unclustered,
     };
@@ -476,25 +676,44 @@ export async function getRecentEvents(hours = 24) {
   const db = await getClient();
 
   if (!db) {
-    return getAllEvents().filter((event) => event.timestamp >= cutoff);
+    return sortEventsForScope(
+      getAllEvents().filter((event) => {
+        const activity = getEventActivityTimestamp(event);
+        return new Date(activity ?? event.timestamp ?? 0).toISOString() >= cutoff;
+      }),
+      "active"
+    );
   }
 
   try {
     const { data, error } = await db
       .from("events")
       .select("*")
-      .gte("timestamp", cutoff)
-      .order("timestamp", { ascending: false })
-      .limit(200);
+      .eq("is_historical", false)
+      .limit(400);
 
     if (error) {
       throw error;
     }
 
-    return (data ?? []).map(normalizeEvent);
+    return sortEventsForScope(
+      (data ?? [])
+        .map(normalizeEvent)
+        .filter((event) => {
+          const activity = getEventActivityTimestamp(event);
+          return new Date(activity ?? event.timestamp ?? 0).toISOString() >= cutoff;
+        }),
+      "active"
+    );
   } catch (err) {
     log.warn(`Supabase recent events lookup failed — using memory fallback (${err.message})`);
-    return getAllEvents().filter((event) => event.timestamp >= cutoff);
+    return sortEventsForScope(
+      getAllEvents().filter((event) => {
+        const activity = getEventActivityTimestamp(event);
+        return new Date(activity ?? event.timestamp ?? 0).toISOString() >= cutoff;
+      }),
+      "active"
+    );
   }
 }
 
@@ -1017,22 +1236,23 @@ export async function getRefreshState(key) {
     if (!record && key === "news") {
       const { data: latestEvent, error: latestError } = await db
         .from("events")
-        .select("timestamp, created_at")
-        .order("created_at", { ascending: false })
+        .select("timestamp, created_at, updated_at, refreshed_at, last_seen_at")
+        .order("updated_at", { ascending: false })
         .limit(1)
         .maybeSingle();
 
-      if (!latestError && latestEvent?.created_at) {
-        const derivedNextRefresh = new Date(new Date(latestEvent.created_at).getTime() + 60 * 60 * 1000).toISOString();
+      const derivedLastRefresh = latestEvent?.refreshed_at ?? latestEvent?.last_seen_at ?? latestEvent?.updated_at ?? latestEvent?.created_at ?? null;
+      if (!latestError && derivedLastRefresh) {
+        const derivedNextRefresh = new Date(new Date(derivedLastRefresh).getTime() + 60 * 60 * 1000).toISOString();
         record = {
           key,
           metadata: {
             derived: true,
-            reason: "No explicit refresh_news row found; derived from latest event insert timestamp.",
+            reason: "No explicit refresh_news row found; derived from latest event activity timestamp.",
           },
-          lastRefresh: latestEvent.created_at,
+          lastRefresh: derivedLastRefresh,
           nextRefresh: derivedNextRefresh,
-          updatedAt: latestEvent.created_at,
+          updatedAt: derivedLastRefresh,
         };
       }
     }

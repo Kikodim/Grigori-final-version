@@ -1612,9 +1612,18 @@ function decorateEventForUi(event) {
   };
 }
 
-async function fetchBackendEvents() {
-  const url = resolveBackendUrl("/api/v1/events?limit=120");
-  const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
+function withNoStoreUrl(path, forceFresh = false) {
+  if (!forceFresh) return resolveBackendUrl(path);
+  const separator = path.includes("?") ? "&" : "?";
+  return resolveBackendUrl(`${path}${separator}t=${Date.now()}`);
+}
+
+async function fetchBackendEvents(forceFresh = false) {
+  const url = withNoStoreUrl("/api/v1/events?limit=120&scope=active", forceFresh);
+  const res = await fetch(url, {
+    signal: AbortSignal.timeout(8000),
+    cache: "no-store",
+  });
   if (!res.ok) throw new Error(`backend ${res.status}`);
 
   const data = await res.json();
@@ -1632,10 +1641,10 @@ async function fetchBackendEvents() {
 
 // ── Merge live data with static events ────────────────────────────────────────
 // Returns the combined scored event list, preferring static data for enriched events
-async function fetchLiveEvents() {
+async function fetchLiveEvents(forceFresh = false) {
   try {
-    const backendEvents = await fetchBackendEvents();
-    if (backendEvents.length > 0) return backendEvents;
+    const backendEvents = await fetchBackendEvents(forceFresh);
+    return backendEvents;
   } catch (err) {
     console.warn("[Grigori] Backend events fetch failed:", err.message);
   }
@@ -1769,8 +1778,11 @@ function deriveSocialCorroboration(signal, events = []) {
   return { label: "Unverified", confidence: "Low", relatedEvents: [] };
 }
 
-async function fetchOperationalStatus() {
-  const res = await fetch(resolveBackendUrl("/api/v1/health"), { signal: AbortSignal.timeout(8000) });
+async function fetchOperationalStatus(forceFresh = false) {
+  const res = await fetch(withNoStoreUrl("/api/v1/health", forceFresh), {
+    signal: AbortSignal.timeout(8000),
+    cache: "no-store",
+  });
   if (!res.ok) throw new Error(`health ${res.status}`);
   return await res.json();
 }
@@ -5232,7 +5244,7 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
   const { isMobile, isTablet } = useViewport();
   const headerHeight = getHeaderHeight(isMobile, isTablet);
 
-  const refreshData = useCallback(async () => {
+  const refreshData = useCallback(async (forceFresh = false) => {
     if (!DEMO_MODE) {
       try {
         const md = await fetchMarketContext();
@@ -5243,10 +5255,13 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
     }
 
     try {
-      const evs = await fetchLiveEvents();
+      const evs = await fetchLiveEvents(forceFresh);
       setLiveEvents(evs);
       try {
-        const briefingRes = await fetch(resolveBackendUrl("/api/v1/briefing"), { signal: AbortSignal.timeout(8000) });
+        const briefingRes = await fetch(withNoStoreUrl("/api/v1/briefing", forceFresh), {
+          signal: AbortSignal.timeout(8000),
+          cache: "no-store",
+        });
         if (briefingRes.ok) {
           const briefingData = await briefingRes.json();
           setBriefing(briefingData.briefing ?? buildBriefing(evs, selectedLens));
@@ -5265,7 +5280,7 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
     }
 
     try {
-      const status = await fetchOperationalStatus();
+      const status = await fetchOperationalStatus(forceFresh);
       setLayersStatus({
         flights: status.layers?.flights ?? null,
         vessels: status.layers?.vessels ?? null,
@@ -5390,7 +5405,7 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
         throw new Error(data.error ?? `Request failed with ${res.status}`);
       }
 
-      await refreshData();
+      await refreshData(true);
       const result = data.result ?? {};
       setRefreshState({ status: "success", message: formatRefreshMessage(result) || "Refresh complete.", detail: result });
       window.setTimeout(() => setRefreshState({ status: "idle", message: "", detail: result }), 6000);
