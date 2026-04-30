@@ -93,6 +93,10 @@ ENABLE_AUTOMATED_AI
 MAX_AI_CALLS_PER_RUN
 AI_DAILY_LIMIT
 AI_RESERVED_CALLS
+ENABLE_REPORT_AI
+GEMINI_REPORT_DAILY_LIMIT
+GEMINI_REPORT_MAX_EVENTS
+GEMINI_REPORT_MIN_EVENTS
 ENABLE_GDELT
 ENABLE_RSS
 ENABLE_NEWSDATA
@@ -119,6 +123,10 @@ ENABLE_AUTOMATED_AI=true
 MAX_AI_CALLS_PER_RUN=1
 AI_DAILY_LIMIT=20
 AI_RESERVED_CALLS=2
+ENABLE_REPORT_AI=true
+GEMINI_REPORT_DAILY_LIMIT=2
+GEMINI_REPORT_MAX_EVENTS=30
+GEMINI_REPORT_MIN_EVENTS=3
 ENABLE_MARKET_DATA=false
 MARKET_DATA_PROVIDER=alpha_vantage
 MARKET_DATA_REFRESH_INTERVAL_MINUTES=60
@@ -139,6 +147,13 @@ GNEWS_MAX_CALLS_PER_REFRESH=4
 GNEWS_REFRESH_EVERY_MINUTES=60
 ENABLE_GNEWS_BACKFILL=false
 ```
+
+Reports Alpha notes:
+
+- Report generation is manual only and uses Gemini only.
+- No report generation runs on page load or in the background.
+- The alpha is tuned for 1–2 reports per day via `GEMINI_REPORT_DAILY_LIMIT`.
+- Public users should stay in preview mode; use sign-in or admin unlock for controlled testing.
 
 ## 5. Production Test Commands
 

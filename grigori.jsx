@@ -14,6 +14,8 @@ const EVENTS_ENDPOINT = "/api/v1/events?limit=50&scope=active";
 const DISPLAY_FONT = "'Rajdhani', 'Space Grotesk', sans-serif";
 const BODY_FONT = "'Inter', 'Space Grotesk', sans-serif";
 const MONO_FONT = "'Share Tech Mono', 'IBM Plex Mono', monospace";
+const BRAND_MARK = "/assets/brand/grigori-mark.svg";
+const BRAND_WORDMARK = "/assets/brand/grigori-wordmark.svg";
 const APP_VIEWS = [
   { key: "globe", label: "Globe" },
   { key: "classic", label: "Intel Board" },
@@ -454,14 +456,12 @@ export default function ClassicIntelBoard({ activeView = "classic", onNavigate }
         gap: 16,
         flexWrap: "wrap",
       }}>
-        <div>
-          <div style={{ color: "#f8fafc", fontFamily: DISPLAY_FONT, fontSize: isMobile ? 24 : 30, fontWeight: 700, letterSpacing: isMobile ? "0.12em" : "0.16em", textTransform: "uppercase", lineHeight: 1 }}>
-            Grigori
+        <div style={{ display: "grid", gap: 8 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 12, minWidth: 0 }}>
+            <img src={BRAND_MARK} alt="Grigori mark" style={{ width: isMobile ? 34 : 38, height: isMobile ? 34 : 38, flexShrink: 0 }} />
+            <img src={BRAND_WORDMARK} alt="Grigori by oryth.io" style={{ height: isMobile ? 28 : 34, width: "auto", maxWidth: isMobile ? 200 : 260 }} />
           </div>
-          <div style={{ color: "rgba(191,219,254,0.78)", fontFamily: BODY_FONT, fontSize: isMobile ? 12 : 13, letterSpacing: "0.06em", marginTop: 4 }}>
-            by oryth.io
-          </div>
-          <div style={{ color: "#70d7f2", fontFamily: MONO_FONT, fontSize: isMobile ? 10 : 11, letterSpacing: isMobile ? "0.1em" : "0.16em", textTransform: "uppercase", marginTop: 8 }}>
+          <div style={{ color: "#70d7f2", fontFamily: MONO_FONT, fontSize: isMobile ? 10 : 11, letterSpacing: isMobile ? "0.1em" : "0.16em", textTransform: "uppercase", marginLeft: isMobile ? 2 : 4 }}>
             Strategic Intelligence Dashboard
           </div>
         </div>

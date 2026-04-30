@@ -14,7 +14,7 @@
 
 import { createHash } from "crypto";
 import { describeEnvVar } from "./config.js";
-import { sanitizeEventNarrative, BRIEF_LIMITS } from "./event-insights.js";
+import { sanitizeBulletList, sanitizeEventNarrative, sanitizeNarrativeText, BRIEF_LIMITS } from "./event-insights.js";
 import { createLogger } from "./logger.js";
 import { getCachedMarketContextSummary } from "./market-data.js";
 import { buildRuleBasedBriefing } from "./rule-based-briefing.js";
@@ -97,6 +97,7 @@ export function cacheStats() {
 const ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent";
 const DEFAULT_MAX_OUTPUT_TOKENS = 4096;
 const RETRY_MAX_OUTPUT_TOKENS = 8192;
+const REPORT_MODEL = "gemini-2.5-flash";
 
 async function _call(sys, user, maxTokens) {
   const keyStatus = describeEnvVar("GEMINI_API_KEY");
@@ -304,6 +305,410 @@ function _buildPrompt(pe, articles, marketContextSummary, { compact = false } = 
   return compact
     ? `Region: ${pe.region?.label ?? "Unknown"}\nKeywords: ${pe.keywords.slice(0, 8).join(", ")}\n${marketLine}\n${body}`
     : `Region: ${pe.region?.label ?? "Unknown"}\nKeywords: ${pe.keywords.slice(0, 10).join(", ")}\nSources: ${pe.sources.join(", ")}\n${marketLine}\n${body}`;
+}
+
+const REPORT_LIMITS = {
+  title: 160,
+  executiveSummary: 900,
+  keyJudgment: 280,
+  currentSituation: 2500,
+  whatChanged: 240,
+  trendAnalysis: 1800,
+  scenarioSummary: 900,
+  scenarioTrigger: 180,
+  marketImpactSummary: 1200,
+  watchIndicator: 220,
+  confidenceRationale: 500,
+  sourceLimitations: 320,
+  monitoringAction: 220,
+  sectorImpact: 220,
+  sourceTitle: 180,
+};
+
+const REPORT_SYS = `You are generating a premium strategic intelligence report for Grigori by oryth.io.
+Use only the provided Grigori event data. Do not invent facts. Do not reproduce full article text.
+Do not include raw URLs inside narrative sections. Source domains, titles, and URLs belong only in the sources field.
+Do not copy or quote long passages from source articles. Do not include source IDs, UUIDs, scrape residue, or labels like SECTIONS.
+Be explicit about uncertainty and source limitations. Scenario probabilities are analytic estimates, not statistical facts, and must sum to 100.
+Market context is not financial advice. Output structured JSON only. No markdown. No code fences. No generic filler.
+Write like a senior geopolitical risk analyst producing a paid strategic intelligence briefing.
+Required schema:
+{
+  "title": "string",
+  "generatedAt": "ISO string",
+  "region": "string",
+  "focusArea": "string",
+  "timeHorizon": "string",
+  "audienceType": "string",
+  "riskFraming": "string",
+  "executiveSummary": "string",
+  "keyJudgments": ["string", "string", "string"],
+  "currentSituation": "string",
+  "whatChanged": ["string", "string", "string"],
+  "trendAnalysis": "string",
+  "scenarioMatrix": [
+    {
+      "name": "Containment / de-escalation",
+      "probability": 0,
+      "summary": "string",
+      "triggers": ["string"],
+      "implications": "string",
+      "affectedSectors": ["string"]
+    },
+    {
+      "name": "Base case / continued pressure",
+      "probability": 0,
+      "summary": "string",
+      "triggers": ["string"],
+      "implications": "string",
+      "affectedSectors": ["string"]
+    },
+    {
+      "name": "Escalation / disruption",
+      "probability": 0,
+      "summary": "string",
+      "triggers": ["string"],
+      "implications": "string",
+      "affectedSectors": ["string"]
+    }
+  ],
+  "marketImpact": {
+    "oil": "string",
+    "shipping": "string",
+    "equities": "string",
+    "defense": "string",
+    "tech": "string",
+    "summary": "string"
+  },
+  "sectorImpact": ["string"],
+  "watchIndicators": ["string"],
+  "confidenceAssessment": {
+    "level": "Low|Medium|High",
+    "rationale": "string",
+    "increaseConfidence": ["string"],
+    "reduceConfidence": ["string"]
+  },
+  "sourceAssessment": {
+    "sourceCount": 0,
+    "sourceDiversity": "string",
+    "corroborationLevel": "string",
+    "limitations": "string"
+  },
+  "limitations": ["string"],
+  "recommendedMonitoringActions": ["string"],
+  "sources": [{"domain": "string", "title": "string", "url": "string"}]
+}`;
+
+function buildReportPrompt(request, events, { compact = false } = {}) {
+  const eventPayload = events.map((event) => ({
+    id: event.id,
+    title: event.title,
+    summary: event.summary,
+    assessment: event.assessment,
+    location: event.location?.label ?? "Region under review",
+    category: event.category ?? "Political",
+    tone: event.tone,
+    confidence: event.confidence,
+    impactScore: event.impactScore ?? event.importanceScore ?? 0,
+    severityScore: event.severityScore ?? 0,
+    confidenceScore: event.confidenceScore ?? 0,
+    recentTrend: event.recentTrend ?? "Insufficient data",
+    freshnessStatus: event.freshnessStatus ?? "Unknown",
+    createdAt: event.createdAt ?? event.created_at ?? event.timestamp ?? null,
+    updatedAt: event.updatedAt ?? event.updated_at ?? event.timestamp ?? null,
+    aiStatus: event.aiStatus ?? event.ai_status ?? "rule_based",
+    marketImpact: event.marketImpact ?? {},
+    sourceAssessment: event.sourceAssessment ?? {},
+    sourceDomains: event.sourceDomains ?? [],
+    sourceCount: event.sourceCount ?? 0,
+  }));
+
+  const requestBlock = {
+    region: request.region,
+    focusArea: request.focusArea,
+    timeHorizon: request.timeHorizon,
+    audienceType: request.audienceType,
+    riskFraming: request.riskFraming,
+    customQuestion: request.customQuestion ?? "",
+    compact,
+  };
+
+  return [
+    "Create a structured intelligence report from the following request and event set.",
+    "Keep narrative detailed but disciplined. No source dumps. No raw URLs in analysis sections.",
+    `REQUEST=${JSON.stringify(requestBlock)}`,
+    `EVENTS=${JSON.stringify(eventPayload)}`,
+  ].join("\n\n");
+}
+
+function buildReportRepairPrompt(request, events) {
+  return `${buildReportPrompt(request, events, { compact: true })}
+
+Your first attempt included raw-looking or overlong sections. Repair it.
+Keep developments-style lists concise. No copied source wording. No UUIDs. No SECTIONS labels.`;
+}
+
+function normalizeScenarioProbabilities(items) {
+  const total = items.reduce((sum, item) => sum + item.probability, 0);
+  if (total === 100) return items;
+  if (total <= 0) {
+    return [
+      { ...items[0], probability: 25 },
+      { ...items[1], probability: 50 },
+      { ...items[2], probability: 25 },
+    ];
+  }
+  const normalized = items.map((item) => ({
+    ...item,
+    probability: Math.round((item.probability / total) * 100 / 5) * 5,
+  }));
+  const delta = 100 - normalized.reduce((sum, item) => sum + item.probability, 0);
+  normalized[1].probability += delta;
+  return normalized;
+}
+
+function sanitizeSourceList(items, fallback = []) {
+  const cleaned = [];
+  for (const item of Array.isArray(items) ? items : []) {
+    const domain = sanitizeNarrativeText(item?.domain ?? "", {
+      maxLen: 80,
+      maxSentences: 1,
+      fallback: "",
+    });
+    const title = sanitizeNarrativeText(item?.title ?? "", {
+      maxLen: REPORT_LIMITS.sourceTitle,
+      maxSentences: 2,
+      fallback: "",
+    });
+    const url = typeof item?.url === "string" && /^https?:\/\//i.test(item.url.trim()) ? item.url.trim() : "";
+    if (!domain && !url) continue;
+    cleaned.push({ domain: domain || url, title, url });
+    if (cleaned.length >= 16) break;
+  }
+  return cleaned.length > 0 ? cleaned : fallback.slice(0, 16);
+}
+
+function sanitizeReportDocument(raw, fallback) {
+  const confidenceLevel = ["Low", "Medium", "High"].includes(raw?.confidenceAssessment?.level)
+    ? raw.confidenceAssessment.level
+    : (fallback.confidenceAssessment?.level ?? "Medium");
+
+  const scenarios = normalizeScenarioProbabilities(
+    (Array.isArray(raw?.scenarioMatrix) ? raw.scenarioMatrix : fallback.scenarioMatrix).slice(0, 3).map((scenario, index) => {
+      const fallbackScenario = fallback.scenarioMatrix[index] ?? {};
+      return {
+        name: sanitizeNarrativeText(
+          scenario?.name ?? fallbackScenario.name ?? ["Containment / de-escalation", "Base case / continued pressure", "Escalation / disruption"][index],
+          { maxLen: 80, maxSentences: 1, fallback: ["Containment / de-escalation", "Base case / continued pressure", "Escalation / disruption"][index] }
+        ),
+        probability: Number.isFinite(Number(scenario?.probability))
+          ? Math.round(Math.max(0, Math.min(100, Number(scenario.probability))) / 5) * 5
+          : Number(fallbackScenario.probability ?? (index === 1 ? 50 : 25)),
+        summary: sanitizeNarrativeText(scenario?.summary ?? fallbackScenario.summary ?? "", {
+          maxLen: REPORT_LIMITS.scenarioSummary,
+          maxSentences: 6,
+          fallback: fallbackScenario.summary ?? "Monitoring for directional shifts in the operating picture.",
+        }),
+        triggers: sanitizeBulletList(scenario?.triggers, {
+          maxItems: 4,
+          maxLen: REPORT_LIMITS.scenarioTrigger,
+          maxSentences: 1,
+          fallback: Array.isArray(fallbackScenario.triggers) ? fallbackScenario.triggers : [],
+        }),
+        implications: sanitizeNarrativeText(scenario?.implications ?? fallbackScenario.implications ?? "", {
+          maxLen: REPORT_LIMITS.scenarioSummary,
+          maxSentences: 4,
+          fallback: fallbackScenario.implications ?? "Implications remain tied to the direction of escalation, market sensitivity, and source corroboration.",
+        }),
+        affectedSectors: sanitizeBulletList(scenario?.affectedSectors, {
+          maxItems: 6,
+          maxLen: 40,
+          maxSentences: 1,
+          fallback: Array.isArray(fallbackScenario.affectedSectors) ? fallbackScenario.affectedSectors : [],
+        }),
+      };
+    })
+  );
+
+  const cleaned = {
+    title: sanitizeNarrativeText(raw?.title ?? fallback.title, {
+      maxLen: REPORT_LIMITS.title,
+      maxSentences: 1,
+      fallback: fallback.title,
+    }),
+    generatedAt: raw?.generatedAt ?? fallback.generatedAt ?? new Date().toISOString(),
+    region: sanitizeNarrativeText(raw?.region ?? fallback.region, { maxLen: 80, maxSentences: 1, fallback: fallback.region }),
+    focusArea: sanitizeNarrativeText(raw?.focusArea ?? fallback.focusArea, { maxLen: 80, maxSentences: 1, fallback: fallback.focusArea }),
+    timeHorizon: sanitizeNarrativeText(raw?.timeHorizon ?? fallback.timeHorizon, { maxLen: 40, maxSentences: 1, fallback: fallback.timeHorizon }),
+    audienceType: sanitizeNarrativeText(raw?.audienceType ?? fallback.audienceType, { maxLen: 40, maxSentences: 1, fallback: fallback.audienceType }),
+    riskFraming: sanitizeNarrativeText(raw?.riskFraming ?? fallback.riskFraming, { maxLen: 40, maxSentences: 1, fallback: fallback.riskFraming }),
+    executiveSummary: sanitizeNarrativeText(raw?.executiveSummary ?? fallback.executiveSummary, {
+      maxLen: REPORT_LIMITS.executiveSummary,
+      maxSentences: 6,
+      fallback: fallback.executiveSummary,
+    }),
+    keyJudgments: sanitizeBulletList(raw?.keyJudgments, {
+      maxItems: 5,
+      maxLen: REPORT_LIMITS.keyJudgment,
+      maxSentences: 2,
+      fallback: fallback.keyJudgments,
+    }),
+    currentSituation: sanitizeNarrativeText(raw?.currentSituation ?? fallback.currentSituation, {
+      maxLen: REPORT_LIMITS.currentSituation,
+      maxSentences: 12,
+      fallback: fallback.currentSituation,
+    }),
+    whatChanged: sanitizeBulletList(raw?.whatChanged, {
+      maxItems: 6,
+      maxLen: REPORT_LIMITS.whatChanged,
+      maxSentences: 2,
+      fallback: fallback.whatChanged,
+    }),
+    trendAnalysis: sanitizeNarrativeText(raw?.trendAnalysis ?? fallback.trendAnalysis, {
+      maxLen: REPORT_LIMITS.trendAnalysis,
+      maxSentences: 10,
+      fallback: fallback.trendAnalysis,
+    }),
+    scenarioMatrix: scenarios,
+    marketImpact: {
+      oil: sanitizeNarrativeText(raw?.marketImpact?.oil ?? fallback.marketImpact?.oil ?? "", { maxLen: 120, maxSentences: 2, fallback: fallback.marketImpact?.oil ?? "" }),
+      shipping: sanitizeNarrativeText(raw?.marketImpact?.shipping ?? fallback.marketImpact?.shipping ?? "", { maxLen: 120, maxSentences: 2, fallback: fallback.marketImpact?.shipping ?? "" }),
+      equities: sanitizeNarrativeText(raw?.marketImpact?.equities ?? fallback.marketImpact?.equities ?? "", { maxLen: 120, maxSentences: 2, fallback: fallback.marketImpact?.equities ?? "" }),
+      defense: sanitizeNarrativeText(raw?.marketImpact?.defense ?? fallback.marketImpact?.defense ?? "", { maxLen: 120, maxSentences: 2, fallback: fallback.marketImpact?.defense ?? "" }),
+      tech: sanitizeNarrativeText(raw?.marketImpact?.tech ?? fallback.marketImpact?.tech ?? "", { maxLen: 120, maxSentences: 2, fallback: fallback.marketImpact?.tech ?? "" }),
+      summary: sanitizeNarrativeText(raw?.marketImpact?.summary ?? fallback.marketImpact?.summary ?? "", {
+        maxLen: REPORT_LIMITS.marketImpactSummary,
+        maxSentences: 8,
+        fallback: fallback.marketImpact?.summary ?? "",
+      }),
+    },
+    sectorImpact: sanitizeBulletList(raw?.sectorImpact, {
+      maxItems: 6,
+      maxLen: REPORT_LIMITS.sectorImpact,
+      maxSentences: 2,
+      fallback: fallback.sectorImpact,
+    }),
+    watchIndicators: sanitizeBulletList(raw?.watchIndicators, {
+      maxItems: 10,
+      maxLen: REPORT_LIMITS.watchIndicator,
+      maxSentences: 2,
+      fallback: fallback.watchIndicators,
+    }),
+    confidenceAssessment: {
+      level: confidenceLevel,
+      rationale: sanitizeNarrativeText(raw?.confidenceAssessment?.rationale ?? fallback.confidenceAssessment?.rationale ?? "", {
+        maxLen: REPORT_LIMITS.confidenceRationale,
+        maxSentences: 4,
+        fallback: fallback.confidenceAssessment?.rationale ?? "",
+      }),
+      increaseConfidence: sanitizeBulletList(raw?.confidenceAssessment?.increaseConfidence, {
+        maxItems: 4,
+        maxLen: 180,
+        maxSentences: 1,
+        fallback: fallback.confidenceAssessment?.increaseConfidence ?? [],
+      }),
+      reduceConfidence: sanitizeBulletList(raw?.confidenceAssessment?.reduceConfidence, {
+        maxItems: 4,
+        maxLen: 180,
+        maxSentences: 1,
+        fallback: fallback.confidenceAssessment?.reduceConfidence ?? [],
+      }),
+    },
+    sourceAssessment: {
+      sourceCount: Number.isFinite(Number(raw?.sourceAssessment?.sourceCount))
+        ? Number(raw.sourceAssessment.sourceCount)
+        : Number(fallback.sourceAssessment?.sourceCount ?? 0),
+      sourceDiversity: sanitizeNarrativeText(raw?.sourceAssessment?.sourceDiversity ?? fallback.sourceAssessment?.sourceDiversity ?? "", {
+        maxLen: 180,
+        maxSentences: 2,
+        fallback: fallback.sourceAssessment?.sourceDiversity ?? "",
+      }),
+      corroborationLevel: sanitizeNarrativeText(raw?.sourceAssessment?.corroborationLevel ?? fallback.sourceAssessment?.corroborationLevel ?? "", {
+        maxLen: 120,
+        maxSentences: 1,
+        fallback: fallback.sourceAssessment?.corroborationLevel ?? "",
+      }),
+      limitations: sanitizeNarrativeText(raw?.sourceAssessment?.limitations ?? fallback.sourceAssessment?.limitations ?? "", {
+        maxLen: REPORT_LIMITS.sourceLimitations,
+        maxSentences: 3,
+        fallback: fallback.sourceAssessment?.limitations ?? "",
+      }),
+    },
+    limitations: sanitizeBulletList(raw?.limitations, {
+      maxItems: 5,
+      maxLen: 220,
+      maxSentences: 2,
+      fallback: fallback.limitations,
+    }),
+    recommendedMonitoringActions: sanitizeBulletList(raw?.recommendedMonitoringActions, {
+      maxItems: 6,
+      maxLen: REPORT_LIMITS.monitoringAction,
+      maxSentences: 2,
+      fallback: fallback.recommendedMonitoringActions,
+    }),
+    sources: sanitizeSourceList(raw?.sources, fallback.sources ?? []),
+  };
+
+  const requiresFallback =
+    cleaned.keyJudgments.length < 3 ||
+    cleaned.whatChanged.length < 3 ||
+    cleaned.watchIndicators.length < 4 ||
+    cleaned.sources.length < 1 ||
+    cleaned.scenarioMatrix.length !== 3 ||
+    normalizeScenarioProbabilities(cleaned.scenarioMatrix).reduce((sum, scenario) => sum + scenario.probability, 0) !== 100;
+
+  return { cleaned, requiresFallback };
+}
+
+export async function generateStrategicReportWithGemini({ request, events, fallbackReport }) {
+  const geminiConfigured = describeEnvVar("GEMINI_API_KEY").usable;
+  if (!geminiConfigured) {
+    return { ok: false, reason: "gemini_not_configured" };
+  }
+
+  let response;
+  try {
+    response = await _enqueue(() => _callWithRetry(REPORT_SYS, buildReportPrompt(request, events), RETRY_MAX_OUTPUT_TOKENS));
+  } catch (err) {
+    log.warn(`Gemini report generation failed: ${err.message}`);
+    return { ok: false, reason: "provider_error", detail: err.message };
+  }
+
+  let raw = response?.text ?? "";
+  let parsed = parseGeminiJson(raw);
+
+  if (!parsed.ok || looksIncompleteJson(raw)) {
+    try {
+      const retryResponse = await _enqueue(() => _callWithRetry(REPORT_SYS, buildReportRepairPrompt(request, events), RETRY_MAX_OUTPUT_TOKENS));
+      response = retryResponse;
+      raw = retryResponse?.text ?? "";
+      parsed = parseGeminiJson(raw);
+    } catch (err) {
+      log.warn(`Gemini report retry failed: ${err.message}`);
+      return { ok: false, reason: "provider_error", detail: err.message };
+    }
+  }
+
+  if (!parsed.ok) {
+    return { ok: false, reason: "provider_error", detail: parsed.reason };
+  }
+
+  const sanitized = sanitizeReportDocument(parsed.value, fallbackReport);
+  if (sanitized.requiresFallback) {
+    return { ok: false, reason: "sanitizer_rejected_output", detail: "report_sanitizer_rejected_output" };
+  }
+
+  await recordAIUsage({
+    source: "reports",
+    clusterSignature: `report:${request.region}:${request.focusArea}:${request.timeHorizon}`,
+    inputTokens: response?.inputTokens ?? 0,
+  });
+
+  return {
+    ok: true,
+    report: sanitized.cleaned,
+    aiModel: REPORT_MODEL,
+  };
 }
 
 function _buildRepairPrompt(pe, articles, marketContextSummary) {

@@ -264,6 +264,17 @@ function getMemoryAIUsageSnapshot() {
   };
 }
 
+function getMemoryAIUsageSnapshotForSource(source = "automation") {
+  const start = Date.parse(utcDayStartIso());
+  const today = memoryAIUsageLog.filter((entry) => Date.parse(entry.created_at) >= start && entry.source === source);
+
+  return {
+    mode: "memory",
+    source,
+    totalCalls: today.length,
+  };
+}
+
 function getMemoryLayerUsageSnapshot(layerKey) {
   const dayStart = Date.parse(utcDayStartIso());
   const monthStart = Date.parse(utcMonthStartIso());
@@ -775,6 +786,36 @@ export async function getAIUsageStats() {
   }
 }
 
+export async function getAIUsageStatsBySource(source = "automation") {
+  const db = await getClient();
+  const start = utcDayStartIso();
+
+  if (!db) {
+    return getMemoryAIUsageSnapshotForSource(source);
+  }
+
+  try {
+    const { data, error } = await db
+      .from("ai_usage_logs")
+      .select("source, created_at")
+      .eq("source", source)
+      .gte("created_at", start);
+
+    if (error) {
+      throw error;
+    }
+
+    return {
+      mode: "supabase",
+      source,
+      totalCalls: (data ?? []).length,
+    };
+  } catch (err) {
+    log.warn(`Supabase AI usage lookup failed for ${source} — using memory fallback (${err.message})`);
+    return getMemoryAIUsageSnapshotForSource(source);
+  }
+}
+
 export async function healthCheck() {
   const url = process.env.SUPABASE_URL;
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -986,9 +1027,9 @@ export async function getUserReports(userId, { limit = 20, query = "" } = {}) {
 
   if (!db) {
     const filtered = memoryReports
-      .filter((report) => report.user_id === userId)
+      .filter((report) => (userId ? report.user_id === userId : true))
       .filter((report) => !needle || `${report.title} ${report.region} ${report.focus_area}`.toLowerCase().includes(needle))
-      .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+      .sort((a, b) => new Date(b.generated_at ?? b.created_at).getTime() - new Date(a.generated_at ?? a.created_at).getTime());
     return { mode: "memory", reports: filtered.slice(0, limit) };
   }
 
@@ -996,9 +1037,12 @@ export async function getUserReports(userId, { limit = 20, query = "" } = {}) {
     let qb = db
       .from("reports")
       .select("*")
-      .eq("user_id", userId)
-      .order("created_at", { ascending: false })
+      .order("generated_at", { ascending: false, nullsFirst: false })
       .limit(limit);
+
+    if (userId) {
+      qb = qb.eq("user_id", userId);
+    }
 
     if (needle) {
       qb = qb.or(`title.ilike.%${needle}%,region.ilike.%${needle}%,focus_area.ilike.%${needle}%`);
@@ -1010,9 +1054,9 @@ export async function getUserReports(userId, { limit = 20, query = "" } = {}) {
   } catch (err) {
     log.warn(`Supabase report history lookup failed — using memory fallback (${err.message})`);
     const filtered = memoryReports
-      .filter((report) => report.user_id === userId)
+      .filter((report) => (userId ? report.user_id === userId : true))
       .filter((report) => !needle || `${report.title} ${report.region} ${report.focus_area}`.toLowerCase().includes(needle))
-      .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+      .sort((a, b) => new Date(b.generated_at ?? b.created_at).getTime() - new Date(a.generated_at ?? a.created_at).getTime());
     return { mode: "memory", reports: filtered.slice(0, limit) };
   }
 }
@@ -1020,20 +1064,32 @@ export async function getUserReports(userId, { limit = 20, query = "" } = {}) {
 export async function saveUserReport(report) {
   const normalized = {
     id: report.id,
-    user_id: report.user_id,
+    user_id: report.user_id ?? null,
     title: report.title,
     region: report.region,
     focus_area: report.focus_area,
     time_horizon: report.time_horizon,
     audience_type: report.audience_type,
     risk_appetite: report.risk_appetite,
+    input_question: report.input_question ?? null,
     status: report.status ?? "draft",
     content: report.content ?? {},
+    report_text: report.report_text ?? null,
+    source_event_ids: Array.isArray(report.source_event_ids) ? report.source_event_ids.filter(Boolean) : [],
+    ai_provider: report.ai_provider ?? "gemini",
+    ai_model: report.ai_model ?? null,
+    generated_at: report.generated_at ?? report.created_at ?? new Date().toISOString(),
+    confidence_level: report.confidence_level ?? null,
     favorite: Boolean(report.favorite),
     created_at: report.created_at ?? new Date().toISOString(),
     updated_at: new Date().toISOString(),
   };
-  memoryReports.push(normalized);
+  const existingIndex = memoryReports.findIndex((candidate) => candidate.id === normalized.id);
+  if (existingIndex >= 0) {
+    memoryReports[existingIndex] = normalized;
+  } else {
+    memoryReports.push(normalized);
+  }
 
   const db = await getClient();
   if (!db) {

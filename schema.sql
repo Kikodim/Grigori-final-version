@@ -94,21 +94,29 @@ create table if not exists user_profiles (
 
 create table if not exists reports (
   id             uuid primary key default gen_random_uuid(),
-  user_id        uuid not null,
+  user_id        uuid,
   title          text not null,
   region         text not null,
   focus_area     text not null,
   time_horizon   text not null,
   audience_type  text not null,
   risk_appetite  text not null,
+  input_question text,
   status         text not null default 'draft',
   content        jsonb not null default '{}'::jsonb,
+  report_text    text,
+  source_event_ids text[] not null default '{}',
+  ai_provider    text not null default 'gemini',
+  ai_model       text,
+  generated_at   timestamptz not null default now(),
+  confidence_level text,
   favorite       boolean not null default false,
   created_at     timestamptz not null default now(),
   updated_at     timestamptz not null default now()
 );
 
 create index if not exists reports_user_created_at on reports (user_id, created_at desc);
+create index if not exists reports_generated_at on reports (generated_at desc);
 
 create table if not exists watchlists (
   id             uuid primary key default gen_random_uuid(),

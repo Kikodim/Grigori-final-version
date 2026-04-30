@@ -1,0 +1,28 @@
+<svg width="1320" height="248" viewBox="0 0 1320 248" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="reportCore" x1="26" y1="38" x2="176" y2="196" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#69E7FF"/>
+      <stop offset="0.58" stop-color="#F5F8FF"/>
+      <stop offset="1" stop-color="#1B4F6B"/>
+    </linearGradient>
+    <linearGradient id="reportOrbit" x1="22" y1="46" x2="188" y2="176" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#69E7FF"/>
+      <stop offset="1" stop-color="#F5F8FF"/>
+    </linearGradient>
+  </defs>
+  <g transform="translate(22 30)">
+    <circle cx="82" cy="82" r="68" stroke="url(#reportCore)" stroke-width="8"/>
+    <circle cx="82" cy="82" r="40" stroke="#F5F8FF" stroke-opacity="0.28" stroke-width="5"/>
+    <path d="M82 15V40" stroke="#F5F8FF" stroke-opacity="0.72" stroke-width="5" stroke-linecap="round"/>
+    <path d="M82 124V150" stroke="#F5F8FF" stroke-opacity="0.42" stroke-width="5" stroke-linecap="round"/>
+    <path d="M15 82H39" stroke="#F5F8FF" stroke-opacity="0.24" stroke-width="5" stroke-linecap="round"/>
+    <path d="M124 82H150" stroke="#F5F8FF" stroke-opacity="0.64" stroke-width="5" stroke-linecap="round"/>
+    <ellipse cx="82" cy="82" rx="102" ry="50" transform="rotate(-29 82 82)" stroke="url(#reportOrbit)" stroke-width="6"/>
+    <circle cx="149" cy="41" r="10" fill="#F7B84B"/>
+    <circle cx="82" cy="82" r="10" fill="#F5F8FF"/>
+    <path d="M62 82C70 72 77 69 82 69C87 69 94 72 102 82C94 92 87 95 82 95C77 95 70 92 62 82Z" stroke="#69E7FF" stroke-width="7" stroke-linejoin="round"/>
+  </g>
+  <text x="238" y="92" fill="#F5F8FF" font-family="Rajdhani, Space Grotesk, Inter, Arial, sans-serif" font-size="90" font-weight="700" letter-spacing="0.19em">GRIGORI</text>
+  <text x="244" y="142" fill="#69E7FF" font-family="Inter, Space Grotesk, Rajdhani, Arial, sans-serif" font-size="30" font-weight="500" letter-spacing="0.1em">by oryth.io</text>
+  <text x="240" y="194" fill="#B4CDE1" font-family="Share Tech Mono, IBM Plex Mono, Inter, Arial, sans-serif" font-size="27" font-weight="400" letter-spacing="0.22em">STRATEGIC INTELLIGENCE DASHBOARD</text>
+</svg>

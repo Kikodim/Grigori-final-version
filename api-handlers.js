@@ -10,7 +10,8 @@ import {
   buildSubscriptionStatus,
   captureWaitlistInterest,
   exportReportPreview,
-  generatePreviewReport,
+  generateAlphaReport,
+  getReportStatus,
   getWaitlistAdminEntries,
   getReportHistory,
 } from "./reports.js";
@@ -276,16 +277,25 @@ export async function handleMarketContext(req, res) {
 }
 
 export async function handleSubscriptionStatus(req, res) {
+  applyNoStore(res);
   return res.status(200).json(await buildSubscriptionStatus(req));
 }
 
 export async function handleReportsGenerate(req, res) {
+  applyNoStore(res);
   const payload = req.body ?? {};
-  const result = await generatePreviewReport(req, payload);
+  const result = await generateAlphaReport(req, payload);
+  return res.status(result.status).json(result.body);
+}
+
+export async function handleReportsStatus(req, res) {
+  applyNoStore(res);
+  const result = await getReportStatus(req, req.query ?? {});
   return res.status(result.status).json(result.body);
 }
 
 export async function handleReportsHistory(req, res) {
+  applyNoStore(res);
   const result = await getReportHistory(req, req.query ?? {});
   return res.status(result.status).json(result.body);
 }

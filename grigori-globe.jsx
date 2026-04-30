@@ -180,6 +180,9 @@ const EVENTS = [
     tradeRoutes: [{ from: [57.0, 24.0], to: [53.8, 14.0], label: "Baltic shipping lane" }],
   },
 ];
+const BRAND_MARK = "/assets/brand/grigori-mark.svg";
+const BRAND_WORDMARK = "/assets/brand/grigori-wordmark.svg";
+const BRAND_REPORT_LOCKUP = "/assets/brand/grigori-report-lockup.svg";
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // WAR ROOM PRIORITY SCORING ENGINE
@@ -4836,13 +4839,11 @@ function TopBar({ counts, bordersLoaded, activeLayers, onLayerToggle, isMobile, 
       WebkitBackdropFilter: "blur(18px)",
     }}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 14, minWidth: 0 }}>
-        <div style={{ display: "flex", flexDirection: "column", gap: 2, minWidth: 0 }}>
-          <span style={{ color: "#f8fafc", fontFamily: display, fontSize: isMobile ? 19 : 21, fontWeight: 700, letterSpacing: "0.16em", textTransform: "uppercase", lineHeight: 1 }}>
-            Grigori
-          </span>
-          <span style={{ color: "rgba(191,219,254,0.76)", fontFamily: bodyFont, fontSize: 12, letterSpacing: "0.06em", lineHeight: 1.1 }}>
-            by oryth.io
-          </span>
+        <div style={{ display: "flex", flexDirection: "column", gap: 6, minWidth: 0 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
+            <img src={BRAND_MARK} alt="Grigori mark" style={{ width: isMobile ? 30 : 34, height: isMobile ? 30 : 34, flexShrink: 0 }} />
+            <img src={BRAND_WORDMARK} alt="Grigori by oryth.io" style={{ height: isMobile ? 24 : 28, width: "auto", maxWidth: isMobile ? 188 : 236 }} />
+          </div>
           {!isMobile ? (
             <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 3 }}>
               <span style={{ color: "#74d9f3", fontFamily: mono, fontSize: 10, letterSpacing: "0.16em", textTransform: "uppercase" }}>
@@ -6664,11 +6665,7 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
           <div style={{ position: "absolute", inset: 0, background: "#020810", zIndex: 100,
             display: "flex", alignItems: "center", justifyContent: "center",
             flexDirection: "column", gap: 18 }}>
-            <div style={{ color: "rgba(0,200,255,0.88)", fontFamily: display,
-              fontSize: 34, fontWeight: 700, letterSpacing: "0.18em" }}>GRIGORI</div>
-            <div style={{ color: "rgba(191,219,254,0.72)", fontFamily: "Georgia, serif", fontSize: 14, letterSpacing: "0.08em" }}>
-              by oryth.io
-            </div>
+            <img src={BRAND_REPORT_LOCKUP} alt="Grigori by oryth.io" style={{ width: "min(440px, 72vw)", height: "auto", opacity: 0.96 }} />
             <div style={{ color: "rgba(148,163,184,0.78)", fontFamily: mono, fontSize: 11, letterSpacing: "0.08em", textTransform: "uppercase" }}>
               Loading Grigori Intelligence Systems...
             </div>

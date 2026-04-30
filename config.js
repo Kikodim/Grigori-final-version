@@ -147,6 +147,10 @@ export function getConfig() {
     gnewsMaxCallsPerRefresh: parseInt(process.env.GNEWS_MAX_CALLS_PER_REFRESH ?? "4", 10),
     gnewsRefreshEveryMinutes: parseInt(process.env.GNEWS_REFRESH_EVERY_MINUTES ?? "60", 10),
     enableGnewsBackfill:    String(process.env.ENABLE_GNEWS_BACKFILL ?? "false").toLowerCase() === "true",
+    enableReportAi:         String(process.env.ENABLE_REPORT_AI ?? "true").toLowerCase() !== "false",
+    geminiReportDailyLimit: parseInt(process.env.GEMINI_REPORT_DAILY_LIMIT ?? "2", 10),
+    geminiReportMaxEvents:  parseInt(process.env.GEMINI_REPORT_MAX_EVENTS ?? "30", 10),
+    geminiReportMinEvents:  parseInt(process.env.GEMINI_REPORT_MIN_EVENTS ?? "3", 10),
     maxConflictZones:       parseInt(process.env.MAX_CONFLICT_ZONES ?? "20", 10),
   };
 }

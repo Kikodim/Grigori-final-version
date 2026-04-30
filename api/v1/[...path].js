@@ -12,6 +12,7 @@ import {
   handleReportsExport,
   handleReportsGenerate,
   handleReportsHistory,
+  handleReportsStatus,
   handleReportsWaitlist,
   handleSatellitesLive,
   handleSocialSignalsLive,
@@ -113,6 +114,10 @@ export default async function handler(req, res) {
   }
 
   if (parts[0] === "reports") {
+    if (parts[1] === "status") {
+      if (method !== "GET") return res.status(405).json({ success: false, error: "Method not allowed" });
+      return handleReportsStatus(req, res);
+    }
     if (parts[1] === "history") {
       if (method !== "GET") return res.status(405).json({ success: false, error: "Method not allowed" });
       return handleReportsHistory(req, res);
