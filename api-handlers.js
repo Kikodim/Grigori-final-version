@@ -82,15 +82,18 @@ export async function handleHealth(_req, res) {
   const storage = await healthCheck();
   const newestArticleAt = newsRefresh.record?.metadata?.newestArticleAt ?? null;
   const newestEventAt = newsRefresh.record?.metadata?.newestEventAt ?? stats.newestUpdatedEvent ?? stats.newestEvent ?? null;
+  const latestActivityAt = stats.latestActivityAt ?? newestEventAt ?? null;
   const lastNewsRefreshAt = newsRefresh.record?.lastRefresh ?? null;
   const refreshAgeHours = lastNewsRefreshAt
     ? Math.max(0, (Date.now() - new Date(lastNewsRefreshAt).getTime()) / 3600_000)
     : null;
   const cacheStatus = storage.mode === "memory"
     ? "memory_fallback"
-    : refreshAgeHours === null
-      ? "stale"
-      : refreshAgeHours <= 12 ? "fresh" : "stale";
+    : stats.activeFallbackReason && stats.activeFallbackReason !== "fresh_active"
+      ? "fallback_available"
+      : refreshAgeHours === null
+        ? "stale"
+        : refreshAgeHours <= 12 ? "fresh" : "stale";
 
   return res.status(200).json({
     ok: true,
@@ -131,11 +134,15 @@ export async function handleHealth(_req, res) {
     },
     data: {
       eventsDataSource: stats.mode ?? storage.mode ?? "memory",
+      totalStoredEvents: stats.totalStoredEvents ?? stats.eventCount ?? 0,
       newestArticleAt,
       newestEventAt,
+      latestActivityAt,
       activeEventCount: stats.activeEventCount ?? 0,
+      freshEventCount: stats.freshEventCount ?? 0,
       staleEventCount: stats.staleEventCount ?? 0,
       historicalEventCount: stats.historicalEventCount ?? 0,
+      fallbackEligibleCount: stats.fallbackEligibleCount ?? 0,
       cacheStatus,
     },
     automation: {
@@ -149,9 +156,13 @@ export async function handleHealth(_req, res) {
       aiRefreshesToday: aiRefreshUsage.callsToday ?? 0,
       newestArticleAt,
       newestEventAt,
+      latestActivityAt,
+      totalStoredEvents: stats.totalStoredEvents ?? stats.eventCount ?? 0,
       activeEventCount: stats.activeEventCount ?? 0,
+      freshEventCount: stats.freshEventCount ?? 0,
       staleEventCount: stats.staleEventCount ?? 0,
       historicalEventCount: stats.historicalEventCount ?? 0,
+      fallbackEligibleCount: stats.fallbackEligibleCount ?? 0,
       eventsDataSource: stats.mode ?? storage.mode ?? "memory",
       cacheStatus,
     },
@@ -182,10 +193,15 @@ export async function handleEvents(req, res) {
   return res.status(200).json({
     ok: true,
     total: result.total,
+    count: result.count ?? result.events?.length ?? 0,
     limit,
     offset,
     mode: result.mode,
     scope: result.scope ?? scope,
+    fallbackUsed: result.fallbackUsed ?? false,
+    fallbackReason: result.fallbackReason ?? "unknown",
+    dataSource: result.dataSource ?? result.mode,
+    freshnessMode: result.freshnessMode ?? (scope === "active" ? "best_available" : scope),
     events: result.events,
   });
 }
@@ -229,6 +245,7 @@ export async function handleEventStats(_req, res) {
       aiRefreshesToday: aiRefreshUsage.callsToday ?? 0,
       newestArticleAt: newsRefresh.record?.metadata?.newestArticleAt ?? null,
       newestEventAt: newsRefresh.record?.metadata?.newestEventAt ?? stats.newestUpdatedEvent ?? stats.newestEvent ?? null,
+      latestActivityAt: stats.latestActivityAt ?? stats.newestUpdatedEvent ?? stats.newestEvent ?? null,
     },
   });
 }

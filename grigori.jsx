@@ -14,7 +14,6 @@ const EVENTS_ENDPOINT = "/api/v1/events?limit=50&scope=active";
 const DISPLAY_FONT = "'Rajdhani', 'Space Grotesk', sans-serif";
 const BODY_FONT = "'Inter', 'Space Grotesk', sans-serif";
 const MONO_FONT = "'Share Tech Mono', 'IBM Plex Mono', monospace";
-const BRAND_MARK = "/assets/brand/grigori-mark.svg";
 const BRAND_WORDMARK = "/assets/brand/grigori-wordmark.svg";
 const APP_VIEWS = [
   { key: "globe", label: "Globe" },
@@ -329,8 +328,8 @@ export default function ClassicIntelBoard({ activeView = "classic", onNavigate }
 
   const loadEvents = useCallback(async (forceFresh = false) => {
     setLoadState({ status: "loading", message: "Loading Grigori Intelligence Systems..." });
-    const suffix = forceFresh ? `${EVENTS_ENDPOINT.includes("?") ? "&" : "?"}t=${Date.now()}` : "";
-    const res = await fetch(resolveBackendUrl(`${EVENTS_ENDPOINT}${suffix}`), {
+    const stamp = forceFresh ? `&t=${Date.now()}` : "";
+    const res = await fetch(resolveBackendUrl(`${EVENTS_ENDPOINT}${stamp}`), {
       signal: AbortSignal.timeout(8000),
       cache: "no-store",
     });
@@ -339,12 +338,37 @@ export default function ClassicIntelBoard({ activeView = "classic", onNavigate }
     }
 
     const data = await res.json();
-    const mapped = Array.isArray(data.events) ? data.events.map(mapEvent) : [];
+    let mapped = Array.isArray(data.events) ? data.events.map(mapEvent) : [];
+    let meta = {
+      fallbackUsed: Boolean(data.fallbackUsed),
+      fallbackReason: data.fallbackReason ?? "fresh_active",
+    };
+
+    if (mapped.length === 0) {
+      const fallbackRes = await fetch(resolveBackendUrl(`/api/v1/events?limit=50&scope=all${stamp}`), {
+        signal: AbortSignal.timeout(8000),
+        cache: "no-store",
+      });
+      if (fallbackRes.ok) {
+        const fallbackData = await fallbackRes.json();
+        mapped = Array.isArray(fallbackData.events) ? fallbackData.events.map(mapEvent) : [];
+        meta = {
+          fallbackUsed: mapped.length > 0,
+          fallbackReason: mapped.length > 0 ? "stored_signals" : "no_events_available",
+        };
+      }
+    }
+
     setEvents(mapped);
     setLoadState(
       mapped.length > 0
-        ? { status: "ready", message: "" }
-        : { status: "empty", message: "No events available yet." }
+        ? {
+            status: "ready",
+            message: meta.fallbackUsed
+              ? "Using stored signals while awaiting refresh."
+              : "",
+          }
+        : { status: "empty", message: "No stored signals are available yet." }
     );
   }, []);
 
@@ -457,8 +481,7 @@ export default function ClassicIntelBoard({ activeView = "classic", onNavigate }
         flexWrap: "wrap",
       }}>
         <div style={{ display: "grid", gap: 8 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 12, minWidth: 0 }}>
-            <img src={BRAND_MARK} alt="Grigori mark" style={{ width: isMobile ? 34 : 38, height: isMobile ? 34 : 38, flexShrink: 0 }} />
+          <div style={{ display: "flex", alignItems: "center", minWidth: 0 }}>
             <img src={BRAND_WORDMARK} alt="Grigori by oryth.io" style={{ height: isMobile ? 28 : 34, width: "auto", maxWidth: isMobile ? 200 : 260 }} />
           </div>
           <div style={{ color: "#70d7f2", fontFamily: MONO_FONT, fontSize: isMobile ? 10 : 11, letterSpacing: isMobile ? "0.1em" : "0.16em", textTransform: "uppercase", marginLeft: isMobile ? 2 : 4 }}>
@@ -498,6 +521,12 @@ export default function ClassicIntelBoard({ activeView = "classic", onNavigate }
       {refreshState.message ? (
         <div style={{ marginBottom: 18, color: refreshState.status === "error" ? "#fda4af" : "#93c5fd", fontFamily: MONO_FONT, fontSize: isMobile ? 12 : 12, lineHeight: 1.6 }}>
           {refreshState.message}
+        </div>
+      ) : null}
+
+      {loadState.status === "ready" && loadState.message ? (
+        <div style={{ marginBottom: 18, color: "#93c5fd", fontFamily: MONO_FONT, fontSize: isMobile ? 12 : 12, lineHeight: 1.6 }}>
+          {loadState.message}
         </div>
       ) : null}
 

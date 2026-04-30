@@ -24,7 +24,6 @@ const WAITLIST_TIER_OPTIONS = [
   { value: "top_secret", label: "Top Secret Clearance" },
   { value: "not_sure", label: "Not sure yet" },
 ];
-const BRAND_MARK = "/assets/brand/grigori-mark.svg";
 const BRAND_WORDMARK = "/assets/brand/grigori-wordmark.svg";
 const BRAND_REPORT_LOCKUP = "/assets/brand/grigori-report-lockup.svg";
 
@@ -452,11 +451,33 @@ function UsageCard({ status, session, adminUnlocked, onAdminUnlock }) {
   const usage = status?.usage;
   const summary = status?.dataSummary;
   const canGenerate = status?.generationAllowed;
+  const isPublicView = !session?.user && !adminUnlocked;
+  const publicAgeLabel = (() => {
+    const iso = summary?.latestSignalAt;
+    if (!iso) return "Awaiting broader signal match";
+    const diffMs = Date.now() - new Date(iso).getTime();
+    const minutes = Math.max(0, Math.round(diffMs / 60000));
+    if (minutes < 60) return `${minutes || 1} min ago`;
+    const hours = Math.round(minutes / 60);
+    if (hours < 24) return `${hours}h ago`;
+    const days = Math.round(hours / 24);
+    return `${days}d ago`;
+  })();
+  const aiProviderLabel = adminUnlocked ? "AI Provider · Gemini" : "Private Alpha";
+  const latestSignalLabel = summary?.latestSignalAt
+    ? (adminUnlocked ? (summary?.latestSignalFreshness ?? "Awaiting refresh") : publicAgeLabel)
+    : (isPublicView ? "Awaiting broader signal match" : "Awaiting refresh");
+  const newsLabel = adminUnlocked
+    ? (summary?.newsFreshness ?? "Awaiting next refresh")
+    : "Awaiting next scheduled refresh";
+  const aiStatusLabel = adminUnlocked
+    ? (summary?.aiFreshness ?? "AI awaiting refresh")
+    : "Manual generation only";
   return (
     <div style={{ display: "grid", gap: 16 }}>
       <div style={{ border: "1px solid rgba(51,65,85,0.9)", background: "rgba(4,10,22,0.92)", borderRadius: 20, padding: 18, display: "grid", gap: 14 }}>
         <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
-          <PremiumBadge tone="info">AI Provider · Gemini</PremiumBadge>
+          <PremiumBadge tone="info">{aiProviderLabel}</PremiumBadge>
           <PremiumBadge tone="warning">Private Preview</PremiumBadge>
         </div>
         <div>
@@ -474,15 +495,15 @@ function UsageCard({ status, session, adminUnlocked, onAdminUnlock }) {
           </div>
           <div style={{ display: "flex", justifyContent: "space-between", gap: 12 }}>
             <span style={{ color: "#94a3b8" }}>Latest signal</span>
-            <span style={{ color: "#f8fafc", fontWeight: 600 }}>{summary?.latestSignalFreshness ?? "Awaiting refresh"}</span>
+            <span style={{ color: "#f8fafc", fontWeight: 600 }}>{adminUnlocked ? latestSignalLabel : `Latest matching signal: ${latestSignalLabel}`}</span>
           </div>
           <div style={{ display: "flex", justifyContent: "space-between", gap: 12 }}>
-            <span style={{ color: "#94a3b8" }}>News freshness</span>
-            <span style={{ color: "#f8fafc", fontWeight: 600 }}>{summary?.newsFreshness ?? "Awaiting refresh"}</span>
+            <span style={{ color: "#94a3b8" }}>News feeds</span>
+            <span style={{ color: "#f8fafc", fontWeight: 600 }}>{newsLabel}</span>
           </div>
           <div style={{ display: "flex", justifyContent: "space-between", gap: 12 }}>
-            <span style={{ color: "#94a3b8" }}>AI status</span>
-            <span style={{ color: "#f8fafc", fontWeight: 600 }}>{summary?.aiFreshness ?? "AI awaiting refresh"}</span>
+            <span style={{ color: "#94a3b8" }}>AI reports</span>
+            <span style={{ color: "#f8fafc", fontWeight: 600 }}>{aiStatusLabel}</span>
           </div>
         </div>
         <div style={{ color: "#94a3b8", fontSize: 13, lineHeight: 1.7 }}>
@@ -1107,13 +1128,12 @@ export default function ReportsApp({ activeView = "reports", onNavigate }) {
           flexWrap: "wrap",
         }}>
           <div style={{ display: "grid", gap: 8 }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 12, minWidth: 0 }}>
-              <img src={BRAND_MARK} alt="Grigori mark" style={{ width: isMobile ? 32 : 38, height: isMobile ? 32 : 38, flexShrink: 0 }} />
-              <img src={BRAND_WORDMARK} alt="Grigori by oryth.io" style={{ height: isMobile ? 26 : 34, width: "auto", maxWidth: isMobile ? 196 : 262 }} />
-            </div>
-            <div style={{ color: "#70d7f2", fontFamily: MONO_FONT, fontSize: isMobile ? 10 : 11, letterSpacing: isMobile ? "0.12em" : "0.16em", textTransform: "uppercase", marginLeft: 2 }}>
-              Strategic Intelligence Dashboard
-            </div>
+          <div style={{ display: "flex", alignItems: "center", minWidth: 0 }}>
+            <img src={BRAND_WORDMARK} alt="Grigori by oryth.io" style={{ height: isMobile ? 26 : 34, width: "auto", maxWidth: isMobile ? 196 : 262 }} />
+          </div>
+          <div style={{ color: "#70d7f2", fontFamily: MONO_FONT, fontSize: isMobile ? 10 : 11, letterSpacing: isMobile ? "0.12em" : "0.16em", textTransform: "uppercase", marginLeft: 2 }}>
+            Strategic Intelligence Dashboard
+          </div>
           </div>
           <div style={{ display: "grid", gap: 12, justifyItems: isMobile ? "stretch" : "end", width: isMobile ? "100%" : "auto" }}>
             <HeaderNav activeView={activeView} onNavigate={onNavigate} />
@@ -1125,12 +1145,12 @@ export default function ReportsApp({ activeView = "reports", onNavigate }) {
           </div>
         </div>
 
-        <ShellCard title="Personalized Intelligence Reports" eyebrow={`${BRAND.fullName} · ${BRAND.subtitle}`} accent="rgba(125, 211, 252, 0.32)">
+        <ShellCard title="Personalized Intelligence Reports" eyebrow="Private Preview" accent="rgba(125, 211, 252, 0.32)">
           <div style={{ display: "flex", justifyContent: "space-between", gap: isMobile ? 16 : 20, flexWrap: "wrap", alignItems: "flex-start" }}>
             <div style={{ maxWidth: 760 }}>
               <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 16 }}>
                 <PremiumBadge tone="warning">{REPORT_STATUS_BADGE}</PremiumBadge>
-                <PremiumBadge>Gemini Only</PremiumBadge>
+                <PremiumBadge>{adminUnlocked ? "AI Provider · Gemini" : "AI-assisted"}</PremiumBadge>
               </div>
               <p style={{ color: "#cbd5e1", lineHeight: 1.8, fontSize: isMobile ? 15 : 16, margin: 0 }}>
                 Generate focused strategic briefings from Grigori’s live and historical signal base.

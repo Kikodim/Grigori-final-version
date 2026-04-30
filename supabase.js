@@ -100,15 +100,38 @@ function getEventActivityTimestamp(event) {
   );
 }
 
-function computeFreshnessStatus(event) {
+function getEventActivityTime(event) {
+  return getEventActivityTimestamp(event);
+}
+
+function getEventAgeHours(event) {
+  const value = getEventActivityTime(event);
+  if (!value) return Number.POSITIVE_INFINITY;
+  return Math.max(0, (Date.now() - new Date(value).getTime()) / 3600_000);
+}
+
+function getEventPrimaryTimestamp(event) {
+  return (
+    event.timestamp ??
+    event.createdAt ??
+    event.created_at ??
+    getEventActivityTime(event) ??
+    null
+  );
+}
+
+function getEventFreshnessWindow(event) {
   if (event.isHistorical ?? event.is_historical) return "Historical";
-  const value = getEventActivityTimestamp(event);
-  if (!value) return "Stale";
-  const hours = Math.max(0, (Date.now() - new Date(value).getTime()) / 3600_000);
+  const hours = getEventAgeHours(event);
+  if (!Number.isFinite(hours)) return "Stale";
   if (hours < 2) return "Fresh";
   if (hours < 6) return "Recent";
-  if (hours <= 12) return "Aging";
+  if (hours <= 24) return "Aging";
   return "Stale";
+}
+
+function computeFreshnessStatus(event) {
+  return getEventFreshnessWindow(event);
 }
 
 function scoreFreshness(event) {
@@ -124,6 +147,19 @@ function scoreFreshness(event) {
     default:
       return 18;
   }
+}
+
+function isRecentWithinDays(event, days = 7) {
+  const value = getEventActivityTime(event) ?? getEventPrimaryTimestamp(event);
+  if (!value) return false;
+  return Date.now() - new Date(value).getTime() <= days * 24 * 3600_000;
+}
+
+function isHighImpactFallbackEvent(event) {
+  const impactScore = Number(event.impactScore ?? event.impact_score ?? 0);
+  const severityScore = Number(event.severityScore ?? event.severity_score ?? 0);
+  const importanceScore = Number(event.importanceScore ?? event.importance_score ?? 0);
+  return impactScore >= 60 || severityScore >= 60 || importanceScore >= 60;
 }
 
 function scoreActivePriority(event) {
@@ -357,9 +393,7 @@ export async function getSupabaseServiceClient() {
 function filterMemoryEvents(events, { tone, confidence, region, scope = "active" } = {}) {
   let filtered = [...events];
 
-  if (scope === "active") {
-    filtered = filtered.filter((event) => !(event.isHistorical ?? event.is_historical));
-  } else if (scope === "historical") {
+  if (scope === "historical") {
     filtered = filtered.filter((event) => Boolean(event.isHistorical ?? event.is_historical));
   }
 
@@ -416,23 +450,86 @@ function sortEventsForScope(events, scope = "active") {
   return ranked;
 }
 
+function buildActiveScopeSelection(events, { limit = 50, offset = 0 } = {}) {
+  const ranked = sortEventsForScope(events, "all");
+  const nonHistorical = ranked.filter((event) => !(event.isHistorical ?? event.is_historical));
+  const freshActive = nonHistorical.filter((event) => {
+    const freshness = computeFreshnessStatus(event);
+    return freshness === "Fresh" || freshness === "Recent";
+  });
+  const recentStored = nonHistorical.filter((event) => isRecentWithinDays(event, 7));
+  const highImpactStale = sortEventsForScope(
+    nonHistorical.filter((event) => isHighImpactFallbackEvent(event)),
+    "all"
+  );
+  const historicalContext = sortEventsForScope(
+    ranked.filter((event) => Boolean(event.isHistorical ?? event.is_historical)),
+    "historical"
+  );
+  const fallbackEligibleCount = new Set([
+    ...recentStored.map((event) => event.id),
+    ...highImpactStale.map((event) => event.id),
+    ...historicalContext.map((event) => event.id),
+  ]).size;
+
+  let selected = [];
+  let fallbackReason = "no_events_available";
+  let fallbackUsed = false;
+
+  if (freshActive.length > 0) {
+    selected = freshActive;
+    fallbackReason = "fresh_active";
+  } else if (recentStored.length > 0) {
+    selected = recentStored;
+    fallbackReason = "recent_stored";
+    fallbackUsed = true;
+  } else if (highImpactStale.length > 0) {
+    selected = highImpactStale;
+    fallbackReason = "high_impact_stale";
+    fallbackUsed = true;
+  } else if (historicalContext.length > 0) {
+    selected = historicalContext;
+    fallbackReason = "historical_context";
+    fallbackUsed = true;
+  }
+
+  return {
+    events: selected.slice(offset, offset + limit),
+    total: selected.length,
+    fallbackUsed,
+    fallbackReason,
+    freshnessMode: fallbackReason === "fresh_active" ? "fresh_active" : "best_available",
+    fallbackEligibleCount,
+  };
+}
+
 function getMemoryStatsSnapshot() {
   const currentEvents = getAllEvents();
   const currentStoreStats = memoryStats();
-  const activeEvents = currentEvents.filter((event) => !(event.isHistorical ?? event.is_historical));
   const historicalEvents = currentEvents.filter((event) => event.isHistorical ?? event.is_historical);
-  const staleEventCount = activeEvents.filter((event) => computeFreshnessStatus(event) === "Stale").length;
+  const nonHistoricalEvents = currentEvents.filter((event) => !(event.isHistorical ?? event.is_historical));
+  const freshEventCount = nonHistoricalEvents.filter((event) => {
+    const freshness = computeFreshnessStatus(event);
+    return freshness === "Fresh" || freshness === "Recent";
+  }).length;
+  const staleEventCount = nonHistoricalEvents.filter((event) => computeFreshnessStatus(event) === "Stale").length;
   const newestUpdatedEvent = sortEventsForScope(currentEvents, "all")[0] ?? null;
+  const activeSelection = buildActiveScopeSelection(currentEvents, { limit: currentEvents.length, offset: 0 });
 
   return {
     mode: "memory",
     eventCount: currentEvents.length,
+    totalStoredEvents: currentEvents.length,
     oldestEvent: currentEvents.at(-1)?.timestamp ?? null,
-    newestEvent: currentEvents[0]?.timestamp ?? null,
+    newestEvent: sortEventsForScope(currentEvents, "all")[0]?.timestamp ?? currentEvents[0]?.timestamp ?? null,
     newestUpdatedEvent: getEventActivityTimestamp(newestUpdatedEvent),
-    activeEventCount: activeEvents.length,
+    latestActivityAt: getEventActivityTimestamp(newestUpdatedEvent),
+    activeEventCount: activeSelection.total,
+    activeFallbackReason: activeSelection.fallbackReason,
+    freshEventCount,
     historicalEventCount: historicalEvents.length,
     staleEventCount,
+    fallbackEligibleCount: activeSelection.fallbackEligibleCount,
     articles: currentStoreStats.articles,
     unclustered: currentStoreStats.unclustered,
   };
@@ -511,15 +608,26 @@ export async function getEvents({ limit = 50, offset = 0, tone, confidence, regi
   const db = await getClient();
 
   if (!db) {
-    const filtered = sortEventsForScope(
-      filterMemoryEvents(getAllEvents(), { tone, confidence, region, scope }),
-      scope
-    );
+    const filtered = filterMemoryEvents(getAllEvents(), { tone, confidence, region, scope });
+    const selection = scope === "active"
+      ? buildActiveScopeSelection(filtered, { limit, offset })
+      : {
+          events: sortEventsForScope(filtered, scope).slice(offset, offset + limit),
+          total: filtered.length,
+          fallbackUsed: false,
+          fallbackReason: scope === "historical" ? "historical_context" : "all_events",
+          freshnessMode: scope === "historical" ? "historical_context" : "all_events",
+        };
     return {
-      events: filtered.slice(offset, offset + limit),
-      total: filtered.length,
+      events: selection.events,
+      total: selection.total,
       mode: "memory",
       scope,
+      count: selection.events.length,
+      fallbackUsed: selection.fallbackUsed,
+      fallbackReason: selection.fallbackReason,
+      dataSource: "memory",
+      freshnessMode: selection.freshnessMode,
     };
   }
 
@@ -531,7 +639,6 @@ export async function getEvents({ limit = 50, offset = 0, tone, confidence, regi
     if (tone) query = query.eq("tone", tone);
     if (confidence) query = query.eq("confidence", confidence);
     if (region) query = query.ilike("location->>label", `%${region}%`);
-    if (scope === "active") query = query.eq("is_historical", false);
     if (scope === "historical") query = query.eq("is_historical", true);
 
     const { data, error, count } = await query;
@@ -541,23 +648,50 @@ export async function getEvents({ limit = 50, offset = 0, tone, confidence, regi
       throw error;
     }
 
+    const normalized = (data ?? []).map(normalizeEvent);
+    const selection = scope === "active"
+      ? buildActiveScopeSelection(normalized, { limit, offset })
+      : {
+          events: sortEventsForScope(normalized, scope).slice(offset, offset + limit),
+          total: count ?? normalized.length,
+          fallbackUsed: false,
+          fallbackReason: scope === "historical" ? "historical_context" : "all_events",
+          freshnessMode: scope === "historical" ? "historical_context" : "all_events",
+        };
+
     return {
-      events: sortEventsForScope((data ?? []).map(normalizeEvent), scope).slice(offset, offset + limit),
-      total: count ?? 0,
+      events: selection.events,
+      total: selection.total,
       mode: "supabase",
       scope,
+      count: selection.events.length,
+      fallbackUsed: selection.fallbackUsed,
+      fallbackReason: selection.fallbackReason,
+      dataSource: "supabase",
+      freshnessMode: selection.freshnessMode,
     };
   } catch (err) {
     log.warn(`Supabase query failed — serving in-memory events instead (${err.message})`);
-    const filtered = sortEventsForScope(
-      filterMemoryEvents(getAllEvents(), { tone, confidence, region, scope }),
-      scope
-    );
+    const filtered = filterMemoryEvents(getAllEvents(), { tone, confidence, region, scope });
+    const selection = scope === "active"
+      ? buildActiveScopeSelection(filtered, { limit, offset })
+      : {
+          events: sortEventsForScope(filtered, scope).slice(offset, offset + limit),
+          total: filtered.length,
+          fallbackUsed: false,
+          fallbackReason: scope === "historical" ? "historical_context" : "all_events",
+          freshnessMode: scope === "historical" ? "historical_context" : "all_events",
+        };
     return {
-      events: filtered.slice(offset, offset + limit),
-      total: filtered.length,
+      events: selection.events,
+      total: selection.total,
       mode: "memory",
       scope,
+      count: selection.events.length,
+      fallbackUsed: selection.fallbackUsed,
+      fallbackReason: selection.fallbackReason,
+      dataSource: "memory",
+      freshnessMode: selection.freshnessMode,
     };
   }
 }
@@ -659,20 +793,30 @@ export async function getStats() {
     }
 
     const normalizedRows = (eventRowsRes.data ?? []).map(normalizeEvent);
-    const activeEvents = normalizedRows.filter((event) => !event.isHistorical);
+    const nonHistoricalEvents = normalizedRows.filter((event) => !event.isHistorical);
     const historicalEvents = normalizedRows.filter((event) => event.isHistorical);
-    const staleEventCount = activeEvents.filter((event) => computeFreshnessStatus(event) === "Stale").length;
+    const freshEventCount = nonHistoricalEvents.filter((event) => {
+      const freshness = computeFreshnessStatus(event);
+      return freshness === "Fresh" || freshness === "Recent";
+    }).length;
+    const staleEventCount = nonHistoricalEvents.filter((event) => computeFreshnessStatus(event) === "Stale").length;
     const newestUpdatedEvent = sortEventsForScope(normalizedRows, "all")[0] ?? null;
+    const activeSelection = buildActiveScopeSelection(normalizedRows, { limit: normalizedRows.length, offset: 0 });
 
     return {
       mode: "supabase",
       eventCount: countRes.count ?? 0,
+      totalStoredEvents: countRes.count ?? 0,
       oldestEvent: oldestRes.data?.timestamp ?? null,
       newestEvent: newestRes.data?.timestamp ?? null,
       newestUpdatedEvent: getEventActivityTimestamp(newestUpdatedEvent),
-      activeEventCount: activeEvents.length,
+      latestActivityAt: getEventActivityTimestamp(newestUpdatedEvent),
+      activeEventCount: activeSelection.total,
+      activeFallbackReason: activeSelection.fallbackReason,
+      freshEventCount,
       historicalEventCount: historicalEvents.length,
       staleEventCount,
+      fallbackEligibleCount: activeSelection.fallbackEligibleCount,
       articles: memoryStats().articles,
       unclustered: memoryStats().unclustered,
     };

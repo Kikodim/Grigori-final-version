@@ -180,7 +180,6 @@ const EVENTS = [
     tradeRoutes: [{ from: [57.0, 24.0], to: [53.8, 14.0], label: "Baltic shipping lane" }],
   },
 ];
-const BRAND_MARK = "/assets/brand/grigori-mark.svg";
 const BRAND_WORDMARK = "/assets/brand/grigori-wordmark.svg";
 const BRAND_REPORT_LOCKUP = "/assets/brand/grigori-report-lockup.svg";
 
@@ -1621,8 +1620,8 @@ function withNoStoreUrl(path, forceFresh = false) {
   return resolveBackendUrl(`${path}${separator}t=${Date.now()}`);
 }
 
-async function fetchBackendEvents(forceFresh = false) {
-  const url = withNoStoreUrl("/api/v1/events?limit=120&scope=active", forceFresh);
+async function fetchBackendEvents(forceFresh = false, { scope = "active", limit = 120 } = {}) {
+  const url = withNoStoreUrl(`/api/v1/events?limit=${limit}&scope=${scope}`, forceFresh);
   const res = await fetch(url, {
     signal: AbortSignal.timeout(8000),
     cache: "no-store",
@@ -1639,21 +1638,58 @@ async function fetchBackendEvents(forceFresh = false) {
     recentTrend: deriveRecentTrend(event, rawNormalized),
   }));
 
-  return withTrends.length > 0 ? enrichEvents(withTrends) : [];
+  return {
+    events: withTrends.length > 0 ? enrichEvents(withTrends) : [],
+    meta: {
+      scope: data.scope ?? scope,
+      count: data.count ?? rawNormalized.length,
+      total: data.total ?? rawNormalized.length,
+      fallbackUsed: Boolean(data.fallbackUsed),
+      fallbackReason: data.fallbackReason ?? "unknown",
+      freshnessMode: data.freshnessMode ?? "best_available",
+      dataSource: data.dataSource ?? data.mode ?? "backend",
+    },
+  };
 }
 
 // ── Merge live data with static events ────────────────────────────────────────
 // Returns the combined scored event list, preferring static data for enriched events
 async function fetchLiveEvents(forceFresh = false) {
   try {
-    const backendEvents = await fetchBackendEvents(forceFresh);
-    return backendEvents;
+    const backendResult = await fetchBackendEvents(forceFresh, { scope: "active", limit: 120 });
+    if (backendResult.events.length > 0) {
+      return backendResult;
+    }
+
+    const fallbackResult = await fetchBackendEvents(forceFresh, { scope: "all", limit: 120 });
+    if (fallbackResult.events.length > 0) {
+      return {
+        events: fallbackResult.events,
+        meta: {
+          ...fallbackResult.meta,
+          fallbackUsed: true,
+          fallbackReason: "stored_signals",
+          freshnessMode: "best_available",
+        },
+      };
+    }
   } catch (err) {
     console.warn("[Grigori] Backend events fetch failed:", err.message);
   }
 
   if (DEMO_MODE) {
-    return [...SCORED_EVENTS].map(decorateEventForUi);
+    return {
+      events: [...SCORED_EVENTS].map(decorateEventForUi),
+      meta: {
+        scope: "demo",
+        count: SCORED_EVENTS.length,
+        total: SCORED_EVENTS.length,
+        fallbackUsed: true,
+        fallbackReason: "demo_seed",
+        freshnessMode: "best_available",
+        dataSource: "demo",
+      },
+    };
   }
 
   const [gdelt] = await Promise.allSettled([fetchGDELTEvents()]);
@@ -1679,7 +1715,19 @@ async function fetchLiveEvents(forceFresh = false) {
     };
   });
 
-  return [...SCORED_EVENTS, ...enriched].map(decorateEventForUi);
+  const fallbackEvents = [...SCORED_EVENTS, ...enriched].map(decorateEventForUi);
+  return {
+    events: fallbackEvents,
+    meta: {
+      scope: "fallback",
+      count: fallbackEvents.length,
+      total: fallbackEvents.length,
+      fallbackUsed: true,
+      fallbackReason: fallbackEvents.length > 0 ? "stored_signals" : "no_events_available",
+      freshnessMode: "best_available",
+      dataSource: "fallback",
+    },
+  };
 }
 
 const MAX_FLIGHTS_RENDERED = 100;
@@ -4288,7 +4336,7 @@ function MobileBottomSheet({ events, selectedEvent, activeScenario, onScenarioCh
                 })}
                 {events.length === 0 ? (
                   <div style={{ color: "rgba(150,200,240,0.58)", fontSize: 11, lineHeight: 1.6, fontFamily: bodyFont }}>
-                    {refreshState?.message ? "Board checked. No newer high-relevance signals found." : "No signals match this filter."}
+                    {feedState?.message || (refreshState?.message ? "Board checked. No newer high-relevance signals found." : "No fresh signals in this filter. Showing stored high-impact signals when available.")}
                   </div>
                 ) : null}
               </div>
@@ -4840,8 +4888,7 @@ function TopBar({ counts, bordersLoaded, activeLayers, onLayerToggle, isMobile, 
     }}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 14, minWidth: 0 }}>
         <div style={{ display: "flex", flexDirection: "column", gap: 6, minWidth: 0 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
-            <img src={BRAND_MARK} alt="Grigori mark" style={{ width: isMobile ? 30 : 34, height: isMobile ? 30 : 34, flexShrink: 0 }} />
+          <div style={{ display: "flex", alignItems: "center", minWidth: 0 }}>
             <img src={BRAND_WORDMARK} alt="Grigori by oryth.io" style={{ height: isMobile ? 24 : 28, width: "auto", maxWidth: isMobile ? 188 : 236 }} />
           </div>
           {!isMobile ? (
@@ -5023,7 +5070,7 @@ function TopBar({ counts, bordersLoaded, activeLayers, onLayerToggle, isMobile, 
 // DESKTOP LEFT SIDEBAR
 // ═══════════════════════════════════════════════════════════════════════════════
 
-function DesktopSidebar({ events, selectedEvent, onSelect, modeHours, onModeChange, topOffset = TOP_BAR_HEIGHT, sortMode = "priority", onSortChange, systemStatus, refreshState, adminUnlocked = false }) {
+function DesktopSidebar({ events, selectedEvent, onSelect, modeHours, onModeChange, topOffset = TOP_BAR_HEIGHT, sortMode = "priority", onSortChange, systemStatus, refreshState, adminUnlocked = false, feedState }) {
   const options = [
     { label: "24h", value: 24 },
     { label: "7d", value: 24 * 7 },
@@ -5049,12 +5096,19 @@ function DesktopSidebar({ events, selectedEvent, onSelect, modeHours, onModeChan
           {events.length}
         </div>
         <div style={{ color: "rgba(148,175,198,0.72)", fontSize: 12, lineHeight: 1.5, marginTop: 4, fontFamily: bodyFont }}>
-          Live geopolitical signals prioritized for the current lens.
+          {feedState?.status === "fallback"
+            ? "Best available intelligence signals while live refresh is pending."
+            : "Live geopolitical signals prioritized for the current lens."}
         </div>
         <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 12 }}>
           <TrafficPill level={newsFreshness.tone}>News {newsFreshness.label}</TrafficPill>
           <TrafficPill level={aiFreshness.tone}>AI {aiFreshness.label}</TrafficPill>
         </div>
+        {feedState?.message ? (
+          <div style={{ marginTop: 8, color: "rgba(150,205,245,0.78)", fontSize: 11, lineHeight: 1.55, fontFamily: bodyFont }}>
+            {feedState.message}
+          </div>
+        ) : null}
         {refreshMessage ? (
           <div style={{ marginTop: 8, color: "rgba(150,205,245,0.72)", fontSize: 11, lineHeight: 1.55, fontFamily: bodyFont }}>
             {refreshMessage}
@@ -5099,7 +5153,7 @@ function DesktopSidebar({ events, selectedEvent, onSelect, modeHours, onModeChan
       <div style={sharedPanelBodyStyle({ flex: 1 })}>
         {events.length === 0 ? (
           <div style={{ padding: "18px 18px", color: "rgba(150,200,240,0.55)", fontSize: 10, fontFamily: mono, lineHeight: 1.6 }}>
-            {refreshMessage ? "Board checked. No newer high-relevance signals found." : "No signals match this filter."}
+            {feedState?.message || (refreshMessage ? "Board checked. No newer high-relevance signals found." : "No fresh signals in this filter. Showing stored high-impact signals when available.")}
           </div>
         ) : null}
         {events.map(ev => {
@@ -5226,7 +5280,7 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
     aiCallsToday: 0,
     aiRemainingToday: 0,
   });
-  const [feedState,       setFeedState]       = useState({ status: "ok", message: "" });
+  const [feedState,       setFeedState]       = useState({ status: "ok", message: "", fallbackReason: "fresh_active" });
   const [adminSession,    setAdminSession]    = useState({ unlocked: false, secret: "" });
   const [vesselSearch,    setVesselSearch]    = useState("");
   const [watchlist,       setWatchlist]       = useState(() => {
@@ -5256,7 +5310,7 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
     }
 
     try {
-      const evs = await fetchLiveEvents(forceFresh);
+      const { events: evs, meta } = await fetchLiveEvents(forceFresh);
       setLiveEvents(evs);
       try {
         const briefingRes = await fetch(withNoStoreUrl("/api/v1/briefing", forceFresh), {
@@ -5272,11 +5326,21 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
       } catch {
         setBriefing(buildBriefing(evs, selectedLens));
       }
-      setFeedState({ status: "ok", message: "" });
+      const feedMessage = meta?.fallbackUsed
+        ? meta.fallbackReason === "historical_context"
+          ? "Using historical context signals while awaiting refresh."
+          : "Using stored signals while awaiting refresh."
+        : "";
+      setFeedState({
+        status: meta?.fallbackUsed ? "fallback" : "ok",
+        message: feedMessage,
+        fallbackReason: meta?.fallbackReason ?? "fresh_active",
+      });
     } catch {
       setFeedState({
         status: "warning",
         message: "Data feed temporarily unavailable. Last cached intelligence shown.",
+        fallbackReason: "fetch_failed",
       });
     }
 
@@ -6487,6 +6551,7 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
             systemStatus={systemStatus}
             refreshState={refreshState}
             adminUnlocked={adminSession.unlocked}
+            feedState={feedState}
           />
         )}
 
