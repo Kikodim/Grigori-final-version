@@ -38,6 +38,7 @@ create table if not exists events (
   updated_at   timestamptz   not null default now(),
   last_seen_at timestamptz,
   refreshed_at timestamptz,
+  newest_source_at timestamptz,
   freshness_status text      not null default 'Fresh'
 );
 
@@ -49,6 +50,7 @@ create index if not exists events_updated_at     on events (updated_at desc);
 create index if not exists events_cluster_signature on events (cluster_signature);
 create index if not exists events_is_historical on events (is_historical);
 create index if not exists events_refreshed_at on events (refreshed_at desc);
+create index if not exists events_newest_source_at on events (newest_source_at desc);
 
 create table if not exists ai_usage_logs (
   id                bigint generated always as identity primary key,

@@ -236,6 +236,25 @@ function deriveFreshnessOutcome({
   return "no_relevant_recent_articles";
 }
 
+function resolveProviderDiagnostics(providerDiagnostics) {
+  return [...providerDiagnostics.values()].map((item) => ({
+    ...item,
+    unaccounted: Math.max(0, item.fetched - (
+      item.dropped_missing_title +
+      item.dropped_missing_url +
+      item.dropped_missing_date +
+      item.articlesRejectedAsOld +
+      item.articlesRejectedAsLowRelevance +
+      item.articlesRejectedAsDuplicate +
+      item.duplicateReconfirmed +
+      item.clustered_new +
+      item.clustered_existing +
+      item.cluster_failed +
+      item.save_failed
+    )),
+  }));
+}
+
 function getNewsActivityTime(event) {
   return (
     event.refreshedAt ??
@@ -303,9 +322,9 @@ function shouldPublishPreEvent(preEvent, articles = []) {
   );
 
   if (lowValueTitle) return false;
-  if (sourceCount <= 1 && relevanceScore < 4 && underReview) return false;
-  if (sourceCount <= 1 && relevanceScore < 4 && !hasStrategicPoliticalSignal) return false;
-  if ((articles?.length ?? 0) <= 1 && relevanceScore < 3) return false;
+  if (sourceCount <= 1 && relevanceScore < 2 && underReview && !hasStrategicPoliticalSignal) return false;
+  if (sourceCount <= 1 && relevanceScore < 2 && !hasStrategicPoliticalSignal) return false;
+  if ((articles?.length ?? 0) <= 1 && relevanceScore < 2 && !hasStrategicPoliticalSignal) return false;
   return true;
 }
 
@@ -824,19 +843,36 @@ export async function runPipeline({ source = "manual", noAi = false, mode = "ful
   const automatedAiEnabled = mode !== "news" && !noAi && String(process.env.ENABLE_AUTOMATED_AI ?? "true").toLowerCase() !== "false";
   const preEvents = cluster({ threshold });
   const articleStore = new Map(getAllArticles().map((article) => [article.id, article]));
+  const providerDiagnostics = new Map((ingestResult.providerDiagnostics ?? []).map((item) => [item.provider, { ...item }]));
+  const suppressedPreEvents = [];
   const publishablePreEvents = preEvents.filter((preEvent) => {
     const articles = preEvent.articleIds
       .map((id) => articleStore.get(id))
       .filter(Boolean);
-    return shouldPublishPreEvent(preEvent, articles);
+    const allowed = shouldPublishPreEvent(preEvent, articles);
+    if (!allowed) suppressedPreEvents.push({ preEvent, articles });
+    return allowed;
   });
   const cachedCount = publishablePreEvents.filter((preEvent) => cacheHas(makeClusterKey(preEvent))).length;
   const previousEvents = await getRecentEvents(24);
+  for (const suppressed of suppressedPreEvents) {
+    const counts = suppressed.articles.reduce((acc, article) => {
+      const provider = article.provider ?? "unknown";
+      acc[provider] = (acc[provider] ?? 0) + 1;
+      return acc;
+    }, {});
+    for (const [provider, articleCount] of Object.entries(counts)) {
+      const bucket = providerDiagnostics.get(provider);
+      if (bucket) bucket.cluster_failed += articleCount;
+    }
+  }
 
   if (publishablePreEvents.length === 0) {
     const purged = await deleteOldEvents(parseInt(process.env.EVENT_MAX_AGE_HOURS ?? "24", 10));
     cachePrune();
     const stats = await getStats();
+    const resolvedProviderDiagnostics = resolveProviderDiagnostics(providerDiagnostics);
+    const unaccountedArticles = resolvedProviderDiagnostics.reduce((sum, item) => sum + (item.unaccounted ?? 0), 0);
     const message = buildNewsRefreshMessage({
       eventsCreated: 0,
       eventsUpdated: 0,
@@ -858,24 +894,41 @@ export async function runPipeline({ source = "manual", noAi = false, mode = "ful
       aiCalls: 0,
       purged,
       mode: mode === "news" ? "news" : ingestResult.mode,
+      status: (ingestResult.articlesUsable ?? 0) > 0 ? "pipeline_warning" : "ok",
       refreshMode: mode,
       duplicatesSkipped: ingestResult.duplicatesSkipped ?? 0,
+      duplicateReconfirmed: ingestResult.duplicateReconfirmed ?? 0,
+      articlesNormalized: ingestResult.articlesNormalized ?? 0,
+      articlesUsable: ingestResult.articlesUsable ?? 0,
       eventsCreated: 0,
       eventsUpdated: 0,
+      eventsRefreshed: 0,
       eventsUnchanged: 0,
       filteredOutCount: ingestResult.filteredOutCount ?? 0,
       lowRelevanceCount: ingestResult.lowRelevanceCount ?? 0,
       regionUnderReviewCount: 0,
       suppressedClusterCount: preEvents.length,
       newestArticleAt: ingestResult.newestArticleAt ?? null,
+      newestSourceAt: ingestResult.newestArticleAt ?? null,
       newestEventAt: null,
-      providerDiagnostics: ingestResult.providerDiagnostics ?? [],
+      providerDiagnostics: resolvedProviderDiagnostics,
       providersUsed: ingestResult.providersUsed ?? [],
       skippedProviders: ingestResult.skippedProviders ?? [],
       rateLimitedProviders: ingestResult.rateLimitedProviders ?? [],
       lastNewsRefreshAt: new Date().toISOString(),
       activeEventCount: stats.activeEventCount ?? 0,
-      message,
+      activeEventCountAfterRefresh: stats.activeEventCount ?? 0,
+      attemptedEventWrites: 0,
+      successfulEventWrites: 0,
+      failedEventWrites: 0,
+      saveFailures: 0,
+      supabaseErrorCount: 0,
+      memoryFallbackUsed: false,
+      unaccountedArticles,
+      freshnessOutcome: (ingestResult.articlesUsable ?? 0) > 0 ? "pipeline_warning" : "no_relevant_recent_articles",
+      message: (ingestResult.articlesUsable ?? 0) > 0
+        ? "Articles were fetched but did not update active signals. Check diagnostics."
+        : message,
       elapsed: getElapsed(startedAt),
     };
   }
@@ -972,14 +1025,24 @@ export async function runPipeline({ source = "manual", noAi = false, mode = "ful
   let eventsUpdated = 0;
   let eventsUnchanged = 0;
   let eventsRefreshed = 0;
+  let clustersUpdated = 0;
+  let attemptedEventWrites = 0;
+  let successfulEventWrites = 0;
+  let failedEventWrites = 0;
+  let supabaseErrorCount = 0;
+  let memoryFallbackUsed = false;
   const eventTimestamps = [];
-  const providerDiagnostics = new Map((ingestResult.providerDiagnostics ?? []).map((item) => [item.provider, { ...item }]));
   for (const preEvent of publishablePreEvents) {
     const result = results.get(preEvent._clusterId);
     if (!result) continue;
     const articles = preEvent.articleIds
       .map((id) => articleStore.get(id))
       .filter(Boolean);
+    const clusterProviderCounts = articles.reduce((acc, article) => {
+      const provider = article.provider ?? "unknown";
+      acc[provider] = (acc[provider] ?? 0) + 1;
+      return acc;
+    }, {});
     const resolvedLocation = result.location ?? inferLocationDetails({
       ...preEvent,
       location: preEvent.region,
@@ -989,7 +1052,8 @@ export async function runPipeline({ source = "manual", noAi = false, mode = "ful
       articleIds: preEvent.articleIds,
     }, articles);
 
-    await insertEvent({
+    attemptedEventWrites++;
+    const writeResult = await insertEvent({
       id: makeEventId(preEvent),
       title: result.title,
       location: resolvedLocation ?? { label: "Region under review", lat: null, lng: null, confidence: "Low", reason: "Location signals remain under review." },
@@ -1016,33 +1080,46 @@ export async function runPipeline({ source = "manual", noAi = false, mode = "ful
       updatedAt: new Date().toISOString(),
       lastSeenAt: new Date().toISOString(),
       refreshedAt: new Date().toISOString(),
+      newestSourceAt: preEvent.timestamp,
     });
+    if (writeResult.persisted) successfulEventWrites++;
+    else {
+      failedEventWrites++;
+      supabaseErrorCount += writeResult.error ? 1 : 0;
+      if (writeResult.mode === "memory") memoryFallbackUsed = true;
+      for (const [provider, articleCount] of Object.entries(clusterProviderCounts)) {
+        const bucket = providerDiagnostics.get(provider);
+        if (bucket) bucket.save_failed += articleCount;
+      }
+    }
     created++;
     eventTimestamps.push(preEvent.timestamp);
     const matchedCandidate = enrichedCandidates.find((candidate) => candidate.preEvent._clusterId === preEvent._clusterId);
-    const clusterProviders = matchedCandidate?.articles?.map((article) => article.provider).filter(Boolean) ?? [];
     if (matchedCandidate?.existingEvent) {
       eventsRefreshed++;
-      for (const provider of clusterProviders) {
+      for (const [provider, articleCount] of Object.entries(clusterProviderCounts)) {
         const bucket = providerDiagnostics.get(provider);
         if (!bucket) continue;
-        bucket.clusteredIntoExistingEvents += 1;
-        bucket.existingEventsRefreshed += 1;
+        bucket.clusteredIntoExistingEvents += articleCount;
+        bucket.clustered_existing += articleCount;
+        bucket.event_refreshed += 1;
       }
       if (matchedCandidate.canReuse || !matchedCandidate.needsMeaningfulRefresh) {
         eventsUnchanged++;
       } else {
         eventsUpdated++;
-        for (const provider of clusterProviders) {
+        clustersUpdated++;
+        for (const provider of Object.keys(clusterProviderCounts)) {
           const bucket = providerDiagnostics.get(provider);
           if (!bucket) continue;
           bucket.eventsUpdated += 1;
         }
       }
     } else {
-      for (const provider of clusterProviders) {
+      for (const [provider, articleCount] of Object.entries(clusterProviderCounts)) {
         const bucket = providerDiagnostics.get(provider);
         if (!bucket) continue;
+        bucket.clustered_new += articleCount;
         bucket.eventsCreated += 1;
       }
     }
@@ -1051,6 +1128,8 @@ export async function runPipeline({ source = "manual", noAi = false, mode = "ful
   const allExistingEvents = (await getEvents({ limit: 250, offset: 0, scope: "all" })).events ?? [];
   const refreshedEventIds = new Set();
   for (const article of ingestResult.reconfirmedArticles ?? []) {
+    const provider = article.provider ?? "unknown";
+    const bucket = providerDiagnostics.get(provider);
     const matchedEvent = allExistingEvents.find((event) =>
       (event.articleIds ?? []).includes(article.id) ||
       (normalizeText(event.title) === normalizeText(article.title) && normalizeText(event.location?.label) === normalizeText(article.region?.label ?? "Region under review"))
@@ -1059,7 +1138,8 @@ export async function runPipeline({ source = "manual", noAi = false, mode = "ful
     if (!matchedEvent || refreshedEventIds.has(matchedEvent.id)) continue;
     refreshedEventIds.add(matchedEvent.id);
 
-    await insertEvent({
+    attemptedEventWrites++;
+    const writeResult = await insertEvent({
       ...matchedEvent,
       timestamp: newestIso([matchedEvent.timestamp, article.publishedAt]) ?? matchedEvent.timestamp,
       sources: uniqueStrings([...(matchedEvent.sources ?? []), article.source]),
@@ -1067,12 +1147,18 @@ export async function runPipeline({ source = "manual", noAi = false, mode = "ful
       updatedAt: new Date().toISOString(),
       lastSeenAt: new Date().toISOString(),
       refreshedAt: new Date().toISOString(),
+      newestSourceAt: newestIso([matchedEvent.newestSourceAt, article.publishedAt, matchedEvent.timestamp]) ?? matchedEvent.timestamp,
     });
+    if (writeResult.persisted) successfulEventWrites++;
+    else {
+      failedEventWrites++;
+      supabaseErrorCount += writeResult.error ? 1 : 0;
+      if (writeResult.mode === "memory") memoryFallbackUsed = true;
+      if (bucket) bucket.save_failed += 1;
+    }
     eventsRefreshed++;
-    const provider = article.provider ?? "unknown";
-    const bucket = providerDiagnostics.get(provider);
     if (bucket) {
-      bucket.existingEventsRefreshed += 1;
+      bucket.event_refreshed += 1;
     }
   }
 
@@ -1087,6 +1173,8 @@ export async function runPipeline({ source = "manual", noAi = false, mode = "ful
   const newestEventAt = newestIso(eventTimestamps);
   const lastNewsRefreshAt = new Date().toISOString();
   const stats = await getStats();
+  const resolvedProviderDiagnostics = resolveProviderDiagnostics(providerDiagnostics);
+  const unaccountedArticles = resolvedProviderDiagnostics.reduce((sum, item) => sum + item.unaccounted, 0);
   const summary = {
     ok: true,
     events: created,
@@ -1095,6 +1183,7 @@ export async function runPipeline({ source = "manual", noAi = false, mode = "ful
     articlesSaved: ingestResult.saved,
     clusters: publishablePreEvents.length,
     clustersCreated: publishablePreEvents.length,
+    clustersUpdated,
     cached: cachedCount,
     aiCalls: actualAiCalls,
     purged,
@@ -1104,6 +1193,8 @@ export async function runPipeline({ source = "manual", noAi = false, mode = "ful
     noAi,
     duplicatesSkipped: ingestResult.duplicatesSkipped ?? 0,
     duplicateReconfirmed: ingestResult.duplicateReconfirmed ?? 0,
+    articlesNormalized: ingestResult.articlesNormalized ?? 0,
+    articlesUsable: ingestResult.articlesUsable ?? 0,
     eventsCreated,
     eventsUpdated,
     eventsRefreshed,
@@ -1113,8 +1204,12 @@ export async function runPipeline({ source = "manual", noAi = false, mode = "ful
     regionUnderReviewCount,
     suppressedClusterCount: Math.max(0, preEvents.length - publishablePreEvents.length),
     newestArticleAt: ingestResult.newestArticleAt ?? null,
+    newestSourceAt: newestIso([
+      ingestResult.newestArticleAt ?? null,
+      newestEventAt,
+    ]),
     newestEventAt,
-    providerDiagnostics: [...providerDiagnostics.values()],
+    providerDiagnostics: resolvedProviderDiagnostics,
     providersUsed: ingestResult.providersUsed ?? [],
     skippedProviders: ingestResult.skippedProviders ?? [],
     rateLimitedProviders: ingestResult.rateLimitedProviders ?? [],
@@ -1129,7 +1224,17 @@ export async function runPipeline({ source = "manual", noAi = false, mode = "ful
     }),
     lastNewsRefreshAt,
     activeEventCount: stats.activeEventCount ?? 0,
-    message: buildNewsRefreshMessage({
+    activeEventCountAfterRefresh: stats.activeEventCount ?? 0,
+    attemptedEventWrites,
+    successfulEventWrites,
+    failedEventWrites,
+    saveFailures: failedEventWrites,
+    supabaseErrorCount,
+    memoryFallbackUsed,
+    unaccountedArticles,
+    message: unaccountedArticles > 0
+      ? "Articles were fetched but did not fully update active signals. Check diagnostics."
+      : buildNewsRefreshMessage({
       eventsCreated,
       eventsUpdated,
       eventsRefreshed,

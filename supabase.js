@@ -78,6 +78,7 @@ function normalizeEvent(row) {
     updatedAt: row.updatedAt ?? row.updated_at ?? null,
     lastSeenAt: row.lastSeenAt ?? row.last_seen_at ?? null,
     refreshedAt: row.refreshedAt ?? row.refreshed_at ?? null,
+    newestSourceAt: row.newestSourceAt ?? row.newest_source_at ?? null,
     freshnessStatus: row.freshnessStatus ?? row.freshness_status ?? null,
   };
 }
@@ -89,6 +90,8 @@ function getEventActivityTimestamp(event) {
     event.refreshed_at ??
     event.lastSeenAt ??
     event.last_seen_at ??
+    event.newestSourceAt ??
+    event.newest_source_at ??
     event.updatedAt ??
     event.updated_at ??
     event.createdAt ??
@@ -236,6 +239,7 @@ function buildSupabaseRow(event, id = event.id) {
   const updatedAt = event.updatedAt ?? event.updated_at ?? now;
   const lastSeenAt = event.lastSeenAt ?? event.last_seen_at ?? updatedAt;
   const refreshedAt = event.refreshedAt ?? event.refreshed_at ?? updatedAt;
+  const newestSourceAt = event.newestSourceAt ?? event.newest_source_at ?? event.timestamp ?? refreshedAt;
   const isHistorical = Boolean(event.isHistorical ?? event.is_historical);
 
   return {
@@ -266,12 +270,14 @@ function buildSupabaseRow(event, id = event.id) {
     updated_at: updatedAt,
     last_seen_at: lastSeenAt,
     refreshed_at: refreshedAt,
+    newest_source_at: newestSourceAt,
     freshness_status: computeFreshnessStatus({
       ...event,
       isHistorical,
       updatedAt,
       lastSeenAt,
       refreshedAt,
+      newestSourceAt,
     }),
   };
 }
@@ -786,7 +792,7 @@ export async function getStats() {
       db.from("events").select("timestamp").order("timestamp", { ascending: false }).limit(1).maybeSingle(),
       db
         .from("events")
-        .select("id, is_historical, timestamp, created_at, updated_at, last_seen_at, refreshed_at, ai_updated_at, importance_score")
+        .select("id, is_historical, timestamp, created_at, updated_at, last_seen_at, refreshed_at, newest_source_at, ai_updated_at, importance_score")
         .limit(1000),
     ]);
 
@@ -1439,12 +1445,12 @@ export async function getRefreshState(key) {
     if (!record && key === "news") {
       const { data: latestEvent, error: latestError } = await db
         .from("events")
-        .select("timestamp, created_at, updated_at, refreshed_at, last_seen_at")
+        .select("timestamp, created_at, updated_at, refreshed_at, last_seen_at, newest_source_at")
         .order("updated_at", { ascending: false })
         .limit(1)
         .maybeSingle();
 
-      const derivedLastRefresh = latestEvent?.refreshed_at ?? latestEvent?.last_seen_at ?? latestEvent?.updated_at ?? latestEvent?.created_at ?? null;
+      const derivedLastRefresh = latestEvent?.refreshed_at ?? latestEvent?.last_seen_at ?? latestEvent?.newest_source_at ?? latestEvent?.updated_at ?? latestEvent?.created_at ?? null;
       if (!latestError && derivedLastRefresh) {
         const derivedNextRefresh = new Date(new Date(derivedLastRefresh).getTime() + 60 * 60 * 1000).toISOString();
         record = {

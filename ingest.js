@@ -349,20 +349,29 @@ function createProviderDiagnosticsBucket(provider) {
   return {
     provider,
     fetched: 0,
+    normalized: 0,
+    saved_article: 0,
+    save_failed: 0,
     afterDateFilter: 0,
+    articlesUsable: 0,
     articlesRejectedAsOld: 0,
     articlesRejectedAsDuplicate: 0,
     duplicateReconfirmed: 0,
     articlesRejectedAsLowRelevance: 0,
-    articlesRejectedMissingUrl: 0,
-    articlesRejectedMissingDate: 0,
+    dropped_missing_title: 0,
+    dropped_missing_url: 0,
+    dropped_missing_date: 0,
     clusteredIntoExistingEvents: 0,
+    clustered_new: 0,
+    clustered_existing: 0,
     eventsCreated: 0,
     eventsUpdated: 0,
-    existingEventsRefreshed: 0,
+    event_refreshed: 0,
     newestArticlePublishedAt: null,
     oldestArticlePublishedAt: null,
-    articlesClusteredIntoExistingEvents: 0,
+    cluster_failed: 0,
+    unaccounted: 0,
+    debugSamples: [],
   };
 }
 
@@ -370,6 +379,14 @@ function updateProviderDateWindow(bucket, value) {
   if (!value) return;
   bucket.newestArticlePublishedAt = [bucket.newestArticlePublishedAt, value].filter(Boolean).sort().at(-1) ?? bucket.newestArticlePublishedAt;
   bucket.oldestArticlePublishedAt = [bucket.oldestArticlePublishedAt, value].filter(Boolean).sort().at(0) ?? bucket.oldestArticlePublishedAt;
+}
+
+function sampleArticle(article) {
+  return {
+    title: String(article?.title ?? "").slice(0, 140),
+    url: String(article?.url ?? "").slice(0, 240),
+    provider: article?.provider ?? "unknown",
+  };
 }
 
 function toIsoDay(value) {
@@ -594,16 +611,28 @@ function finalizeArticles(rawArticles, maxItems, { seedIfEmpty = false, historic
     const bucket = getBucket(provider);
     bucket.fetched += 1;
 
+    if (!String(raw.title ?? "").trim()) {
+      bucket.dropped_missing_title += 1;
+      bucket.debugSamples.push(sampleArticle(raw));
+      continue;
+    }
+
     if (!raw.url) {
-      bucket.articlesRejectedMissingUrl += 1;
+      bucket.dropped_missing_url += 1;
+      bucket.debugSamples.push(sampleArticle(raw));
       continue;
     }
 
     let publishedAt = raw.publishedAt ? new Date(raw.publishedAt).toISOString() : null;
     const invalidDate = !publishedAt || Number.isNaN(new Date(publishedAt).getTime());
     if (invalidDate) {
-      bucket.articlesRejectedMissingDate += 1;
-      publishedAt = raw.fetchedAt ?? new Date().toISOString();
+      const fallbackDate = raw.fetchedAt ? new Date(raw.fetchedAt).toISOString() : null;
+      if (!fallbackDate || Number.isNaN(new Date(fallbackDate).getTime())) {
+        bucket.dropped_missing_date += 1;
+        bucket.debugSamples.push(sampleArticle(raw));
+        continue;
+      }
+      publishedAt = fallbackDate;
     }
 
     updateProviderDateWindow(bucket, publishedAt);
@@ -617,13 +646,16 @@ function finalizeArticles(rawArticles, maxItems, { seedIfEmpty = false, historic
     bucket.afterDateFilter += 1;
     const normalized = normalise({ ...raw, publishedAt, provider });
     if (!normalized) {
-      bucket.articlesRejectedMissingUrl += 1;
+      bucket.dropped_missing_title += 1;
+      bucket.debugSamples.push(sampleArticle(raw));
       continue;
     }
+    bucket.normalized += 1;
 
     const { score, categories } = computeRelevanceScore(normalized);
     if (score < MIN_RELEVANCE_SCORE) {
       bucket.articlesRejectedAsLowRelevance += 1;
+      bucket.debugSamples.push(sampleArticle(normalized));
       continue;
     }
 
@@ -634,6 +666,7 @@ function finalizeArticles(rawArticles, maxItems, { seedIfEmpty = false, historic
       _provider: provider,
       _ageHours: ageHours,
     });
+    bucket.articlesUsable += 1;
   }
 
   const deduped = [];
@@ -663,10 +696,11 @@ function finalizeArticles(rawArticles, maxItems, { seedIfEmpty = false, historic
     const bucket = getBucket(article._provider);
     const existing = storedById.get(article.id);
     if (existing) {
-      bucket.articlesRejectedAsDuplicate += 1;
       if (article._ageHours <= 72) {
         bucket.duplicateReconfirmed += 1;
         reconfirmedArticles.push(article);
+      } else {
+        bucket.articlesRejectedAsDuplicate += 1;
       }
       toPersist.push({
         ...existing,
@@ -686,7 +720,6 @@ function finalizeArticles(rawArticles, maxItems, { seedIfEmpty = false, historic
       if (scoreDelta !== 0) return scoreDelta;
       return (b.sourceQuality ?? 0) - (a.sourceQuality ?? 0);
     })
-    .slice(0, maxItems)
     .filter(Boolean);
 
   if (normalised.length === 0 && seedIfEmpty) {
@@ -708,6 +741,11 @@ function finalizeArticles(rawArticles, maxItems, { seedIfEmpty = false, historic
       newestArticleAt: seededNewest ? new Date(seededNewest).toISOString() : null,
       providerDiagnostics: [],
       reconfirmedArticles: [],
+      articlesNormalized: seeded.length,
+      articlesUsable: seeded.length,
+      saveFailures: 0,
+      unaccountedArticles: 0,
+      debugSamples: [],
     };
   }
 
@@ -717,6 +755,10 @@ function finalizeArticles(rawArticles, maxItems, { seedIfEmpty = false, historic
     return publishedAt > latest ? publishedAt : latest;
   }, 0);
   const providerDiagnostics = [...providerBuckets.values()];
+  for (const bucket of providerDiagnostics) {
+    bucket.saved_article = Math.max(0, bucket.articlesUsable - bucket.articlesRejectedAsDuplicate - bucket.duplicateReconfirmed);
+    bucket.unaccounted = 0;
+  }
   const duplicatesSkipped = providerDiagnostics.reduce((sum, bucket) => sum + bucket.articlesRejectedAsDuplicate, 0);
   const filteredOutCount = providerDiagnostics.reduce((sum, bucket) =>
     sum +
@@ -731,7 +773,10 @@ function finalizeArticles(rawArticles, maxItems, { seedIfEmpty = false, historic
     mode: "external",
     fetched: rawArticles.length,
     saved: persisted.saved,
+    savedArticleCount: persisted.saved + persisted.updated,
     keptCount: normalised.length,
+    articlesNormalized: providerDiagnostics.reduce((sum, bucket) => sum + bucket.normalized, 0),
+    articlesUsable: providerDiagnostics.reduce((sum, bucket) => sum + bucket.articlesUsable, 0),
     filteredOutCount,
     lowRelevanceCount,
     duplicatesSkipped,
@@ -739,6 +784,9 @@ function finalizeArticles(rawArticles, maxItems, { seedIfEmpty = false, historic
     newestArticleAt: newestArticleAt ? new Date(newestArticleAt).toISOString() : null,
     providerDiagnostics,
     reconfirmedArticles,
+    saveFailures: 0,
+    unaccountedArticles: providerDiagnostics.reduce((sum, bucket) => sum + bucket.unaccounted, 0),
+    debugSamples: providerDiagnostics.flatMap((bucket) => bucket.debugSamples.slice(0, 2)).slice(0, 10),
   };
 }
 
