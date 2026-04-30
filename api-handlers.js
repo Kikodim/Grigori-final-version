@@ -4,6 +4,7 @@ import { buildBriefing } from "./event-insights.js";
 import { getFlightsLayer, getLayersStatus, getSatellitesLayer, getSocialSignalsLayer, getVesselsLayer } from "./layers.js";
 import { createLogger } from "./logger.js";
 import { getMarketContext } from "./market-data.js";
+import { getNewsProviderStatuses } from "./ingest.js";
 import { runPipeline } from "./pipeline.js";
 import {
   buildSubscriptionStatus,
@@ -58,7 +59,7 @@ export async function handleHealth(_req, res) {
   applyNoStore(res);
   const config = getConfig();
   const integrations = getIntegrationConfigStatus();
-  const [layers, ai, newsRefresh, aiRefresh, newsRefreshUsage, aiRefreshUsage, stats] = await Promise.all([
+  const [layers, ai, newsRefresh, aiRefresh, newsRefreshUsage, aiRefreshUsage, stats, newsProviders] = await Promise.all([
     getLayersStatus(),
     getAIStatus(),
     getRefreshState("news"),
@@ -66,6 +67,7 @@ export async function handleHealth(_req, res) {
     getRefreshUsageStats("news"),
     getRefreshUsageStats("ai"),
     getStats(),
+    getNewsProviderStatuses(),
   ]);
   const missing = [
     ["NEWS_API_KEY", integrations.newsApi],
@@ -96,6 +98,7 @@ export async function handleHealth(_req, res) {
       env: { ok: missing.length === 0, missing },
       integrations: {
         newsApi: integrations.newsApi,
+        gnews: integrations.gnews,
         gemini: integrations.gemini,
         supabase: {
           present: integrations.supabase.present,
@@ -122,6 +125,9 @@ export async function handleHealth(_req, res) {
       nodeEnv: config.nodeEnv,
     },
     layers,
+    providers: {
+      news: newsProviders,
+    },
     data: {
       eventsDataSource: stats.mode ?? storage.mode ?? "memory",
       newestArticleAt,

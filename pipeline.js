@@ -157,12 +157,16 @@ function buildNewsRefreshMessage({
   articlesFetched = 0,
   filteredOutCount = 0,
   lowRelevanceCount = 0,
+  rateLimitedProviders = 0,
 }) {
   if (eventsCreated > 0) {
-    return `News refreshed. ${eventsCreated} new signal${eventsCreated === 1 ? "" : "s"} added.`;
+    return "Feeds checked. Live signals updated from available providers.";
   }
   if (eventsUpdated > 0) {
-    return `News refreshed. ${eventsUpdated} existing signal${eventsUpdated === 1 ? "" : "s"} updated.`;
+    return "Feeds checked. Live signals updated from available providers.";
+  }
+  if (rateLimitedProviders > 0) {
+    return "Feeds checked. Some providers are temporarily limited.";
   }
   if (lowRelevanceCount > 0 && articlesFetched > 0) {
     return "Feeds checked, but new articles did not meet geopolitical relevance threshold.";
@@ -700,6 +704,7 @@ export async function runPipeline({ source = "manual", noAi = false, mode = "ful
       articlesFetched: ingestResult.fetched ?? 0,
       filteredOutCount: ingestResult.filteredOutCount ?? 0,
       lowRelevanceCount: ingestResult.lowRelevanceCount ?? 0,
+      rateLimitedProviders: ingestResult.rateLimitedProviders?.length ?? 0,
     });
     return {
       ok: true,
@@ -928,6 +933,7 @@ export async function runPipeline({ source = "manual", noAi = false, mode = "ful
       articlesFetched: ingestResult.fetched ?? 0,
       filteredOutCount: ingestResult.filteredOutCount ?? 0,
       lowRelevanceCount: ingestResult.lowRelevanceCount ?? 0,
+      rateLimitedProviders: ingestResult.rateLimitedProviders?.length ?? 0,
     }),
     elapsed: getElapsed(startedAt),
   };

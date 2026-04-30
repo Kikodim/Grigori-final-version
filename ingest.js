@@ -6,14 +6,16 @@
  * but fetches small date windows manually and never calls Gemini.
  */
 
-import { describeEnvVar } from "./config.js";
+import { describeEnvVar, getConfig } from "./config.js";
 import { detectEventCategories, detectRegion, extractKeywords } from "./keywords.js";
 import { createLogger } from "./logger.js";
 import { fetchCurrentsArticles } from "./sources/currents.adapter.js";
 import { fetchGdeltArticles } from "./sources/gdelt.adapter.js";
+import { fetchGNewsArticles } from "./sources/gnews.adapter.js";
 import { fetchNewsApiArticles } from "./sources/newsapi.adapter.js";
 import { fetchNewsDataArticles } from "./sources/newsdata.adapter.js";
 import { fetchRssArticles } from "./sources/rss.adapter.js";
+import { getLayerCache, getLayerUsageStats, recordLayerUsage, setLayerCache } from "./supabase.js";
 import { getAllArticles, saveArticles } from "./store.js";
 
 const log = createLogger("ingest");
@@ -43,6 +45,13 @@ const BACKFILL_QUERY_PACKS = [
   "cyberattack infrastructure trade dispute export control",
   "EU Balkans NATO migration pressure black sea",
   "middle east taiwan ukraine russia iran red sea",
+];
+
+const GNEWS_LIVE_QUERY_PACKS = [
+  "geopolitical risk sanctions elections protests diplomacy",
+  "Europe Balkans political risk EU sanctions election protest",
+  "energy security oil gas chokepoint tanker shipping pipeline",
+  "military sanctions cyber critical infrastructure government attack",
 ];
 
 const SEED_ARTICLES = [
@@ -84,21 +93,27 @@ const SEED_ARTICLES = [
 ];
 
 const SOURCE_QUALITY = {
+  currents: 0.76,
+  gnews: 0.73,
+  thenewsapi: 0.72,
+  worldnewsapi: 0.71,
   gdelt: 0.95,
   rss: 0.82,
   newsdata: 0.75,
-  currents: 0.7,
   newsapi: 0.65,
 };
 
-const SOURCE_PRIORITY = ["gdelt", "rss", "newsdata", "currents", "newsapi"];
+const SOURCE_PRIORITY = ["currents", "gnews", "thenewsapi", "worldnewsapi", "newsdata", "newsapi", "gdelt", "rss"];
 const HISTORICAL_SUPPORT = {
+  gnews: false,
   gdelt: true,
   rss: false,
   newsdata: true,
   currents: true,
   newsapi: true,
 };
+const SUPPORTED_SOURCES = new Set(["currents", "gnews", "newsdata", "newsapi", "gdelt", "rss"]);
+const PROVIDER_STATE_PREFIX = "news_provider_";
 
 const STRATEGIC_SIGNAL_PATTERNS = [
   /\b(war|conflict|strike|missile|drone|attack|military|naval|troops|ceasefire|sanctions|nuclear|diplomacy|talks|summit|election|coup|insurgency|rebel|militia)\b/i,
@@ -123,6 +138,80 @@ function isSourceEnabled(name) {
   const raw = process.env[`ENABLE_${name.toUpperCase()}`];
   if (!raw) return true;
   return !["0", "false", "off", "no"].includes(raw.trim().toLowerCase());
+}
+
+function providerLayerKey(name) {
+  return `${PROVIDER_STATE_PREFIX}${name}`;
+}
+
+function startOfUtcDayIso(value = Date.now()) {
+  const date = new Date(value);
+  date.setUTCHours(0, 0, 0, 0);
+  return date.toISOString();
+}
+
+function isSameUtcDay(left, right = Date.now()) {
+  if (!left) return false;
+  return startOfUtcDayIso(left) === startOfUtcDayIso(right);
+}
+
+function getProviderCredentialStatus(name) {
+  if (name === "gnews") return describeEnvVar("GNEWS_API_KEY");
+  if (name === "newsapi") return describeEnvVar("NEWS_API_KEY");
+  if (name === "newsdata") return describeEnvVar("NEWSDATA_API_KEY");
+  if (name === "currents") return describeEnvVar("CURRENTS_API_KEY");
+  return { present: true, usable: true, reason: "n/a" };
+}
+
+function getProviderDailyLimit(name) {
+  const config = getConfig();
+  if (name === "gnews") return config.gnewsDailyLimit;
+  return null;
+}
+
+async function getProviderRuntimeState(name) {
+  const config = getConfig();
+  const enabled = name === "gnews" ? config.enableGnews : isSourceEnabled(name);
+  const credentials = getProviderCredentialStatus(name);
+  const cache = await getLayerCache(providerLayerKey(name));
+  const usage = await getLayerUsageStats(providerLayerKey(name));
+  const metadata = cache.record?.metadata ?? {};
+
+  return {
+    provider: name,
+    enabled,
+    configured: credentials.usable,
+    callsToday: usage.callsToday ?? 0,
+    dailyLimit: getProviderDailyLimit(name),
+    lastCallAt: metadata.lastCallAt ?? null,
+    lastSuccessAt: metadata.lastSuccessAt ?? null,
+    lastRateLimitedAt: metadata.lastRateLimitedAt ?? null,
+    status: metadata.status ?? (enabled ? (credentials.usable ? "active" : "disabled") : "disabled"),
+    message: metadata.message ?? null,
+  };
+}
+
+async function saveProviderRuntimeState(name, metadata = {}) {
+  const state = await getProviderRuntimeState(name);
+  const nextMetadata = {
+    provider: name,
+    enabled: state.enabled,
+    dailyLimit: state.dailyLimit,
+    ...metadata,
+  };
+  await setLayerCache(providerLayerKey(name), [], nextMetadata, null);
+}
+
+async function recordProviderCalls(name, count = 1, source = "provider") {
+  const safeCount = Math.max(0, Number(count) || 0);
+  for (let index = 0; index < safeCount; index += 1) {
+    await recordLayerUsage(providerLayerKey(name), source);
+  }
+}
+
+function getGnewsQueries(maxCalls, historical = false) {
+  const base = historical ? BACKFILL_QUERY_PACKS : GNEWS_LIVE_QUERY_PACKS;
+  return base.slice(0, Math.max(0, maxCalls));
 }
 
 function titleKey(title) {
@@ -296,7 +385,19 @@ function detectProviderFailure(err) {
 
 async function fetchFromSource(sourceName, fetcher, { historical = false, windowStart = null, windowEnd = null } = {}) {
   try {
-    const articles = await fetcher();
+    const fetched = await fetcher();
+    const payload = Array.isArray(fetched) ? { articles: fetched } : (fetched ?? { articles: [] });
+    const articles = payload.articles ?? [];
+    const callsUsed = Math.max(0, Number(payload.callsUsed ?? 0));
+    if (callsUsed > 0) {
+      await recordProviderCalls(sourceName, callsUsed, historical ? "historical" : "live");
+    }
+    await saveProviderRuntimeState(sourceName, {
+      status: articles.length > 0 ? "success" : "active",
+      lastCallAt: new Date().toISOString(),
+      lastSuccessAt: new Date().toISOString(),
+      message: articles.length > 0 ? `${articles.length} article${articles.length === 1 ? "" : "s"} fetched` : "No matching articles returned",
+    });
     if (historical) {
       log.info(`[ingest] ${sourceName} ${toIsoDay(windowStart)}→${toIsoDay(windowEnd)} returned ${articles.length} articles`);
     } else {
@@ -305,6 +406,8 @@ async function fetchFromSource(sourceName, fetcher, { historical = false, window
     return {
       status: "ok",
       sourceName,
+      callsUsed,
+      queryCount: payload.queryCount ?? callsUsed,
       articles: articles.map((article) => ({
         ...article,
         sourceQuality: article.sourceQuality ?? SOURCE_QUALITY[sourceName] ?? 0.5,
@@ -317,19 +420,107 @@ async function fetchFromSource(sourceName, fetcher, { historical = false, window
       ? JSON.stringify(err.response.data).slice(0, 240)
       : String(err.message ?? "unknown error");
     log.warn(`[ingest] ${sourceName} failed${historical ? ` ${toIsoDay(windowStart)}→${toIsoDay(windowEnd)}` : ""} — ${message}`);
+    await saveProviderRuntimeState(sourceName, {
+      status: kind,
+      lastCallAt: new Date().toISOString(),
+      lastRateLimitedAt: kind === "rate_limited" ? new Date().toISOString() : undefined,
+      message,
+    });
     return { status: kind, sourceName, articles: [], error: message };
   }
 }
 
-function collectSourceFetches({ queries, pageSize, windowStart = null, windowEnd = null, historical = false, includeRss = true }) {
+async function collectSourceFetches({ queries, pageSize, windowStart = null, windowEnd = null, historical = false, includeRss = true }) {
+  const config = getConfig();
   const newsApiStatus = describeEnvVar("NEWS_API_KEY");
   const newsDataStatus = describeEnvVar("NEWSDATA_API_KEY");
   const currentsStatus = describeEnvVar("CURRENTS_API_KEY");
+  const gnewsStatus = describeEnvVar("GNEWS_API_KEY");
   const rssFeeds = (process.env.RSS_FEED_URLS ?? "")
     .split(",")
     .map((item) => item.trim())
     .filter(Boolean);
   const tasks = [];
+
+  if (isSourceEnabled("currents") && currentsStatus.usable) {
+    tasks.push(fetchFromSource("currents", () => fetchCurrentsArticles({
+      apiKey: process.env.CURRENTS_API_KEY?.trim(),
+      queries,
+      pageSize,
+      from: windowStart,
+      to: windowEnd,
+      historical,
+    }), { historical, windowStart, windowEnd }));
+  }
+
+  if (config.enableGnews && gnewsStatus.usable) {
+    const gnewsState = await getProviderRuntimeState("gnews");
+    const dailyLimit = config.gnewsDailyLimit;
+    const remainingBudget = Math.max(0, dailyLimit - (gnewsState.callsToday ?? 0));
+    const rateLimitedToday = gnewsState.lastRateLimitedAt && isSameUtcDay(gnewsState.lastRateLimitedAt);
+    const intervalMs = Math.max(15, config.gnewsRefreshEveryMinutes) * 60_000;
+    const lastCallAgeMs = gnewsState.lastCallAt ? (Date.now() - new Date(gnewsState.lastCallAt).getTime()) : Infinity;
+    const allowHistorical = !historical || config.enableGnewsBackfill;
+
+    if (!allowHistorical) {
+      await saveProviderRuntimeState("gnews", {
+        status: "disabled",
+        message: "Historical GNews backfill disabled",
+      });
+      tasks.push(Promise.resolve({ status: "unsupported", sourceName: "gnews", articles: [], error: "GNews historical backfill disabled." }));
+    } else if (rateLimitedToday) {
+      tasks.push(Promise.resolve({ status: "rate_limited", sourceName: "gnews", articles: [], error: "GNews previously rate limited; skipping until daily reset." }));
+    } else if (remainingBudget <= 0) {
+      await saveProviderRuntimeState("gnews", {
+        status: "skipped_budget",
+        message: "GNews daily quota exhausted",
+      });
+      tasks.push(Promise.resolve({ status: "skipped_budget", sourceName: "gnews", articles: [], error: "GNews daily quota exhausted." }));
+    } else if (!historical && lastCallAgeMs < intervalMs) {
+      await saveProviderRuntimeState("gnews", {
+        status: "skipped_interval",
+        message: "GNews refresh interval not reached",
+      });
+      tasks.push(Promise.resolve({ status: "skipped_interval", sourceName: "gnews", articles: [], error: "GNews refresh interval not reached." }));
+    } else {
+      const maxCalls = Math.max(1, Math.min(config.gnewsMaxCallsPerRefresh, remainingBudget));
+      const gnewsQueries = getGnewsQueries(maxCalls, historical);
+      tasks.push(fetchFromSource("gnews", () => fetchGNewsArticles({
+        apiKey: process.env.GNEWS_API_KEY?.trim(),
+        queries: gnewsQueries,
+        pageSize,
+        from: windowStart,
+        to: windowEnd,
+        maxCalls,
+      }), { historical, windowStart, windowEnd }));
+    }
+  } else if (config.enableGnews && !gnewsStatus.usable) {
+    await saveProviderRuntimeState("gnews", {
+      status: "disabled",
+      message: "GNews API key missing or placeholder",
+    });
+  }
+
+  if (isSourceEnabled("newsdata") && newsDataStatus.usable) {
+    tasks.push(fetchFromSource("newsdata", () => fetchNewsDataArticles({
+      apiKey: process.env.NEWSDATA_API_KEY?.trim(),
+      queries,
+      pageSize,
+      from: windowStart,
+      to: windowEnd,
+      historical,
+    }), { historical, windowStart, windowEnd }));
+  }
+
+  if (isSourceEnabled("newsapi") && newsApiStatus.usable) {
+    tasks.push(fetchFromSource("newsapi", () => fetchNewsApiArticles({
+      apiKey: process.env.NEWS_API_KEY?.trim(),
+      queries,
+      pageSize,
+      from: windowStart,
+      to: windowEnd,
+    }), { historical, windowStart, windowEnd }));
+  }
 
   if (isSourceEnabled("gdelt")) {
     tasks.push(fetchFromSource("gdelt", () => fetchGdeltArticles({
@@ -349,38 +540,6 @@ function collectSourceFetches({ queries, pageSize, windowStart = null, windowEnd
 
   if (historical && !HISTORICAL_SUPPORT.rss) {
     tasks.push(Promise.resolve({ status: "unsupported", sourceName: "rss", articles: [], error: "RSS feeds do not reliably support 30-day history retrieval." }));
-  }
-
-  if (isSourceEnabled("newsdata") && newsDataStatus.usable) {
-    tasks.push(fetchFromSource("newsdata", () => fetchNewsDataArticles({
-      apiKey: process.env.NEWSDATA_API_KEY?.trim(),
-      queries,
-      pageSize,
-      from: windowStart,
-      to: windowEnd,
-      historical,
-    }), { historical, windowStart, windowEnd }));
-  }
-
-  if (isSourceEnabled("currents") && currentsStatus.usable) {
-    tasks.push(fetchFromSource("currents", () => fetchCurrentsArticles({
-      apiKey: process.env.CURRENTS_API_KEY?.trim(),
-      queries,
-      pageSize,
-      from: windowStart,
-      to: windowEnd,
-      historical,
-    }), { historical, windowStart, windowEnd }));
-  }
-
-  if (isSourceEnabled("newsapi") && newsApiStatus.usable) {
-    tasks.push(fetchFromSource("newsapi", () => fetchNewsApiArticles({
-      apiKey: process.env.NEWS_API_KEY?.trim(),
-      queries,
-      pageSize,
-      from: windowStart,
-      to: windowEnd,
-    }), { historical, windowStart, windowEnd }));
   }
 
   return tasks;
@@ -442,30 +601,50 @@ function finalizeArticles(rawArticles, maxItems, { seedIfEmpty = false } = {}) {
   };
 }
 
+export async function getNewsProviderStatuses() {
+  const config = getConfig();
+  const gnews = await getProviderRuntimeState("gnews");
+  return [
+    {
+      provider: "gnews",
+      enabled: config.enableGnews,
+      status: gnews.status,
+      callsToday: gnews.callsToday ?? 0,
+      dailyLimit: config.gnewsDailyLimit,
+      lastSuccessAt: gnews.lastSuccessAt ?? null,
+      lastRateLimitedAt: gnews.lastRateLimitedAt ?? null,
+      lastCallAt: gnews.lastCallAt ?? null,
+      message: gnews.message ?? null,
+    },
+  ];
+}
+
 export async function ingest({ apiKey, maxPerRun = 40 }) {
+  const config = getConfig();
   const newsKey = typeof apiKey === "string" ? apiKey.trim() : "";
   const newsApiStatus = describeEnvVar("NEWS_API_KEY");
   const newsDataStatus = describeEnvVar("NEWSDATA_API_KEY");
   const currentsStatus = describeEnvVar("CURRENTS_API_KEY");
+  const gnewsStatus = describeEnvVar("GNEWS_API_KEY");
   log.info(`[ingest] Starting multi-source ingestion — priority=${SOURCE_PRIORITY.join(" > ")}`);
 
   const configuredSources = [
+    isSourceEnabled("currents") && currentsStatus.usable,
+    config.enableGnews && gnewsStatus.usable,
+    isSourceEnabled("newsdata") && newsDataStatus.usable,
+    isSourceEnabled("newsapi") && newsKey && newsApiStatus.usable,
     isSourceEnabled("gdelt"),
     isSourceEnabled("rss"),
-    isSourceEnabled("newsdata") && newsDataStatus.usable,
-    isSourceEnabled("currents") && currentsStatus.usable,
-    isSourceEnabled("newsapi") && newsKey && newsApiStatus.usable,
   ].filter(Boolean).length || 1;
 
   const perSource = Math.max(5, Math.ceil(maxPerRun / configuredSources));
-  const results = await Promise.all(
-    collectSourceFetches({
-      queries: LIVE_QUERY_PACKS,
-      pageSize: perSource,
-      historical: false,
-      includeRss: true,
-    })
-  );
+  const tasks = await collectSourceFetches({
+    queries: LIVE_QUERY_PACKS,
+    pageSize: perSource,
+    historical: false,
+    includeRss: true,
+  });
+  const results = await Promise.all(tasks);
 
   const fetchedBySource = results.flatMap((result) => result.articles ?? []);
   const final = finalizeArticles(fetchedBySource, maxPerRun, { seedIfEmpty: true });
@@ -475,6 +654,7 @@ export async function ingest({ apiKey, maxPerRun = 40 }) {
     provider: result.sourceName,
     status: result.status,
     articlesFetched: result.articles?.length ?? 0,
+    callsUsed: result.callsUsed ?? 0,
     error: result.error ?? null,
   }));
   const providersUsed = providerDiagnostics
@@ -508,6 +688,7 @@ export async function ingestHistoricalBackfill({
   batchDays = 3,
   maxArticlesPerBatch = 50,
 } = {}) {
+  const config = getConfig();
   const windows = buildBackfillWindows(days, batchDays);
   const providersUsed = new Set();
   const skippedProviders = new Map();
@@ -521,24 +702,25 @@ export async function ingestHistoricalBackfill({
 
   for (const window of windows) {
     const configuredSources = SOURCE_PRIORITY.filter((sourceName) => {
+      if (!SUPPORTED_SOURCES.has(sourceName)) return false;
       if (sourceName === "rss") return false;
       if (sourceName === "newsapi") return isSourceEnabled("newsapi") && describeEnvVar("NEWS_API_KEY").usable;
       if (sourceName === "newsdata") return isSourceEnabled("newsdata") && describeEnvVar("NEWSDATA_API_KEY").usable;
       if (sourceName === "currents") return isSourceEnabled("currents") && describeEnvVar("CURRENTS_API_KEY").usable;
+      if (sourceName === "gnews") return config.enableGnews && describeEnvVar("GNEWS_API_KEY").usable && config.enableGnewsBackfill;
       return isSourceEnabled(sourceName);
     }).length || 1;
 
     const perSource = Math.max(4, Math.ceil(maxArticlesPerBatch / configuredSources));
-    const results = await Promise.all(
-      collectSourceFetches({
-        queries: BACKFILL_QUERY_PACKS,
-        pageSize: perSource,
-        historical: true,
-        includeRss: false,
-        windowStart: window.from,
-        windowEnd: window.to,
-      })
-    );
+    const tasks = await collectSourceFetches({
+      queries: BACKFILL_QUERY_PACKS,
+      pageSize: perSource,
+      historical: true,
+      includeRss: false,
+      windowStart: window.from,
+      windowEnd: window.to,
+    });
+    const results = await Promise.all(tasks);
 
     const rawWindowArticles = [];
     for (const result of results) {

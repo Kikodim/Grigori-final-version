@@ -97,9 +97,15 @@ ENABLE_GDELT
 ENABLE_RSS
 ENABLE_NEWSDATA
 ENABLE_CURRENTS
+ENABLE_GNEWS
 ENABLE_NEWSAPI
 NEWSDATA_API_KEY
 CURRENTS_API_KEY
+GNEWS_API_KEY
+GNEWS_DAILY_LIMIT
+GNEWS_MAX_CALLS_PER_REFRESH
+GNEWS_REFRESH_EVERY_MINUTES
+ENABLE_GNEWS_BACKFILL
 RSS_FEED_URLS
 ```
 
@@ -126,7 +132,12 @@ ENABLE_GDELT=true
 ENABLE_RSS=true
 ENABLE_NEWSDATA=true
 ENABLE_CURRENTS=true
+ENABLE_GNEWS=true
 ENABLE_NEWSAPI=true
+GNEWS_DAILY_LIMIT=100
+GNEWS_MAX_CALLS_PER_REFRESH=4
+GNEWS_REFRESH_EVERY_MINUTES=60
+ENABLE_GNEWS_BACKFILL=false
 ```
 
 ## 5. Production Test Commands
@@ -181,6 +192,9 @@ git push origin main
 - Do not expose `SUPABASE_SERVICE_ROLE_KEY`, `GEMINI_API_KEY`, or `NEWS_API_KEY` to the frontend.
 - Market data is optional and the app works without `MARKET_DATA_API_KEY`.
 - If enabled, market data is fetched server-side, cached, and rate-limited before the frontend sees it.
+- GNews is optional and the app works without `GNEWS_API_KEY`.
+- Recommended live provider mix: `ENABLE_CURRENTS=true`, `ENABLE_GNEWS=true`, `ENABLE_NEWSDATA=true`, `ENABLE_NEWSAPI=true`, with `ENABLE_GDELT` and `ENABLE_RSS` used more sparingly if you want broader but noisier coverage.
+- GNews is quota-managed at the provider layer. By default it is live-refresh only, capped per refresh, and historical backfill stays off unless `ENABLE_GNEWS_BACKFILL=true`.
 - Historical backfill is manual and admin-only. It is intended as a one-time or occasional maintenance operation, not a scheduled job.
 - Historical backfill uses small date windows and skips providers that do not support historical retrieval on the current plan.
 - Historical backfill does not call Gemini. It stores rule-based historical event memory and preserves it from normal live-event purge logic.

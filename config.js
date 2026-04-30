@@ -38,6 +38,7 @@ export function describeEnvVar(name) {
 
 export function getIntegrationConfigStatus() {
   const newsApi = describeEnvVar("NEWS_API_KEY");
+  const gnews = describeEnvVar("GNEWS_API_KEY");
   const gemini = describeEnvVar("GEMINI_API_KEY");
   const supabaseUrl = describeEnvVar("SUPABASE_URL");
   const supabaseServiceRoleKey = describeEnvVar("SUPABASE_SERVICE_ROLE_KEY");
@@ -49,6 +50,7 @@ export function getIntegrationConfigStatus() {
 
   return {
     newsApi,
+    gnews,
     gemini,
     supabase: {
       present: supabaseUrl.present && supabaseServiceRoleKey.present,
@@ -139,6 +141,12 @@ export function getConfig() {
     backfillMaxDays:        parseInt(process.env.BACKFILL_MAX_DAYS ?? "30", 10),
     backfillBatchDays:      parseInt(process.env.BACKFILL_BATCH_DAYS ?? "3", 10),
     backfillMaxArticlesPerBatch: parseInt(process.env.BACKFILL_MAX_ARTICLES_PER_BATCH ?? "50", 10),
+    enableGnews:            String(process.env.ENABLE_GNEWS ?? "false").toLowerCase() === "true",
+    gnewsApiKey:            process.env.GNEWS_API_KEY ?? "",
+    gnewsDailyLimit:        parseInt(process.env.GNEWS_DAILY_LIMIT ?? "100", 10),
+    gnewsMaxCallsPerRefresh: parseInt(process.env.GNEWS_MAX_CALLS_PER_REFRESH ?? "4", 10),
+    gnewsRefreshEveryMinutes: parseInt(process.env.GNEWS_REFRESH_EVERY_MINUTES ?? "60", 10),
+    enableGnewsBackfill:    String(process.env.ENABLE_GNEWS_BACKFILL ?? "false").toLowerCase() === "true",
     maxConflictZones:       parseInt(process.env.MAX_CONFLICT_ZONES ?? "20", 10),
   };
 }
