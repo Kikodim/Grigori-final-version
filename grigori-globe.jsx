@@ -2724,11 +2724,15 @@ const ACTIVE_SIGNAL_SORT_OPTIONS = [
 
 function getBestEventTimestamp(event, mode = "freshness") {
   const aiUpdatedAt = event.aiUpdatedAt ?? event.ai_updated_at ?? null;
+  const refreshedAt = event.refreshedAt ?? event.refreshed_at ?? null;
+  const lastSeenAt = event.lastSeenAt ?? event.last_seen_at ?? null;
   const updatedAt = event.updated_at ?? event.updatedAt ?? null;
   const createdAt = event.created_at ?? event.createdAt ?? null;
   const publishedAt = event.timestamp ?? null;
 
   if (mode === "ai" && aiUpdatedAt) return { value: aiUpdatedAt, kind: "AI enriched" };
+  if (refreshedAt) return { value: refreshedAt, kind: "Updated" };
+  if (lastSeenAt) return { value: lastSeenAt, kind: "Updated" };
   if (updatedAt) return { value: updatedAt, kind: "Updated" };
   if (createdAt) return { value: createdAt, kind: "Created" };
   if (publishedAt) return { value: publishedAt, kind: "Created" };
@@ -2750,15 +2754,17 @@ function computeActiveSignalPriority(event) {
   const severityScore = Number(event.severityScore ?? 0);
   const importanceScore = Number(event.importanceScore ?? event.priorityScore ?? 0);
   const freshnessScore = getFreshnessScore(event);
+  const aiBonus = event.aiStatus === "enriched" ? 100 : 0;
   const confidenceScore = Number(event.confidenceScore ?? 0);
   const toneBoost = event.tone === "Escalating" ? 4 : event.tone === "Volatile" ? 2 : 0;
 
   return (
-    impactScore * 0.4 +
-    severityScore * 0.3 +
+    impactScore * 0.35 +
+    severityScore * 0.25 +
     importanceScore * 0.2 +
-    freshnessScore * 0.1 +
-    confidenceScore * 0.03 +
+    freshnessScore * 0.15 +
+    aiBonus * 0.05 +
+    confidenceScore * 0.02 +
     toneBoost
   );
 }
@@ -2775,16 +2781,16 @@ function getSignalFreshnessMeta(event) {
     };
   }
 
-  const { value, kind } = getBestEventTimestamp(event, event.aiStatus === "enriched" ? "ai" : "freshness");
+  const { value, kind } = getBestEventTimestamp(event, "freshness");
   const freshness = getDataFreshness(value);
   const age = formatShortAge(value);
-  const detail = kind === "AI enriched" ? `AI enriched ${age}` : `${kind} ${age}`;
+  const detail = `${kind} ${age}`;
   if (freshness.tone === "red" && Number(event.impactScore ?? 0) >= 80) {
     return {
-      label: `Stale but high-impact · ${detail}`,
+      label: `Stale but high-impact · ${age}`,
       tone: "amber",
       state: "Stale",
-      detail,
+      detail: `Source signal stale · ${age}`,
       relative: age,
     };
   }
@@ -2879,7 +2885,7 @@ function formatProviderDiagnostics(result) {
 function getEventStateLabels(event) {
   const labels = [];
   const createdAt = event.created_at ?? event.createdAt ?? event.timestamp;
-  const updatedAt = event.updated_at ?? event.updatedAt ?? createdAt;
+  const updatedAt = (event.refreshedAt ?? event.refreshed_at ?? event.lastSeenAt ?? event.last_seen_at ?? event.updated_at ?? event.updatedAt ?? createdAt);
   const aiUpdatedAt = event.aiUpdatedAt ?? event.ai_updated_at ?? null;
   const createdHours = createdAt ? Math.max(0, (Date.now() - new Date(createdAt).getTime()) / 3600_000) : null;
   const updatedHours = updatedAt ? Math.max(0, (Date.now() - new Date(updatedAt).getTime()) / 3600_000) : null;
@@ -2898,7 +2904,11 @@ function getEventStateLabels(event) {
   else if (event.aiStatus === "provider_error") labels.push({ text: "No material change", level: "neutral" });
 
   if (aiUpdatedAt) {
-    labels.push({ text: `AI ${formatShortAge(aiUpdatedAt)}`, level: "neutral" });
+    if (updatedHours !== null && updatedHours > 24) {
+      labels.push({ text: `AI refreshed · source stale`, level: "neutral" });
+    } else {
+      labels.push({ text: `AI enriched ${formatShortAge(aiUpdatedAt)}`, level: "neutral" });
+    }
   }
 
   return labels.slice(0, 3);

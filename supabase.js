@@ -91,8 +91,6 @@ function getEventActivityTimestamp(event) {
     event.last_seen_at ??
     event.updatedAt ??
     event.updated_at ??
-    event.aiUpdatedAt ??
-    event.ai_updated_at ??
     event.createdAt ??
     event.created_at ??
     event.timestamp ??
@@ -168,13 +166,15 @@ function scoreActivePriority(event) {
   const importanceScore = Number(event.importanceScore ?? event.importance_score ?? 0);
   const confidenceScore = Number(event.confidenceScore ?? event.confidence_score ?? 0);
   const freshnessScore = scoreFreshness(event);
+  const aiBonus = ["enriched", "cached"].includes(event.aiStatus ?? event.ai_status ?? "") ? 100 : 0;
 
   return (
-    impactScore * 0.4 +
-    severityScore * 0.3 +
+    impactScore * 0.35 +
+    severityScore * 0.25 +
     importanceScore * 0.2 +
-    freshnessScore * 0.1 +
-    confidenceScore * 0.03
+    freshnessScore * 0.15 +
+    aiBonus * 0.05 +
+    confidenceScore * 0.02
   );
 }
 
@@ -537,6 +537,9 @@ function getMemoryStatsSnapshot() {
 
 export async function insertEvent(event) {
   const now = new Date().toISOString();
+  const updatedTimestamp = event.updatedAt ?? event.updated_at ?? now;
+  const lastSeenTimestamp = event.lastSeenAt ?? event.last_seen_at ?? updatedTimestamp;
+  const refreshedTimestamp = event.refreshedAt ?? event.refreshed_at ?? updatedTimestamp;
   const equivalentMemoryEvent = findEquivalentMemoryEvent(event);
   const memoryEvent = equivalentMemoryEvent
     ? mergeEvent(equivalentMemoryEvent, event)
@@ -544,15 +547,15 @@ export async function insertEvent(event) {
   const hydratedMemoryEvent = normalizeEvent({
     ...memoryEvent,
     created_at: memoryEvent.createdAt ?? memoryEvent.created_at ?? equivalentMemoryEvent?.createdAt ?? equivalentMemoryEvent?.created_at ?? event.timestamp ?? now,
-    updated_at: now,
-    last_seen_at: event.lastSeenAt ?? event.last_seen_at ?? now,
-    refreshed_at: event.refreshedAt ?? event.refreshed_at ?? now,
+    updated_at: updatedTimestamp,
+    last_seen_at: lastSeenTimestamp,
+    refreshed_at: refreshedTimestamp,
     freshness_status: computeFreshnessStatus({
       ...memoryEvent,
       isHistorical: memoryEvent.isHistorical ?? memoryEvent.is_historical,
-      updatedAt: now,
-      lastSeenAt: event.lastSeenAt ?? event.last_seen_at ?? now,
-      refreshedAt: event.refreshedAt ?? event.refreshed_at ?? now,
+      updatedAt: updatedTimestamp,
+      lastSeenAt: lastSeenTimestamp,
+      refreshedAt: refreshedTimestamp,
     }),
   });
 
@@ -579,9 +582,9 @@ export async function insertEvent(event) {
     const row = buildSupabaseRow(
       {
         ...mergedForDb,
-        updatedAt: now,
-        lastSeenAt: event.lastSeenAt ?? event.last_seen_at ?? now,
-        refreshedAt: event.refreshedAt ?? event.refreshed_at ?? now,
+        updatedAt: updatedTimestamp,
+        lastSeenAt: lastSeenTimestamp,
+        refreshedAt: refreshedTimestamp,
       },
       equivalentSupabaseEvent?.id ?? event.id
     );

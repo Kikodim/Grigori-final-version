@@ -6,7 +6,7 @@ import { describeEnvVar, getConfig } from "./config.js";
 import { inferLocationDetails } from "./event-insights.js";
 import { getAllArticles } from "./store.js";
 import { buildRuleBasedBriefing } from "./rule-based-briefing.js";
-import { deleteOldEvents, getRecentEvents, getStats, insertEvent } from "./supabase.js";
+import { deleteOldEvents, getEvents, getRecentEvents, getRefreshState, getStats, insertEvent } from "./supabase.js";
 import { createLogger } from "./logger.js";
 
 const log = createLogger("pipeline");
@@ -187,6 +187,7 @@ function buildAiRefreshMessage({
   aiCalls = 0,
   changed = false,
   aiSkippedReason = null,
+  fallbackReason = null,
 }) {
   if (changed && aiCalls === 0 && aiSkippedReason === "provider_error") {
     return "AI refresh checked one event; rule-based briefing applied.";
@@ -201,9 +202,68 @@ function buildAiRefreshMessage({
     return "AI reviewed one event; no material change.";
   }
   if (aiCalls > 0 && changed) {
+    if (fallbackReason && fallbackReason !== "fresh_active") {
+      return "AI enriched stored signal while awaiting fresh news.";
+    }
     return "AI refreshed one high-priority event.";
   }
   return "AI refresh checked events, but no eligible stale event needed enrichment.";
+}
+
+function getNewsActivityTime(event) {
+  return (
+    event.refreshedAt ??
+    event.refreshed_at ??
+    event.lastSeenAt ??
+    event.last_seen_at ??
+    event.updatedAt ??
+    event.updated_at ??
+    event.createdAt ??
+    event.created_at ??
+    event.timestamp ??
+    null
+  );
+}
+
+function getFreshnessStatus(event) {
+  if (event.isHistorical ?? event.is_historical) return "Historical";
+  const activity = getNewsActivityTime(event);
+  if (!activity) return "Stale";
+  const hours = Math.max(0, (Date.now() - new Date(activity).getTime()) / 3600_000);
+  if (hours < 2) return "Fresh";
+  if (hours < 6) return "Recent";
+  if (hours <= 24) return "Aging";
+  return "Stale";
+}
+
+function getAiAgeHours(event) {
+  const aiUpdatedAt = event.aiUpdatedAt ?? event.ai_updated_at ?? null;
+  if (!aiUpdatedAt) return Number.POSITIVE_INFINITY;
+  return Math.max(0, (Date.now() - new Date(aiUpdatedAt).getTime()) / 3600_000);
+}
+
+function scoreAiTarget(event, importanceScore, lastNewsRefreshAt = null) {
+  const impactScore = Number(event.impactScore ?? event.impact_score ?? importanceScore ?? 0);
+  const severityScore = Number(event.severityScore ?? event.severity_score ?? 0);
+  const confidenceScore = Number(event.confidenceScore ?? event.confidence_score ?? 0);
+  const freshness = getFreshnessStatus(event);
+  const newsFreshnessScore = freshness === "Fresh" ? 100 : freshness === "Recent" ? 78 : freshness === "Aging" ? 52 : 20;
+  const aiAgeHours = getAiAgeHours(event);
+  const aiNeedsRefreshBonus = !Number.isFinite(aiAgeHours) || aiAgeHours > 24 ? 100 : aiAgeHours > 6 ? 55 : 10;
+  const activity = getNewsActivityTime(event);
+  const newsRefreshBoost = lastNewsRefreshAt && activity && new Date(activity).getTime() >= new Date(lastNewsRefreshAt).getTime()
+    ? 16
+    : 0;
+
+  return (
+    impactScore * 0.35 +
+    severityScore * 0.25 +
+    Number(importanceScore ?? 0) * 0.2 +
+    newsFreshnessScore * 0.15 +
+    aiNeedsRefreshBonus * 0.05 +
+    confidenceScore * 0.03 +
+    newsRefreshBoost
+  );
 }
 
 function shouldPublishPreEvent(preEvent, articles = []) {
@@ -245,6 +305,13 @@ function buildAiDiagnostics(aiStatus, overrides = {}) {
     targetAiStatusBefore: null,
     targetHadScenariosBefore: false,
     targetUpdatedAt: null,
+    targetFreshnessStatus: null,
+    targetNewsActivityAt: null,
+    targetAiUpdatedAtBefore: null,
+    activeEventsConsidered: 0,
+    staleEventsSkipped: 0,
+    historicalEventsSkipped: 0,
+    reasonSelected: null,
     aiAttempted: false,
     aiCallsUsed: 0,
     aiSkippedReason: "unknown",
@@ -258,8 +325,12 @@ async function runAiOnlyRefresh({ source, noAi, startedAt }) {
   const geminiConfigured = describeEnvVar("GEMINI_API_KEY").usable;
   const automatedAiEnabled = !noAi && config.enableAutomatedAi;
   const articleStore = new Map(getAllArticles().map((article) => [article.id, article]));
-  const previousEvents = await getRecentEvents(72);
+  const activeResult = await getEvents({ limit: 100, offset: 0, scope: "active" });
+  const previousEvents = activeResult.events ?? [];
+  const fallbackReason = activeResult.fallbackReason ?? "fresh_active";
   const aiStatus = await getAIStatus();
+  const newsRefreshState = await getRefreshState("news");
+  const lastNewsRefreshAt = newsRefreshState.record?.lastRefresh ?? null;
   const maxAiCallsPerRun = config.maxAiCallsPerRun;
   const automationRemaining = Math.max(0, aiStatus.automationBudget - aiStatus.aiCallsToday);
   const isAutomatedRun = source !== "manual";
@@ -271,8 +342,19 @@ async function runAiOnlyRefresh({ source, noAi, startedAt }) {
   log.info(`Gemini configured? ${geminiConfigured}`);
   log.info(`AI budget check result source=${source} automatedAiEnabled=${automatedAiEnabled} maxAiCallsPerRun=${maxAiCallsPerRun} aiCallsToday=${aiStatus.aiCallsToday} aiRemainingToday=${baseDiagnostics.aiRemainingToday} automationRemainingToday=${automationRemaining}`);
 
+  const staleEventsSkipped = previousEvents.filter((event) => getFreshnessStatus(event) === "Stale").length;
+  const historicalEventsSkipped = previousEvents.filter((event) => Boolean(event.isHistorical ?? event.is_historical)).length;
+  const hasFreshActiveEvents = previousEvents.some((event) => {
+    const freshness = getFreshnessStatus(event);
+    return freshness === "Fresh" || freshness === "Recent" || freshness === "Aging";
+  });
+
   const candidates = previousEvents
-    .filter((event) => !["enriched", "cached"].includes(event.aiStatus))
+    .filter((event) => {
+      if (Boolean(event.isHistorical ?? event.is_historical) && hasFreshActiveEvents) return false;
+      if (hasFreshActiveEvents && getFreshnessStatus(event) === "Stale") return false;
+      return true;
+    })
     .map((event) => {
       const preEvent = {
         _clusterId: `stored-${event.id}`,
@@ -294,13 +376,21 @@ async function runAiOnlyRefresh({ source, noAi, startedAt }) {
         keywords: event.keywords ?? [],
         region: event.location,
       }, articles));
-      return { event, preEvent, articles, importanceScore };
+      return {
+        event,
+        preEvent,
+        articles,
+        importanceScore,
+        freshnessStatus: getFreshnessStatus(event),
+        newsActivityAt: getNewsActivityTime(event),
+        aiUpdatedAtBefore: event.aiUpdatedAt ?? event.ai_updated_at ?? null,
+      };
     })
     .filter((candidate) => !isAutomatedRun || candidate.importanceScore >= HIGH_IMPORTANCE_THRESHOLD)
     .sort((a, b) => {
-      const scoreDelta = b.importanceScore - a.importanceScore;
+      const scoreDelta = scoreAiTarget(b.event, b.importanceScore, lastNewsRefreshAt) - scoreAiTarget(a.event, a.importanceScore, lastNewsRefreshAt);
       if (scoreDelta !== 0) return scoreDelta;
-      return new Date(b.event.timestamp).getTime() - new Date(a.event.timestamp).getTime();
+      return new Date(b.newsActivityAt ?? b.event.timestamp ?? 0).getTime() - new Date(a.newsActivityAt ?? a.event.timestamp ?? 0).getTime();
     });
 
   if (!automatedAiEnabled) {
@@ -418,10 +508,17 @@ async function runAiOnlyRefresh({ source, noAi, startedAt }) {
       targetTitle: previousTarget?.title ?? null,
       targetAiStatusBefore: previousTarget?.aiStatus ?? null,
       targetHadScenariosBefore: Array.isArray(previousTarget?.scenarios) && previousTarget.scenarios.length > 0,
-      targetUpdatedAt: previousTarget?.aiUpdatedAt ?? previousTarget?.updated_at ?? previousTarget?.timestamp ?? null,
+      targetUpdatedAt: previousTarget?.updated_at ?? previousTarget?.timestamp ?? null,
+      targetFreshnessStatus: previousTarget ? getFreshnessStatus(previousTarget) : null,
+      targetNewsActivityAt: previousTarget ? getNewsActivityTime(previousTarget) : null,
+      targetAiUpdatedAtBefore: previousTarget?.aiUpdatedAt ?? previousTarget?.ai_updated_at ?? null,
+      activeEventsConsidered: previousEvents.length,
+      staleEventsSkipped,
+      historicalEventsSkipped,
+      reasonSelected: fallbackReason,
       aiSkippedReason: skipReason,
       lastAiRefreshAt: null,
-      message: buildAiRefreshMessage({ aiCalls: 0, changed: false, aiSkippedReason: skipReason }),
+      message: buildAiRefreshMessage({ aiCalls: 0, changed: false, aiSkippedReason: skipReason, fallbackReason }),
     };
   }
 
@@ -452,11 +549,18 @@ async function runAiOnlyRefresh({ source, noAi, startedAt }) {
       targetTitle: target.event.title,
       targetAiStatusBefore: target.event.aiStatus ?? null,
       targetHadScenariosBefore: Array.isArray(target.event.scenarios) && target.event.scenarios.length > 0,
-      targetUpdatedAt: target.event.aiUpdatedAt ?? target.event.updated_at ?? target.event.timestamp ?? null,
+      targetUpdatedAt: target.event.updated_at ?? target.event.timestamp ?? null,
+      targetFreshnessStatus: target.freshnessStatus,
+      targetNewsActivityAt: target.newsActivityAt,
+      targetAiUpdatedAtBefore: target.aiUpdatedAtBefore,
+      activeEventsConsidered: previousEvents.length,
+      staleEventsSkipped,
+      historicalEventsSkipped,
+      reasonSelected: fallbackReason,
       aiSkippedReason: "automation_budget_exhausted",
       targetAiStatusAfter: "budget_exhausted",
       lastAiRefreshAt: null,
-      message: buildAiRefreshMessage({ aiCalls: 0, changed: false, aiSkippedReason: "automation_budget_exhausted" }),
+      message: buildAiRefreshMessage({ aiCalls: 0, changed: false, aiSkippedReason: "automation_budget_exhausted", fallbackReason }),
     };
   }
 
@@ -504,6 +608,9 @@ async function runAiOnlyRefresh({ source, noAi, startedAt }) {
       ? (result.aiSkippedReason === "provider_error" ? "provider_error" : "rule_based")
       : "enriched",
     aiUpdatedAt: lastAiRefreshAt,
+    updatedAt: target.event.updatedAt ?? target.event.updated_at ?? target.event.createdAt ?? target.event.created_at ?? target.event.timestamp,
+    lastSeenAt: target.event.lastSeenAt ?? target.event.last_seen_at ?? null,
+    refreshedAt: target.event.refreshedAt ?? target.event.refreshed_at ?? null,
     clusterSignature: target.preEvent._clusterSignature,
     importanceScore: target.importanceScore,
   });
@@ -527,14 +634,21 @@ async function runAiOnlyRefresh({ source, noAi, startedAt }) {
     targetTitle: target.event.title,
     targetAiStatusBefore: target.event.aiStatus ?? null,
     targetHadScenariosBefore: Array.isArray(target.event.scenarios) && target.event.scenarios.length > 0,
-    targetUpdatedAt: target.event.aiUpdatedAt ?? target.event.updated_at ?? target.event.timestamp ?? null,
+    targetUpdatedAt: target.event.updated_at ?? target.event.timestamp ?? null,
+    targetFreshnessStatus: target.freshnessStatus,
+    targetNewsActivityAt: target.newsActivityAt,
+    targetAiUpdatedAtBefore: target.aiUpdatedAtBefore,
+    activeEventsConsidered: previousEvents.length,
+    staleEventsSkipped,
+    historicalEventsSkipped,
+    reasonSelected: fallbackReason,
     targetAiStatusAfter,
     aiAttempted: true,
     aiCallsUsed,
     aiSkippedReason,
     aiProviderError,
     lastAiRefreshAt,
-    message: buildAiRefreshMessage({ aiCalls: result.generationMethod === "rule-based" ? 0 : 1, changed, aiSkippedReason }),
+    message: buildAiRefreshMessage({ aiCalls: result.generationMethod === "rule-based" ? 0 : 1, changed, aiSkippedReason, fallbackReason }),
   };
 }
 
