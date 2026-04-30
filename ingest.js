@@ -261,7 +261,7 @@ function normalise(raw) {
     id: raw.url,
     title,
     source: typeof raw.source === "string" ? raw.source : (raw.source?.name ?? "Unknown"),
-    publishedAt: raw.publishedAt ?? new Date().toISOString(),
+    publishedAt: raw.publishedAt ?? null,
     summary,
     content,
     url: raw.url,
@@ -271,6 +271,9 @@ function normalise(raw) {
     sourceQuality: raw.sourceQuality ?? 0.5,
     relevanceScore: raw.relevanceScore ?? 0,
     sourceDomains: buildSourceDomains(raw),
+    provider: raw.provider ?? null,
+    fetchedAt: raw.fetchedAt ?? new Date().toISOString(),
+    rawPublishedAt: raw.rawPublishedAt ?? raw.publishedAt ?? null,
   };
 }
 
@@ -342,6 +345,33 @@ function dedupeArticles(rawArticles) {
   return unique;
 }
 
+function createProviderDiagnosticsBucket(provider) {
+  return {
+    provider,
+    fetched: 0,
+    afterDateFilter: 0,
+    articlesRejectedAsOld: 0,
+    articlesRejectedAsDuplicate: 0,
+    duplicateReconfirmed: 0,
+    articlesRejectedAsLowRelevance: 0,
+    articlesRejectedMissingUrl: 0,
+    articlesRejectedMissingDate: 0,
+    clusteredIntoExistingEvents: 0,
+    eventsCreated: 0,
+    eventsUpdated: 0,
+    existingEventsRefreshed: 0,
+    newestArticlePublishedAt: null,
+    oldestArticlePublishedAt: null,
+    articlesClusteredIntoExistingEvents: 0,
+  };
+}
+
+function updateProviderDateWindow(bucket, value) {
+  if (!value) return;
+  bucket.newestArticlePublishedAt = [bucket.newestArticlePublishedAt, value].filter(Boolean).sort().at(-1) ?? bucket.newestArticlePublishedAt;
+  bucket.oldestArticlePublishedAt = [bucket.oldestArticlePublishedAt, value].filter(Boolean).sort().at(0) ?? bucket.oldestArticlePublishedAt;
+}
+
 function toIsoDay(value) {
   return new Date(value).toISOString().slice(0, 10);
 }
@@ -385,6 +415,7 @@ function detectProviderFailure(err) {
 
 async function fetchFromSource(sourceName, fetcher, { historical = false, windowStart = null, windowEnd = null } = {}) {
   try {
+    const fetchedAt = new Date().toISOString();
     const fetched = await fetcher();
     const payload = Array.isArray(fetched) ? { articles: fetched } : (fetched ?? { articles: [] });
     const articles = payload.articles ?? [];
@@ -412,6 +443,8 @@ async function fetchFromSource(sourceName, fetcher, { historical = false, window
         ...article,
         sourceQuality: article.sourceQuality ?? SOURCE_QUALITY[sourceName] ?? 0.5,
         sourceDomains: buildSourceDomains(article),
+        provider: article.provider ?? sourceName,
+        fetchedAt: article.fetchedAt ?? fetchedAt,
       })),
     };
   } catch (err) {
@@ -545,28 +578,121 @@ async function collectSourceFetches({ queries, pageSize, windowStart = null, win
   return tasks;
 }
 
-function finalizeArticles(rawArticles, maxItems, { seedIfEmpty = false } = {}) {
+function finalizeArticles(rawArticles, maxItems, { seedIfEmpty = false, historical = false } = {}) {
   const beforeCount = getAllArticles().length;
-  const deduped = dedupeArticles(rawArticles);
-  const scored = deduped.map((article) => {
-    const { score, categories } = computeRelevanceScore(article);
-    return { ...article, relevanceScore: score, categories };
-  });
-  const relevant = scored.filter((article) => isRelevantArticle(article));
-  const normalised = relevant
+  const now = Date.now();
+  const providerBuckets = new Map();
+  const getBucket = (provider) => {
+    const key = provider || "unknown";
+    if (!providerBuckets.has(key)) providerBuckets.set(key, createProviderDiagnosticsBucket(key));
+    return providerBuckets.get(key);
+  };
+  const candidates = [];
+
+  for (const raw of rawArticles) {
+    const provider = raw.provider ?? "unknown";
+    const bucket = getBucket(provider);
+    bucket.fetched += 1;
+
+    if (!raw.url) {
+      bucket.articlesRejectedMissingUrl += 1;
+      continue;
+    }
+
+    let publishedAt = raw.publishedAt ? new Date(raw.publishedAt).toISOString() : null;
+    const invalidDate = !publishedAt || Number.isNaN(new Date(publishedAt).getTime());
+    if (invalidDate) {
+      bucket.articlesRejectedMissingDate += 1;
+      publishedAt = raw.fetchedAt ?? new Date().toISOString();
+    }
+
+    updateProviderDateWindow(bucket, publishedAt);
+
+    const ageHours = Math.max(0, (now - new Date(publishedAt).getTime()) / 3600_000);
+    if (!historical && ageHours > 72) {
+      bucket.articlesRejectedAsOld += 1;
+      continue;
+    }
+
+    bucket.afterDateFilter += 1;
+    const normalized = normalise({ ...raw, publishedAt, provider });
+    if (!normalized) {
+      bucket.articlesRejectedMissingUrl += 1;
+      continue;
+    }
+
+    const { score, categories } = computeRelevanceScore(normalized);
+    if (score < MIN_RELEVANCE_SCORE) {
+      bucket.articlesRejectedAsLowRelevance += 1;
+      continue;
+    }
+
+    candidates.push({
+      ...normalized,
+      relevanceScore: score,
+      categories,
+      _provider: provider,
+      _ageHours: ageHours,
+    });
+  }
+
+  const deduped = [];
+  for (const article of candidates) {
+    const bucket = getBucket(article._provider);
+    const existing = deduped.find((candidate) =>
+      (article.url && candidate.url && article.url === candidate.url) ||
+      titleSimilarity(article.title, candidate.title) >= 0.9
+    );
+
+    if (!existing) {
+      deduped.push(article);
+      continue;
+    }
+
+    bucket.articlesRejectedAsDuplicate += 1;
+    if ((article.sourceQuality ?? 0) > (existing.sourceQuality ?? 0)) {
+      Object.assign(existing, article);
+    }
+  }
+
+  const storedById = new Map(getAllArticles().map((article) => [article.id, article]));
+  const reconfirmedArticles = [];
+  const toPersist = [];
+
+  for (const article of deduped) {
+    const bucket = getBucket(article._provider);
+    const existing = storedById.get(article.id);
+    if (existing) {
+      bucket.articlesRejectedAsDuplicate += 1;
+      if (article._ageHours <= 72) {
+        bucket.duplicateReconfirmed += 1;
+        reconfirmedArticles.push(article);
+      }
+      toPersist.push({
+        ...existing,
+        ...article,
+        lastSeenAt: new Date().toISOString(),
+        newestSourceAt: [existing.newestSourceAt, existing.publishedAt, article.publishedAt].filter(Boolean).sort().at(-1) ?? article.publishedAt,
+      });
+      continue;
+    }
+    toPersist.push(article);
+  }
+
+  const relevant = deduped;
+  const normalised = toPersist
     .sort((a, b) => {
       const scoreDelta = (b.relevanceScore ?? 0) - (a.relevanceScore ?? 0);
       if (scoreDelta !== 0) return scoreDelta;
       return (b.sourceQuality ?? 0) - (a.sourceQuality ?? 0);
     })
     .slice(0, maxItems)
-    .map(normalise)
     .filter(Boolean);
 
   if (normalised.length === 0 && seedIfEmpty) {
     const seeded = seedArticles(maxItems);
-    saveArticles(seeded);
-    const added = Math.max(0, getAllArticles().length - beforeCount);
+    const persisted = saveArticles(seeded);
+    const added = persisted.saved;
     const seededNewest = seeded.reduce((latest, article) => {
       const publishedAt = article?.publishedAt ? new Date(article.publishedAt).getTime() : 0;
       return publishedAt > latest ? publishedAt : latest;
@@ -580,24 +706,39 @@ function finalizeArticles(rawArticles, maxItems, { seedIfEmpty = false } = {}) {
       lowRelevanceCount: 0,
       duplicatesSkipped: 0,
       newestArticleAt: seededNewest ? new Date(seededNewest).toISOString() : null,
+      providerDiagnostics: [],
+      reconfirmedArticles: [],
     };
   }
 
-  saveArticles(normalised);
-  const afterCount = getAllArticles().length;
-  const newestArticleAt = scored.reduce((latest, article) => {
+  const persisted = saveArticles(normalised);
+  const newestArticleAt = candidates.reduce((latest, article) => {
     const publishedAt = article?.publishedAt ? new Date(article.publishedAt).getTime() : 0;
     return publishedAt > latest ? publishedAt : latest;
   }, 0);
+  const providerDiagnostics = [...providerBuckets.values()];
+  const duplicatesSkipped = providerDiagnostics.reduce((sum, bucket) => sum + bucket.articlesRejectedAsDuplicate, 0);
+  const filteredOutCount = providerDiagnostics.reduce((sum, bucket) =>
+    sum +
+    bucket.articlesRejectedAsOld +
+    bucket.articlesRejectedAsLowRelevance +
+    bucket.articlesRejectedMissingUrl +
+    bucket.articlesRejectedMissingDate,
+  0);
+  const lowRelevanceCount = providerDiagnostics.reduce((sum, bucket) => sum + bucket.articlesRejectedAsLowRelevance, 0);
+
   return {
     mode: "external",
     fetched: rawArticles.length,
-    saved: Math.max(0, afterCount - beforeCount),
+    saved: persisted.saved,
     keptCount: normalised.length,
-    filteredOutCount: Math.max(0, deduped.length - normalised.length),
-    lowRelevanceCount: Math.max(0, deduped.length - relevant.length),
-    duplicatesSkipped: Math.max(0, rawArticles.length - Math.max(0, afterCount - beforeCount)),
+    filteredOutCount,
+    lowRelevanceCount,
+    duplicatesSkipped,
+    duplicateReconfirmed: providerDiagnostics.reduce((sum, bucket) => sum + bucket.duplicateReconfirmed, 0),
     newestArticleAt: newestArticleAt ? new Date(newestArticleAt).toISOString() : null,
+    providerDiagnostics,
+    reconfirmedArticles,
   };
 }
 
@@ -628,6 +769,8 @@ export async function ingest({ apiKey, maxPerRun = 40 }) {
   const gnewsStatus = describeEnvVar("GNEWS_API_KEY");
   log.info(`[ingest] Starting multi-source ingestion — priority=${SOURCE_PRIORITY.join(" > ")}`);
 
+  const liveWindowEnd = new Date().toISOString();
+  const liveWindowStart = new Date(Date.now() - 24 * 3600_000).toISOString();
   const configuredSources = [
     isSourceEnabled("currents") && currentsStatus.usable,
     config.enableGnews && gnewsStatus.usable,
@@ -643,19 +786,23 @@ export async function ingest({ apiKey, maxPerRun = 40 }) {
     pageSize: perSource,
     historical: false,
     includeRss: true,
+    windowStart: liveWindowStart,
+    windowEnd: liveWindowEnd,
   });
   const results = await Promise.all(tasks);
 
   const fetchedBySource = results.flatMap((result) => result.articles ?? []);
-  const final = finalizeArticles(fetchedBySource, maxPerRun, { seedIfEmpty: true });
+  const final = finalizeArticles(fetchedBySource, maxPerRun, { seedIfEmpty: true, historical: false });
   log.info(`[ingest] Filtered ${final.lowRelevanceCount} low-relevance articles; kept ${Math.max(0, final.fetched - final.filteredOutCount)}`);
 
+  const finalizedDiagnostics = new Map((final.providerDiagnostics ?? []).map((item) => [item.provider, item]));
   const providerDiagnostics = results.map((result) => ({
     provider: result.sourceName,
     status: result.status,
     articlesFetched: result.articles?.length ?? 0,
     callsUsed: result.callsUsed ?? 0,
     error: result.error ?? null,
+    ...(finalizedDiagnostics.get(result.sourceName) ?? createProviderDiagnosticsBucket(result.sourceName)),
   }));
   const providersUsed = providerDiagnostics
     .filter((item) => item.status === "ok" && item.articlesFetched > 0)
@@ -675,8 +822,10 @@ export async function ingest({ apiKey, maxPerRun = 40 }) {
     filteredOutCount: final.filteredOutCount,
     lowRelevanceCount: final.lowRelevanceCount,
     duplicatesSkipped: final.duplicatesSkipped,
+    duplicateReconfirmed: final.duplicateReconfirmed ?? 0,
     newestArticleAt: final.newestArticleAt ?? null,
     providerDiagnostics,
+    reconfirmedArticles: final.reconfirmedArticles ?? [],
     providersUsed,
     rateLimitedProviders,
     skippedProviders,
@@ -737,7 +886,7 @@ export async function ingestHistoricalBackfill({
       }
     }
 
-    const finalized = finalizeArticles(rawWindowArticles, maxArticlesPerBatch, { seedIfEmpty: false });
+    const finalized = finalizeArticles(rawWindowArticles, maxArticlesPerBatch, { seedIfEmpty: false, historical: true });
     articlesFetched += finalized.fetched;
     articlesSaved += finalized.saved;
     filteredOutCount += finalized.filteredOutCount;

@@ -58,11 +58,38 @@ const eventMap = new Map();
 
 /** Upsert-safe: silently skips articles already in the store */
 export function saveArticles(articles) {
+  const now = new Date().toISOString();
+  let saved = 0;
+  let updated = 0;
   for (const a of articles) {
-    if (!articleMap.has(a.id)) {
-      articleMap.set(a.id, { ...a, clustered: false });
+    const existing = articleMap.get(a.id);
+    if (!existing) {
+      articleMap.set(a.id, {
+        ...a,
+        clustered: false,
+        firstSeenAt: a.firstSeenAt ?? now,
+        lastSeenAt: a.lastSeenAt ?? now,
+        newestSourceAt: a.newestSourceAt ?? a.publishedAt ?? null,
+      });
+      saved++;
+      continue;
     }
+
+    articleMap.set(a.id, {
+      ...existing,
+      ...a,
+      clustered: existing.clustered,
+      firstSeenAt: existing.firstSeenAt ?? now,
+      lastSeenAt: a.lastSeenAt ?? now,
+      newestSourceAt: [existing.newestSourceAt, existing.publishedAt, a.newestSourceAt, a.publishedAt]
+        .filter(Boolean)
+        .sort()
+        .at(-1) ?? existing.newestSourceAt ?? a.publishedAt ?? null,
+      sourceQuality: Math.max(existing.sourceQuality ?? 0, a.sourceQuality ?? 0),
+    });
+    updated++;
   }
+  return { saved, updated };
 }
 
 export function getUnclustered() {

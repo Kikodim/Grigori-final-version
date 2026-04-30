@@ -78,7 +78,7 @@ function findExistingEvent(preEvent, previousEvents) {
     const sameTitle = normalizeText(event.title) === normalizeText(preEvent.title);
     const sameLocation = normalizeText(event.location?.label) === normalizeText(preEvent.region?.label ?? "Region under review");
     const delta = Math.abs(new Date(event.timestamp).getTime() - new Date(preEvent.timestamp).getTime());
-    return sameTitle && sameLocation && delta <= 24 * 60 * 60 * 1000;
+    return sameTitle && sameLocation && delta <= 7 * 24 * 60 * 60 * 1000;
   }) ?? null;
 }
 
@@ -150,9 +150,15 @@ function newestIso(values = []) {
   return latest ? new Date(latest).toISOString() : null;
 }
 
+function uniqueStrings(values = []) {
+  return [...new Set(values.filter(Boolean))];
+}
+
 function buildNewsRefreshMessage({
   eventsCreated = 0,
   eventsUpdated = 0,
+  eventsRefreshed = 0,
+  duplicateReconfirmed = 0,
   eventsUnchanged = 0,
   articlesFetched = 0,
   filteredOutCount = 0,
@@ -164,6 +170,9 @@ function buildNewsRefreshMessage({
   }
   if (eventsUpdated > 0) {
     return "Feeds checked. Live signals updated from available providers.";
+  }
+  if (eventsRefreshed > 0 || duplicateReconfirmed > 0) {
+    return "Feeds checked using available providers.";
   }
   if (rateLimitedProviders > 0) {
     return "Feeds checked. Some providers are temporarily limited.";
@@ -208,6 +217,23 @@ function buildAiRefreshMessage({
     return "AI refreshed one high-priority event.";
   }
   return "AI refresh checked events, but no eligible stale event needed enrichment.";
+}
+
+function deriveFreshnessOutcome({
+  eventsCreated = 0,
+  eventsUpdated = 0,
+  eventsRefreshed = 0,
+  duplicateReconfirmed = 0,
+  newestArticleAt = null,
+  rateLimitedProviders = [],
+  providersUsed = [],
+}) {
+  if (eventsCreated > 0) return "events_created";
+  if (eventsUpdated > 0) return "events_updated";
+  if (eventsRefreshed > 0 || duplicateReconfirmed > 0) return "signals_reconfirmed";
+  if ((providersUsed?.length ?? 0) === 0 && (rateLimitedProviders?.length ?? 0) > 0) return "all_providers_limited";
+  if (newestArticleAt && Date.now() - new Date(newestArticleAt).getTime() > 72 * 3600_000) return "provider_returned_old_articles";
+  return "no_relevant_recent_articles";
 }
 
 function getNewsActivityTime(event) {
@@ -945,7 +971,9 @@ export async function runPipeline({ source = "manual", noAi = false, mode = "ful
   let created = 0;
   let eventsUpdated = 0;
   let eventsUnchanged = 0;
+  let eventsRefreshed = 0;
   const eventTimestamps = [];
+  const providerDiagnostics = new Map((ingestResult.providerDiagnostics ?? []).map((item) => [item.provider, { ...item }]));
   for (const preEvent of publishablePreEvents) {
     const result = results.get(preEvent._clusterId);
     if (!result) continue;
@@ -985,16 +1013,66 @@ export async function runPipeline({ source = "manual", noAi = false, mode = "ful
       clusterSignature: preEvent._clusterSignature,
       importanceScore: result.importanceScore ?? scoreImportance(preEvent, []),
       isHistorical: false,
+      updatedAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+      refreshedAt: new Date().toISOString(),
     });
     created++;
     eventTimestamps.push(preEvent.timestamp);
     const matchedCandidate = enrichedCandidates.find((candidate) => candidate.preEvent._clusterId === preEvent._clusterId);
+    const clusterProviders = matchedCandidate?.articles?.map((article) => article.provider).filter(Boolean) ?? [];
     if (matchedCandidate?.existingEvent) {
+      eventsRefreshed++;
+      for (const provider of clusterProviders) {
+        const bucket = providerDiagnostics.get(provider);
+        if (!bucket) continue;
+        bucket.clusteredIntoExistingEvents += 1;
+        bucket.existingEventsRefreshed += 1;
+      }
       if (matchedCandidate.canReuse || !matchedCandidate.needsMeaningfulRefresh) {
         eventsUnchanged++;
       } else {
         eventsUpdated++;
+        for (const provider of clusterProviders) {
+          const bucket = providerDiagnostics.get(provider);
+          if (!bucket) continue;
+          bucket.eventsUpdated += 1;
+        }
       }
+    } else {
+      for (const provider of clusterProviders) {
+        const bucket = providerDiagnostics.get(provider);
+        if (!bucket) continue;
+        bucket.eventsCreated += 1;
+      }
+    }
+  }
+
+  const allExistingEvents = (await getEvents({ limit: 250, offset: 0, scope: "all" })).events ?? [];
+  const refreshedEventIds = new Set();
+  for (const article of ingestResult.reconfirmedArticles ?? []) {
+    const matchedEvent = allExistingEvents.find((event) =>
+      (event.articleIds ?? []).includes(article.id) ||
+      (normalizeText(event.title) === normalizeText(article.title) && normalizeText(event.location?.label) === normalizeText(article.region?.label ?? "Region under review"))
+    );
+
+    if (!matchedEvent || refreshedEventIds.has(matchedEvent.id)) continue;
+    refreshedEventIds.add(matchedEvent.id);
+
+    await insertEvent({
+      ...matchedEvent,
+      timestamp: newestIso([matchedEvent.timestamp, article.publishedAt]) ?? matchedEvent.timestamp,
+      sources: uniqueStrings([...(matchedEvent.sources ?? []), article.source]),
+      articleIds: uniqueStrings([...(matchedEvent.articleIds ?? []), article.id]),
+      updatedAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+      refreshedAt: new Date().toISOString(),
+    });
+    eventsRefreshed++;
+    const provider = article.provider ?? "unknown";
+    const bucket = providerDiagnostics.get(provider);
+    if (bucket) {
+      bucket.existingEventsRefreshed += 1;
     }
   }
 
@@ -1025,8 +1103,10 @@ export async function runPipeline({ source = "manual", noAi = false, mode = "ful
     automatedAiEnabled,
     noAi,
     duplicatesSkipped: ingestResult.duplicatesSkipped ?? 0,
+    duplicateReconfirmed: ingestResult.duplicateReconfirmed ?? 0,
     eventsCreated,
     eventsUpdated,
+    eventsRefreshed,
     eventsUnchanged,
     filteredOutCount: ingestResult.filteredOutCount ?? 0,
     lowRelevanceCount: ingestResult.lowRelevanceCount ?? 0,
@@ -1034,15 +1114,26 @@ export async function runPipeline({ source = "manual", noAi = false, mode = "ful
     suppressedClusterCount: Math.max(0, preEvents.length - publishablePreEvents.length),
     newestArticleAt: ingestResult.newestArticleAt ?? null,
     newestEventAt,
-    providerDiagnostics: ingestResult.providerDiagnostics ?? [],
+    providerDiagnostics: [...providerDiagnostics.values()],
     providersUsed: ingestResult.providersUsed ?? [],
     skippedProviders: ingestResult.skippedProviders ?? [],
     rateLimitedProviders: ingestResult.rateLimitedProviders ?? [],
+    freshnessOutcome: deriveFreshnessOutcome({
+      eventsCreated,
+      eventsUpdated,
+      eventsRefreshed,
+      duplicateReconfirmed: ingestResult.duplicateReconfirmed ?? 0,
+      newestArticleAt: ingestResult.newestArticleAt ?? null,
+      rateLimitedProviders: ingestResult.rateLimitedProviders ?? [],
+      providersUsed: ingestResult.providersUsed ?? [],
+    }),
     lastNewsRefreshAt,
     activeEventCount: stats.activeEventCount ?? 0,
     message: buildNewsRefreshMessage({
       eventsCreated,
       eventsUpdated,
+      eventsRefreshed,
+      duplicateReconfirmed: ingestResult.duplicateReconfirmed ?? 0,
       eventsUnchanged,
       articlesFetched: ingestResult.fetched ?? 0,
       filteredOutCount: ingestResult.filteredOutCount ?? 0,
