@@ -45,18 +45,22 @@ jobs:
               break
             fi
 
-            if node - "$HTTP_BODY" <<'NODE'
-            const fs = require("fs");
-            try {
-              const parsed = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
-              const result = parsed.result ?? {};
-              const used = Number(result.aiCallsUsed ?? result.aiCalls ?? 0) > 0 || result.aiAttempted === true;
-              process.exit(used ? 0 : 1);
-            } catch {
-              process.exit(1);
-            }
-            NODE
-            then
+            AI_USED="false"
+            if node -e '
+              const fs = require("fs");
+              try {
+                const parsed = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+                const result = parsed.result || {};
+                const used = Number(result.aiCallsUsed || result.aiCalls || 0) > 0 || result.aiAttempted === true;
+                process.exit(used ? 0 : 1);
+              } catch {
+                process.exit(1);
+              }
+            ' "$HTTP_BODY"; then
+              AI_USED="true"
+            fi
+
+            if [ "$AI_USED" = "true" ]; then
               echo "AI call was attempted/used but persistence failed. Not retrying to avoid burning quota." >&2
               break
             fi
