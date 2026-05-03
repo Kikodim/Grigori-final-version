@@ -2077,7 +2077,7 @@ function BriefingPanel({ briefing, strategicBrief, selectedLens, onLensChange, o
   const newsFreshness = getDataFreshness(systemStatus?.automation?.lastNewsRefreshAt);
   const aiFreshness = getDataFreshness(systemStatus?.automation?.lastAiRefreshAt);
   return (
-    <FloatingPanel title="Today's Strategic Brief" subtitle={lens.description} top={FLOATING_TOP} left={588} width={344} onClose={onClose}>
+    <FloatingPanel title="Today's Strategic Brief" subtitle={lens.description} top={FLOATING_TOP + 8} right={16} width={344} onClose={onClose}>
       <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 12 }}>
         {DECISION_LENSES.map((item) => (
           <button
@@ -2189,6 +2189,59 @@ function BriefingPanel({ briefing, strategicBrief, selectedLens, onLensChange, o
         </div>
       )}
     </FloatingPanel>
+  );
+}
+
+function BriefingCompactCard({ briefing, strategicBrief, systemStatus, feedState, onOpen }) {
+  const firstItem = briefing?.items?.[0] ?? null;
+  const newsFreshness = getDataFreshness(systemStatus?.automation?.lastNewsRefreshAt);
+  const aiFreshness = getDataFreshness(systemStatus?.automation?.lastAiRefreshAt);
+  const topRegion = strategicBrief?.topEscalatingRegions?.[0] ?? firstItem?.region ?? "Global risk";
+  const summary = firstItem?.summary ?? strategicBrief?.chokepointToWatch ?? feedState?.message ?? "Live signals are being ranked for the current lens.";
+  return (
+    <button
+      onClick={onOpen}
+      style={{
+        position: "absolute",
+        left: "50%",
+        bottom: 70,
+        transform: "translateX(-50%)",
+        width: "min(420px, calc(100vw - 640px))",
+        minWidth: 300,
+        maxWidth: 420,
+        zIndex: 36,
+        display: "grid",
+        gap: 8,
+        textAlign: "left",
+        padding: "12px 14px",
+        borderRadius: 14,
+        border: "1px solid rgba(94,164,195,0.16)",
+        background: "linear-gradient(180deg, rgba(6,15,28,0.74), rgba(5,11,22,0.82))",
+        boxShadow: "0 18px 42px rgba(0,0,0,0.34)",
+        backdropFilter: "blur(14px)",
+        WebkitBackdropFilter: "blur(14px)",
+        cursor: "pointer",
+      }}
+    >
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center" }}>
+        <div style={{ color: "rgba(103,220,255,0.58)", fontSize: 10, fontFamily: mono, letterSpacing: "0.14em", textTransform: "uppercase" }}>
+          Today&apos;s Brief
+        </div>
+        <span style={{ color: "#d6ebff", fontSize: 10, fontFamily: mono, letterSpacing: "0.1em", textTransform: "uppercase" }}>
+          Open
+        </span>
+      </div>
+      <div style={{ color: "rgba(214,235,255,0.9)", fontFamily: display, fontSize: 14, fontWeight: 700, lineHeight: 1.25 }}>
+        {topRegion}
+      </div>
+      <div style={{ color: "rgba(160,198,225,0.72)", fontSize: 11, lineHeight: 1.45, fontFamily: bodyFont }}>
+        {String(summary).slice(0, 130)}
+      </div>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+        <TrafficPill level={newsFreshness.tone}>News {newsFreshness.label}</TrafficPill>
+        <TrafficPill level={aiFreshness.tone}>AI {aiFreshness.label}</TrafficPill>
+      </div>
+    </button>
   );
 }
 
@@ -2651,6 +2704,8 @@ const bodyFont = "'Inter', 'Space Grotesk', sans-serif";
 const DEMO_MODE = String(import.meta.env.VITE_DEMO_MODE ?? "false").toLowerCase() === "true";
 const TOP_BAR_HEIGHT = 58;
 const FLOATING_TOP = 68;
+const BRIEFING_PANEL_STORAGE_KEY = "grigori:briefing-panel-open";
+const ACTIVE_SIGNALS_STORAGE_KEY = "grigori:active-signals-open";
 const APP_VIEWS = [
   { key: "globe", label: "Globe" },
   { key: "classic", label: "Intel Board" },
@@ -2734,6 +2789,14 @@ function formatAutomationLine(label, state) {
   const lastSuccess = formatShortAge(state.lastScheduledSuccessAt);
   const lastFailure = formatShortAge(state.lastScheduledFailureAt);
   return `${label}: ${status} · run ${lastRun} · success ${lastSuccess} · failure ${lastFailure}`;
+}
+
+function readStoredBoolean(key, fallback) {
+  if (typeof window === "undefined") return fallback;
+  const value = window.localStorage.getItem(key);
+  if (value === "true") return true;
+  if (value === "false") return false;
+  return fallback;
 }
 
 const ACTIVE_SIGNAL_SORT_OPTIONS = [
@@ -4083,13 +4146,13 @@ function MobileBriefingContent({ briefing, onSelect }) {
   );
 }
 
-function GlobalViewButton({ onReset, mobile = false }) {
+function GlobalViewButton({ onReset, mobile = false, offsetLeft = 18 }) {
   return (
     <button
       onClick={onReset}
       style={{
         position: "absolute",
-        left: mobile ? 12 : 18,
+        left: mobile ? 12 : offsetLeft,
         bottom: mobile ? "calc(env(safe-area-inset-bottom, 0px) + 108px)" : 22,
         zIndex: 38,
         borderRadius: 14,
@@ -4111,13 +4174,13 @@ function GlobalViewButton({ onReset, mobile = false }) {
   );
 }
 
-function LiveSunButton({ enabled, onToggle, mobile = false }) {
+function LiveSunButton({ enabled, onToggle, mobile = false, offsetLeft = 18 }) {
   return (
     <button
       onClick={onToggle}
       style={{
         position: "absolute",
-        left: mobile ? 12 : 18,
+        left: mobile ? 12 : offsetLeft,
         bottom: mobile ? "calc(env(safe-area-inset-bottom, 0px) + 58px)" : 70,
         zIndex: 38,
         borderRadius: 14,
@@ -5119,7 +5182,7 @@ function TopBar({ counts, bordersLoaded, activeLayers, onLayerToggle, isMobile, 
 // DESKTOP LEFT SIDEBAR
 // ═══════════════════════════════════════════════════════════════════════════════
 
-function DesktopSidebar({ events, selectedEvent, onSelect, modeHours, onModeChange, topOffset = TOP_BAR_HEIGHT, sortMode = "priority", onSortChange, systemStatus, refreshState, adminUnlocked = false, feedState }) {
+function DesktopSidebar({ events, selectedEvent, onSelect, modeHours, onModeChange, topOffset = TOP_BAR_HEIGHT, sortMode = "priority", onSortChange, systemStatus, refreshState, adminUnlocked = false, feedState, onCollapse }) {
   const options = [
     { label: "24h", value: 24 },
     { label: "7d", value: 24 * 7 },
@@ -5139,8 +5202,27 @@ function DesktopSidebar({ events, selectedEvent, onSelect, modeHours, onModeChan
     }}>
       <div style={{ padding: "18px 18px 16px", borderBottom: "1px solid rgba(87,216,255,0.08)",
         flexShrink: 0 }}>
-        <div style={{ color: "rgba(0,200,255,0.38)", fontSize: 10, fontFamily: mono,
-          letterSpacing: "0.14em", textTransform: "uppercase" }}>Active Signals</div>
+        <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center" }}>
+          <div style={{ color: "rgba(0,200,255,0.38)", fontSize: 10, fontFamily: mono,
+            letterSpacing: "0.14em", textTransform: "uppercase" }}>Active Signals</div>
+          {onCollapse ? (
+            <button
+              onClick={onCollapse}
+              aria-label="Collapse Active Signals"
+              style={{
+                width: 28,
+                height: 28,
+                borderRadius: 999,
+                border: "1px solid rgba(94,164,195,0.16)",
+                background: "rgba(8,20,36,0.7)",
+                color: "rgba(189,226,248,0.74)",
+                cursor: "pointer",
+              }}
+            >
+              ‹
+            </button>
+          ) : null}
+        </div>
         <div style={{ color: "rgba(214,235,255,0.92)", fontSize: 22, fontFamily: display, fontWeight: 700, marginTop: 6 }}>
           {events.length}
         </div>
@@ -5276,6 +5358,39 @@ function DesktopSidebar({ events, selectedEvent, onSelect, modeHours, onModeChan
   );
 }
 
+function ActiveSignalsRail({ count, topOffset = TOP_BAR_HEIGHT, onExpand }) {
+  return (
+    <button
+      onClick={onExpand}
+      aria-label="Open Active Signals"
+      style={{
+        position: "absolute",
+        left: 12,
+        top: topOffset + 18,
+        zIndex: 31,
+        width: 46,
+        minHeight: 156,
+        borderRadius: 14,
+        border: "1px solid rgba(87,216,255,0.16)",
+        background: "rgba(5,12,24,0.74)",
+        backdropFilter: "blur(14px)",
+        WebkitBackdropFilter: "blur(14px)",
+        color: "#d6ebff",
+        cursor: "pointer",
+        display: "grid",
+        placeItems: "center",
+        gap: 8,
+        boxShadow: "0 18px 42px rgba(0,0,0,0.34)",
+      }}
+    >
+      <span style={{ writingMode: "vertical-rl", transform: "rotate(180deg)", fontFamily: mono, fontSize: 9, letterSpacing: "0.14em", textTransform: "uppercase", color: "rgba(103,220,255,0.64)" }}>
+        Signals
+      </span>
+      <span style={{ fontFamily: display, fontSize: 17, fontWeight: 700 }}>{count}</span>
+    </button>
+  );
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // MAIN APP
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -5295,18 +5410,18 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
   const [activeLayers,   setActiveLayers]   = useState({
     events: true, conflictZones: false, flights: false, vessels: false, satellites: false, social: false, intelBoard: true,
   });
-  const [panelVisibility, setPanelVisibility] = useState({
-    events: true,
-    briefing: true,
+  const [panelVisibility, setPanelVisibility] = useState(() => ({
+    events: readStoredBoolean(ACTIVE_SIGNALS_STORAGE_KEY, true),
+    briefing: readStoredBoolean(BRIEFING_PANEL_STORAGE_KEY, false),
     marketImpact: true,
-    dataConfidence: true,
+    dataConfidence: false,
     flights: false,
     vessels: false,
     satellites: false,
     social: false,
     selectedObjectDetail: true,
     timeline: false,
-  });
+  }));
   const [showWarRoom,     setShowWarRoom]     = useState(false);
   const [liveEvents,      setLiveEvents]      = useState(SCORED_EVENTS);
   const [marketData,      setMarketData]      = useState(null);
@@ -5425,6 +5540,12 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
     if (typeof window === "undefined") return;
     window.localStorage.setItem(WATCHLIST_STORAGE_KEY, JSON.stringify(watchlist));
   }, [watchlist]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem(BRIEFING_PANEL_STORAGE_KEY, String(Boolean(panelVisibility.briefing)));
+    window.localStorage.setItem(ACTIVE_SIGNALS_STORAGE_KEY, String(Boolean(panelVisibility.events)));
+  }, [panelVisibility.briefing, panelVisibility.events]);
 
   useEffect(() => {
     let cancelled = false;
@@ -5627,6 +5748,19 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
     setSelectedEvent(event);
     setActiveScenario(0);
   }, [liveEvents]);
+
+  const handleOpenBriefing = useCallback(() => {
+    setPanelVisibility((current) => ({
+      ...current,
+      briefing: true,
+      marketImpact: false,
+      dataConfidence: false,
+    }));
+  }, []);
+
+  const handleCloseBriefing = useCallback(() => {
+    setPanelVisibility((current) => ({ ...current, briefing: false }));
+  }, []);
 
   const handleReturnToGlobalView = useCallback(() => {
     sceneRef.current.resetGlobalView?.();
@@ -6409,7 +6543,7 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
     sceneRef.current.focusCameraOnEvent?.(ev);
     setSelectedZone(null);
     setSelectedObject(null);
-    setPanelVisibility((current) => ({ ...current, selectedObjectDetail: true }));
+    setPanelVisibility((current) => ({ ...current, selectedObjectDetail: true, briefing: false }));
     setSelectedEvent(ev);
     setActiveScenario(0);
   }, []);
@@ -6488,7 +6622,7 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
                 onClose={() => setPanelVisibility((current) => ({ ...current, timeline: false }))}
               />
             ) : null}
-            {panelVisibility.briefing && activeLayers.intelBoard ? (
+            {panelVisibility.briefing && activeLayers.intelBoard && !selectedDetail ? (
               <BriefingPanel
                 briefing={briefing}
                 strategicBrief={strategicBrief}
@@ -6497,10 +6631,10 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
                 onSelect={handleBriefingSelect}
                 systemStatus={systemStatus}
                 feedState={feedState}
-                onClose={() => setPanelVisibility((current) => ({ ...current, briefing: false }))}
+                onClose={handleCloseBriefing}
               />
             ) : null}
-            {panelVisibility.marketImpact && activeLayers.intelBoard ? (
+            {panelVisibility.marketImpact && activeLayers.intelBoard && !panelVisibility.briefing ? (
               <MarketImpactDashboard
                 aggregate={marketImpact}
                 emphasis={lensConfig.emphasis}
@@ -6508,7 +6642,7 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
                 onClose={() => setPanelVisibility((current) => ({ ...current, marketImpact: false }))}
               />
             ) : null}
-            {panelVisibility.dataConfidence && activeLayers.intelBoard ? (
+            {panelVisibility.dataConfidence && activeLayers.intelBoard && !panelVisibility.briefing ? (
               <DataConfidencePanel
                 stats={confidenceStats}
                 onClose={() => setPanelVisibility((current) => ({ ...current, dataConfidence: false }))}
@@ -6581,9 +6715,18 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
           )}
         </div>
 
-        <GlobalViewButton onReset={handleReturnToGlobalView} mobile={isMobile} />
+        <GlobalViewButton onReset={handleReturnToGlobalView} mobile={isMobile} offsetLeft={panelVisibility.events && activeLayers.intelBoard ? 302 : 18} />
+        {!isMobile && activeLayers.intelBoard && !panelVisibility.briefing && !selectedDetail ? (
+          <BriefingCompactCard
+            briefing={briefing}
+            strategicBrief={strategicBrief}
+            systemStatus={systemStatus}
+            feedState={feedState}
+            onOpen={handleOpenBriefing}
+          />
+        ) : null}
         {!isMobile ? (
-          <LiveSunButton enabled={liveSunEnabled} onToggle={() => setLiveSunEnabled((current) => !current)} mobile={isMobile} />
+          <LiveSunButton enabled={liveSunEnabled} onToggle={() => setLiveSunEnabled((current) => !current)} mobile={isMobile} offsetLeft={panelVisibility.events && activeLayers.intelBoard ? 302 : 18} />
         ) : null}
 
         {/* DESKTOP: Left sidebar */}
@@ -6601,8 +6744,16 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
             refreshState={refreshState}
             adminUnlocked={adminSession.unlocked}
             feedState={feedState}
+            onCollapse={() => setPanelVisibility((current) => ({ ...current, events: false }))}
           />
         )}
+        {!isMobile && !panelVisibility.events && activeLayers.intelBoard ? (
+          <ActiveSignalsRail
+            count={filteredEvents.length}
+            topOffset={headerHeight}
+            onExpand={() => setPanelVisibility((current) => ({ ...current, events: true }))}
+          />
+        ) : null}
 
         {/* WAR ROOM PANEL */}
         {showWarRoom && !isMobile && (
