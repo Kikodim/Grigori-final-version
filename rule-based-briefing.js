@@ -1,4 +1,5 @@
 import { buildWatchIndicators, buildWhyThisMatters, getEventSourceSignals, inferLocationDetails, sanitizeBulletList, sanitizeNarrativeText, BRIEF_LIMITS } from "./event-insights.js";
+import { evaluateClusterPublishQuality } from "./signal-quality.js";
 
 const SECTOR_RULES = [
   { pattern: /\b(oil|tanker|hormuz|gulf|red sea|shipping|port|freight|strait|suez|maritime)\b/i, sectors: ["Energy", "Shipping"] },
@@ -67,6 +68,10 @@ function inferTone(preEvent, articles) {
 
 function inferConfidence(preEvent, articles) {
   const sourceCount = new Set(preEvent.sources ?? []).size;
+  const clusterQuality = evaluateClusterPublishQuality(preEvent, articles);
+  if (!clusterQuality.regionResolved || clusterQuality.bestTier === "tier_3") {
+    return sourceCount >= 3 && clusterQuality.independentDomainCount >= 2 ? "Medium" : "Low";
+  }
   if (sourceCount >= 4 || articles.length >= 4) return "High";
   if (sourceCount >= 2 || articles.length >= 2) return "Medium";
   return preEvent.confidence ?? "Low";
@@ -122,13 +127,19 @@ function buildSummary(preEvent, locationLabel, tone, confidence, sectors, market
   const headline = sentenceCase(preEvent.title.replace(/[.!?]+$/, ""));
   const sourceCount = new Set(preEvent.sources ?? []).size || Math.max(articles.length, 1);
   const sectorText = sectors.slice(0, 3).join(", ");
+  const signalFrame = tone === "Escalating"
+    ? "is part of an escalating signal cluster"
+    : tone === "De-escalating"
+      ? "is part of a de-escalating signal cluster"
+      : "is part of an active monitoring signal";
+  const sectorLine = sectorText ? `${sectorText} exposure stands out. ` : "";
   const marketLine = markets === "Risk-off"
-    ? "Market conditions skew defensive around the story."
+    ? "Market context is leaning defensive."
     : markets === "Risk-on"
-      ? "Market conditions look more contained around the story."
-      : "Market signals remain balanced for now.";
+      ? "Market spillover appears more contained for now."
+      : "";
 
-  return `${headline} is driving a ${tone.toLowerCase()} signal cluster around ${locationLabel}, backed by ${sourceCount} source signal${sourceCount === 1 ? "" : "s"} and ${confidence.toLowerCase()} confidence. ${sectorText ? `${sectorText} exposure stands out. ` : ""}${marketLine}`;
+  return `${headline} ${signalFrame} around ${locationLabel}, supported by ${sourceCount} source signal${sourceCount === 1 ? "" : "s"} and ${confidence.toLowerCase()} confidence. ${sectorLine}${marketLine}`.trim();
 }
 
 function buildScenarioDescription(kind, locationLabel, sectors, tone) {
@@ -175,6 +186,7 @@ function buildScenarios(preEvent, locationLabel, tone, sectors, oilImpact, marke
   return [
     {
       name: "De-escalation / Containment",
+      method: "rule_based",
       probability: probabilities.deescalation,
       description: buildScenarioDescription("stabilization", locationLabel, sectors, tone),
       triggers: ["Diplomatic engagement gains traction", "Operational restraint from primary actors", "No new corroborated escalation signals"],
@@ -188,6 +200,7 @@ function buildScenarios(preEvent, locationLabel, tone, sectors, oilImpact, marke
     },
     {
       name: "Base case / Continuation",
+      method: "rule_based",
       probability: probabilities.base,
       description: `The current signal set around ${locationLabel} persists without decisive escalation or settlement, leaving operators pricing sustained friction and headline risk.`,
       triggers: ["Incremental official statements", "No decisive military or diplomatic break", "Market reaction remains contained but watchful"],
@@ -201,6 +214,7 @@ function buildScenarios(preEvent, locationLabel, tone, sectors, oilImpact, marke
     },
     {
       name: "Escalation / Disruption",
+      method: "rule_based",
       probability: probabilities.escalation,
       description: buildScenarioDescription("escalation", locationLabel, sectors, tone),
       triggers: ["Follow-on military or security incidents", "More severe shipping or infrastructure disruption", "Hardening official rhetoric or force posture"],
@@ -262,6 +276,7 @@ export function buildRuleBasedBriefing(preEvent, articles = []) {
     sources: preEvent.sources,
     articleIds: preEvent.articleIds,
   });
+  const clusterQuality = evaluateClusterPublishQuality(preEvent, articles);
   const scenarios = buildScenarios(preEvent, locationLabel, tone, sectors, oilImpact, marketsImpact, confidence, inferredLocation.confidence, articles);
   const whyThisMatters = buildWhyThisMatters({
     ...preEvent,
@@ -294,6 +309,14 @@ export function buildRuleBasedBriefing(preEvent, articles = []) {
     sourceAssessment: {
       sourceCount: sourceSignals.sourceCount,
       corroborationLevel: sourceSignals.corroborationLabel,
+      independentDomainCount: sourceSignals.independentDomainCount,
+      sourceQuality: clusterQuality.bestTier === "tier_1" ? "high" : clusterQuality.bestTier === "tier_2" ? "medium" : clusterQuality.bestTier === "tier_3" ? "low" : "unclassified",
+      sourceMix: clusterQuality.bestTier === "tier_1"
+        ? "tier-1 or official sources present"
+        : clusterQuality.bestTier === "tier_2"
+          ? "reputable regional or specialist sources"
+          : "regional press, aggregators, or unclassified domains",
+      contentTypes: clusterQuality.contentTypes,
       limitations: sourceSignals.sourceCount <= 1
         ? "Single-source or lightly corroborated reporting limits confidence."
         : "Open-source reporting can lag operational reality and may omit classified or commercial context.",

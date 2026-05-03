@@ -17,6 +17,7 @@ import { fetchNewsDataArticles } from "./sources/newsdata.adapter.js";
 import { fetchRssArticles } from "./sources/rss.adapter.js";
 import { getLayerCache, getLayerUsageStats, recordLayerUsage, setLayerCache } from "./supabase.js";
 import { getAllArticles, saveArticles } from "./store.js";
+import { classifySourceTier, detectContentType, evaluateArticleQuality, isAmbiguousNonStrategicDraft } from "./signal-quality.js";
 
 const log = createLogger("ingest");
 
@@ -256,11 +257,15 @@ function normalise(raw) {
   const text = `${title} ${summary} ${content}`;
   const keywords = extractKeywords(text);
   const region = detectRegion({ title, summary, content });
+  const sourceDomains = buildSourceDomains(raw);
+  const source = typeof raw.source === "string" ? raw.source : (raw.source?.name ?? "Unknown");
+  const sourceTier = classifySourceTier({ domain: sourceDomains[0] ?? raw.url, source });
+  const contentType = raw.contentType ?? detectContentType({ ...raw, title, summary, content, source });
 
   return {
     id: raw.url,
     title,
-    source: typeof raw.source === "string" ? raw.source : (raw.source?.name ?? "Unknown"),
+    source,
     publishedAt: raw.publishedAt ?? null,
     summary,
     content,
@@ -268,9 +273,12 @@ function normalise(raw) {
     keywords,
     region,
     categories: raw.categories ?? detectEventCategories(text),
-    sourceQuality: raw.sourceQuality ?? 0.5,
+    sourceQuality: Math.max(Number(raw.sourceQuality ?? 0.5), sourceTier.score),
+    sourceTier: sourceTier.tier,
+    sourceTierLabel: sourceTier.label,
+    contentType,
     relevanceScore: raw.relevanceScore ?? 0,
-    sourceDomains: buildSourceDomains(raw),
+    sourceDomains,
     provider: raw.provider ?? null,
     fetchedAt: raw.fetchedAt ?? new Date().toISOString(),
     rawPublishedAt: raw.rawPublishedAt ?? raw.publishedAt ?? null,
@@ -285,6 +293,12 @@ function computeRelevanceScore(article) {
   const region = detectRegion({ title, summary, content });
   const keywords = extractKeywords(text, 14);
   const categories = detectEventCategories(text);
+  const quality = evaluateArticleQuality({
+    ...article,
+    region,
+    categories,
+    relevanceScore: 0,
+  });
 
   let score = 0;
   for (const pattern of STRATEGIC_SIGNAL_PATTERNS) {
@@ -295,9 +309,14 @@ function computeRelevanceScore(article) {
   if (region) score += 1;
   if (keywords.length >= 4) score += 1;
   if ((article.sourceQuality ?? 0.5) >= 0.8) score += 1;
+  if (quality.sourceTier === "tier_1") score += 2;
+  if (quality.sourceTier === "tier_2") score += 1;
+  if (quality.sourceTier === "tier_3") score -= 2;
   if (categories.some((category) => ["Political", "Election", "Energy", "Cyber", "Diplomatic", "Infrastructure", "Trade", "Sanctions", "Migration", "Shipping", "Military"].includes(category))) {
     score += 1;
   }
+  if (["opinion", "editorial", "letter"].includes(quality.contentType)) score -= 5;
+  if (isAmbiguousNonStrategicDraft(article)) score -= 5;
   if (DOWNRANKED_SOURCE_PATTERNS.some((pattern) => pattern.test(String(article.source ?? "")))) {
     score -= 2;
   }
@@ -358,6 +377,7 @@ function createProviderDiagnosticsBucket(provider) {
     articlesRejectedAsDuplicate: 0,
     duplicateReconfirmed: 0,
     articlesRejectedAsLowRelevance: 0,
+    articlesRejectedAsLowQuality: 0,
     dropped_missing_title: 0,
     dropped_missing_url: 0,
     dropped_missing_date: 0,
@@ -371,6 +391,7 @@ function createProviderDiagnosticsBucket(provider) {
     oldestArticlePublishedAt: null,
     cluster_failed: 0,
     unaccounted: 0,
+    qualityRejectReasons: {},
     debugSamples: [],
   };
 }
@@ -653,6 +674,25 @@ function finalizeArticles(rawArticles, maxItems, { seedIfEmpty = false, historic
     bucket.normalized += 1;
 
     const { score, categories } = computeRelevanceScore(normalized);
+    const quality = evaluateArticleQuality({
+      ...normalized,
+      relevanceScore: score,
+      categories,
+    });
+    normalized.sourceTier = quality.sourceTier;
+    normalized.sourceTierLabel = quality.sourceTierLabel;
+    normalized.contentType = quality.contentType;
+    normalized.qualityScore = quality.score;
+
+    if (!quality.activeEligible) {
+      bucket.articlesRejectedAsLowQuality += 1;
+      for (const reason of quality.reasons) {
+        bucket.qualityRejectReasons[reason] = (bucket.qualityRejectReasons[reason] ?? 0) + 1;
+      }
+      bucket.debugSamples.push(sampleArticle(normalized));
+      continue;
+    }
+
     if (score < MIN_RELEVANCE_SCORE) {
       bucket.articlesRejectedAsLowRelevance += 1;
       bucket.debugSamples.push(sampleArticle(normalized));
@@ -663,6 +703,10 @@ function finalizeArticles(rawArticles, maxItems, { seedIfEmpty = false, historic
       ...normalized,
       relevanceScore: score,
       categories,
+      sourceTier: quality.sourceTier,
+      sourceTierLabel: quality.sourceTierLabel,
+      contentType: quality.contentType,
+      qualityScore: quality.score,
       _provider: provider,
       _ageHours: ageHours,
     });
@@ -764,8 +808,10 @@ function finalizeArticles(rawArticles, maxItems, { seedIfEmpty = false, historic
     sum +
     bucket.articlesRejectedAsOld +
     bucket.articlesRejectedAsLowRelevance +
-    bucket.articlesRejectedMissingUrl +
-    bucket.articlesRejectedMissingDate,
+    bucket.articlesRejectedAsLowQuality +
+    bucket.dropped_missing_title +
+    bucket.dropped_missing_url +
+    bucket.dropped_missing_date,
   0);
   const lowRelevanceCount = providerDiagnostics.reduce((sum, bucket) => sum + bucket.articlesRejectedAsLowRelevance, 0);
 

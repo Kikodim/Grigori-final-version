@@ -2,6 +2,7 @@ const SOURCE_TRUST_RULES = [
   { pattern: /reuters|apnews|associated press|bbc|financial times|wsj|wall street journal|bloomberg/i, score: 0.95 },
   { pattern: /aljazeera|economist|guardian|ft\.com|nytimes|washington post|dw|france24/i, score: 0.85 },
   { pattern: /newswire|newsdata|currents|xinhuanet|cnbc|cnn|npr|sky/i, score: 0.72 },
+  { pattern: /triblive|einnews|menafn|latestly|blogspot|substack|medium\.com/i, score: 0.42 },
 ];
 
 const REGION_UNDER_REVIEW = "Region under review";

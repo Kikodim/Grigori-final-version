@@ -20,8 +20,8 @@ const WAITLIST_FOCUS_OPTIONS = [
   "General Geopolitics",
 ];
 const WAITLIST_TIER_OPTIONS = [
-  { value: "confidential", label: "Confidential Clearance" },
-  { value: "top_secret", label: "Top Secret Clearance" },
+  { value: "analyst", label: "Analyst · €20/month" },
+  { value: "strategic", label: "Strategic · €59/month" },
   { value: "not_sure", label: "Not sure yet" },
 ];
 const BRAND_WORDMARK = "/assets/brand/grigori-wordmark.svg";
@@ -201,6 +201,46 @@ function PlanCard({ plan, emphasized = false, actionLabel = "Coming Soon" }) {
   );
 }
 
+function SampleReportsSection({ isMobile = false }) {
+  const samples = [
+    {
+      title: "Strait of Hormuz Situation Report",
+      region: "Strait of Hormuz",
+      focus: "Energy / Shipping",
+      includes: "source confidence, tanker risk, oil context, escalation triggers",
+    },
+    {
+      title: "Black Sea Security Brief",
+      region: "Black Sea",
+      focus: "Military / Shipping",
+      includes: "port disruption watch, grain corridor exposure, NATO signaling",
+    },
+    {
+      title: "Europe / Balkans Political Risk Snapshot",
+      region: "Europe / Balkans",
+      focus: "Political Risk",
+      includes: "elections, protests, EU pressure, energy-security implications",
+    },
+  ];
+  return (
+    <ShellCard title="Preview Reports" eyebrow="Coming soon">
+      <div style={{ color: "#cbd5e1", lineHeight: 1.8, marginBottom: 18 }}>
+        Sample report formats show how paid briefings will package Grigori signals into structured, source-aware intelligence products.
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "repeat(3, minmax(0, 1fr))", gap: 14 }}>
+        {samples.map((sample) => (
+          <div key={sample.title} style={{ border: "1px solid rgba(51,65,85,0.9)", background: "rgba(4,10,22,0.9)", borderRadius: 18, padding: 16, display: "grid", gap: 10 }}>
+            <PremiumBadge tone="info">Preview</PremiumBadge>
+            <div style={{ color: "#f8fafc", fontSize: 17, fontFamily: DISPLAY_FONT, fontWeight: 700, lineHeight: 1.25 }}>{sample.title}</div>
+            <div style={{ color: "#94a3b8", lineHeight: 1.6 }}>{sample.region} · {sample.focus}</div>
+            <div style={{ color: "#cbd5e1", lineHeight: 1.65 }}>Includes {sample.includes}.</div>
+          </div>
+        ))}
+      </div>
+    </ShellCard>
+  );
+}
+
 function FieldLabel({ children }) {
   return <span style={{ color: "#94a3b8", fontSize: 10, fontFamily: MONO_FONT, letterSpacing: "0.14em", textTransform: "uppercase" }}>{children}</span>;
 }
@@ -282,7 +322,7 @@ function InterestForm({ form, setForm, onSubmit, status, compact = false }) {
         />
       </div>
       <div style={{ display: "grid", gridTemplateColumns: compact ? "1fr" : "1fr 1fr", gap: 12 }}>
-        <AuthField label="Intended Use Case" value={form.intendedUseCase} onChange={(value) => setForm((current) => ({ ...current, intendedUseCase: value }))} placeholder="Board briefings, investing, security planning..." />
+        <AuthField label="Intended Use Case" value={form.intendedUseCase} onChange={(value) => setForm((current) => ({ ...current, intendedUseCase: value }))} placeholder="Board briefings, investing, security" />
         <AuthField label="LinkedIn Profile (Optional)" value={form.linkedinProfile} onChange={(value) => setForm((current) => ({ ...current, linkedinProfile: value }))} placeholder="https://linkedin.com/in/..." />
       </div>
       <div style={{ display: "grid", gap: 8 }}>
@@ -471,7 +511,7 @@ function UsageCard({ status, session, adminUnlocked, onAdminUnlock }) {
     ? (summary?.newsFreshness ?? "Awaiting next refresh")
     : "Awaiting next scheduled refresh";
   const aiStatusLabel = adminUnlocked
-    ? (summary?.aiFreshness ?? "AI awaiting refresh")
+    ? (summary?.aiFreshness ?? "AI Pending")
     : "Manual generation only";
   return (
     <div style={{ display: "grid", gap: 16 }}>
@@ -509,30 +549,11 @@ function UsageCard({ status, session, adminUnlocked, onAdminUnlock }) {
         <div style={{ color: "#94a3b8", fontSize: 13, lineHeight: 1.7 }}>
           {canGenerate
             ? "Generation is manual, budget-controlled, and uses stored Grigori event data only."
-            : "Sign in or unlock admin mode to test report generation without exposing Gemini to the public preview."}
+            : "Reports use manual AI-assisted generation during private preview. Public visitors cannot trigger report generation."}
         </div>
         <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
           {session?.user ? <PremiumBadge tone="success">Signed In</PremiumBadge> : null}
-          {adminUnlocked ? <PremiumBadge tone="success">Admin Unlocked</PremiumBadge> : null}
-          {!session?.user && !adminUnlocked ? (
-            <button
-              onClick={onAdminUnlock}
-              style={{
-                border: "1px solid rgba(71,85,105,0.82)",
-                borderRadius: 999,
-                background: "rgba(15,23,42,0.82)",
-                color: "#cbd5e1",
-                padding: "9px 14px",
-                cursor: "pointer",
-                fontFamily: MONO_FONT,
-                textTransform: "uppercase",
-                letterSpacing: "0.1em",
-                fontSize: 10,
-              }}
-            >
-              Admin Unlock
-            </button>
-          ) : null}
+          {adminUnlocked ? <PremiumBadge tone="success">Operator Mode</PremiumBadge> : null}
         </div>
       </div>
       <div style={{ border: "1px solid rgba(51,65,85,0.9)", background: "rgba(4,10,22,0.88)", borderRadius: 20, padding: 18 }}>
@@ -796,7 +817,7 @@ function HistoryList({ reports, onOpen }) {
           <div style={{ display: "flex", justifyContent: "space-between", gap: 12, marginBottom: 8, flexWrap: "wrap" }}>
             <div style={{ color: "#f8fafc", fontWeight: 700 }}>{report.title}</div>
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-              <PremiumBadge>{report.ai_provider ?? "gemini"}</PremiumBadge>
+              <PremiumBadge>{String(report.ai_provider ?? "Gemini").replace(/^gemini$/i, "Gemini")}</PremiumBadge>
               <PremiumBadge tone="success">{report.confidence_level ?? report.content?.confidenceAssessment?.level ?? "Medium"}</PremiumBadge>
             </div>
           </div>
@@ -811,9 +832,9 @@ function HistoryList({ reports, onOpen }) {
 
 function WaitlistAdminPanel({ entries, status, onLoad }) {
   return (
-    <ShellCard title="Waitlist Admin View" eyebrow="Protected access">
+    <ShellCard title="Waitlist Operator View" eyebrow="Protected access">
       <div style={{ color: "#cbd5e1", lineHeight: 1.8, marginBottom: 16 }}>
-        Load waitlist entries with <code>ADMIN_SECRET</code>. This gives you a manual contact queue until mailing list sync is ready.
+        Load waitlist entries with the protected operator secret. This gives you a manual contact queue until mailing list sync is ready.
       </div>
       <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", marginBottom: 18 }}>
         <button
@@ -1019,10 +1040,10 @@ export default function ReportsApp({ activeView = "reports", onNavigate }) {
   }, [supabase]);
 
   const handleAdminUnlock = useCallback(async () => {
-    const secret = window.prompt("Enter ADMIN_SECRET to unlock report generation.");
+    const secret = window.prompt("Enter operator secret to unlock report generation.");
     if (!secret) return;
     setAdminToken(secret);
-    setPreviewStatus({ type: "success", message: "Admin mode unlocked for report testing." });
+    setPreviewStatus({ type: "success", message: "Operator mode unlocked for report testing." });
     await loadReportsData(session, secret, reportForm).catch(() => {});
   }, [loadReportsData, reportForm, session]);
 
@@ -1048,7 +1069,7 @@ export default function ReportsApp({ activeView = "reports", onNavigate }) {
   }, [waitlistForm]);
 
   const handleLoadWaitlist = useCallback(async () => {
-    const secret = adminToken || window.prompt("Enter ADMIN_SECRET to load waitlist entries.");
+    const secret = adminToken || window.prompt("Enter operator secret to load waitlist entries.");
     if (!secret) return;
     if (!adminToken) setAdminToken(secret);
     setAdminWaitlistStatus({ type: "info", message: "Loading waitlist..." });
@@ -1138,7 +1159,7 @@ export default function ReportsApp({ activeView = "reports", onNavigate }) {
           <div style={{ display: "grid", gap: 12, justifyItems: isMobile ? "stretch" : "end", width: isMobile ? "100%" : "auto" }}>
             <HeaderNav activeView={activeView} onNavigate={onNavigate} />
             <div style={{ display: "flex", gap: 10, flexWrap: "wrap", justifyContent: isMobile ? "flex-start" : "flex-end" }}>
-              <PremiumBadge tone="warning">Work in Progress</PremiumBadge>
+              <PremiumBadge tone="warning">Reports Preview</PremiumBadge>
               <PremiumBadge>Private Preview</PremiumBadge>
               <PremiumBadge tone="success">Operational</PremiumBadge>
             </div>
@@ -1158,13 +1179,16 @@ export default function ReportsApp({ activeView = "reports", onNavigate }) {
               <p style={{ color: "#94a3b8", lineHeight: 1.8, fontSize: isMobile ? 14 : 15, marginTop: 12 }}>
                 {REPORTS_WIP_COPY}
               </p>
+              <p style={{ color: "#94a3b8", lineHeight: 1.8, fontSize: isMobile ? 14 : 15, marginTop: 10 }}>
+                Public Preview includes the globe, active signals, and selected briefings. Paid Preview adds personalized reports, watchlists, exports, and deeper scenario context.
+              </p>
             </div>
             <div style={{ display: "grid", gap: 10, width: isMobile ? "100%" : "auto", minWidth: isMobile ? 0 : 260 }}>
               <button style={{ border: "1px solid rgba(125,211,252,0.28)", borderRadius: 999, background: "rgba(56,189,248,0.16)", color: "#f8fafc", padding: "11px 16px", cursor: "pointer", fontFamily: MONO_FONT, textTransform: "uppercase", letterSpacing: isMobile ? "0.08em" : "0.12em", width: "100%" }}>
-                Upgrade to Confidential
+                Upgrade to Analyst
               </button>
               <button style={{ border: "1px solid rgba(196,181,253,0.28)", borderRadius: 999, background: "rgba(76,29,149,0.16)", color: "#f8fafc", padding: "11px 16px", cursor: "pointer", fontFamily: MONO_FONT, textTransform: "uppercase", letterSpacing: isMobile ? "0.08em" : "0.12em", width: "100%" }}>
-                Upgrade to Top Secret
+                Upgrade to Strategic
               </button>
               <button onClick={() => setAuthMode(authConfigured ? "login" : "signup")} style={{ border: "1px solid rgba(71,85,105,0.82)", borderRadius: 999, background: "rgba(15,23,42,0.82)", color: "#f8fafc", padding: "11px 16px", cursor: "pointer", fontFamily: MONO_FONT, textTransform: "uppercase", letterSpacing: isMobile ? "0.08em" : "0.12em", width: "100%" }}>
                 {authConfigured ? "Sign In" : "Join Early Access"}
@@ -1189,7 +1213,7 @@ export default function ReportsApp({ activeView = "reports", onNavigate }) {
             />
           </ShellCard>
 
-          <ShellCard title="Alpha Usage & Signal Match" eyebrow="Gemini budget">
+          <ShellCard title="Alpha Usage & Signal Match" eyebrow={adminUnlocked ? "Gemini budget" : "Manual generation"}>
             <UsageCard
               status={reportStatus}
               session={session}
@@ -1227,7 +1251,7 @@ export default function ReportsApp({ activeView = "reports", onNavigate }) {
                   Preview Guardrails
                 </div>
                 <div style={{ display: "grid", gap: 10, color: "#cbd5e1", lineHeight: 1.7 }}>
-                  <div>Only Gemini is used for report AI generation.</div>
+                  <div>Reports use manual AI-assisted generation during private preview.</div>
                   <div>No report calls run on page load or in the background.</div>
                   <div>Public users see preview mode only and cannot burn report AI calls.</div>
                 </div>
@@ -1286,9 +1310,11 @@ export default function ReportsApp({ activeView = "reports", onNavigate }) {
           </ShellCard>
         </div>
 
+        <SampleReportsSection isMobile={isMobile} />
+
         <div style={{ display: "grid", gridTemplateColumns: planGrid, gap: 18 }}>
           {PREMIUM_PLANS.map((plan, index) => (
-            <PlanCard key={plan.tier} plan={plan} emphasized={index === 1} actionLabel={plan.tier === "top_secret" ? "Priority Access" : "Request Access"} />
+            <PlanCard key={plan.tier} plan={plan} emphasized={index === 1} actionLabel={plan.tier === "strategic" ? "Join Reports Preview" : "Request Early Access"} />
           ))}
         </div>
 
@@ -1308,7 +1334,7 @@ export default function ReportsApp({ activeView = "reports", onNavigate }) {
               fontSize: 10,
             }}
           >
-            {showAdminWaitlist ? "Hide Admin Waitlist" : "Admin Waitlist Tools"}
+            {showAdminWaitlist ? "Hide Operator Tools" : "Operator Access"}
           </button>
           {showAdminWaitlist ? (
             <WaitlistAdminPanel

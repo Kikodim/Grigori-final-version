@@ -8,6 +8,7 @@ import { getAllArticles } from "./store.js";
 import { buildRuleBasedBriefing } from "./rule-based-briefing.js";
 import { deleteOldEvents, getEvents, getRecentEvents, getRefreshState, getStats, insertEvent } from "./supabase.js";
 import { createLogger } from "./logger.js";
+import { evaluateClusterPublishQuality } from "./signal-quality.js";
 
 const log = createLogger("pipeline");
 const HIGH_IMPORTANCE_THRESHOLD = 70;
@@ -245,6 +246,7 @@ function resolveProviderDiagnostics(providerDiagnostics) {
       item.dropped_missing_date +
       item.articlesRejectedAsOld +
       item.articlesRejectedAsLowRelevance +
+      item.articlesRejectedAsLowQuality +
       item.articlesRejectedAsDuplicate +
       item.duplicateReconfirmed +
       item.clustered_new +
@@ -314,20 +316,10 @@ function scoreAiTarget(event, importanceScore, lastNewsRefreshAt = null) {
 }
 
 function shouldPublishPreEvent(preEvent, articles = []) {
-  const relevanceScore = Number(preEvent.relevanceScore ?? 0);
-  const sourceCount = new Set(preEvent.sources ?? []).size;
   const title = String(preEvent.title ?? "").toLowerCase();
   const lowValueTitle = /\b(morning update|evening update|daily briefing|marathon|celebrity|luxury resort)\b/i.test(title);
-  const underReview = String(preEvent.region?.label ?? "").toLowerCase() === "region under review";
-  const hasStrategicPoliticalSignal = /\b(election|protest|parliament|government|coalition|sanction|cyber|migration|trade|energy|regulator|commission|nato|eu)\b/i.test(
-    `${preEvent.title ?? ""} ${(preEvent.keywords ?? []).join(" ")}`
-  );
-
   if (lowValueTitle) return false;
-  if (sourceCount <= 1 && relevanceScore < 2 && underReview && !hasStrategicPoliticalSignal) return false;
-  if (sourceCount <= 1 && relevanceScore < 2 && !hasStrategicPoliticalSignal) return false;
-  if ((articles?.length ?? 0) <= 1 && relevanceScore < 2 && !hasStrategicPoliticalSignal) return false;
-  return true;
+  return evaluateClusterPublishQuality(preEvent, articles).publishable;
 }
 
 function buildAiDiagnostics(aiStatus, overrides = {}) {
@@ -1108,6 +1100,19 @@ export async function runPipeline({ source = "manual", noAi = false, mode = "ful
       keywords: preEvent.keywords,
       articleIds: preEvent.articleIds,
     }, articles);
+    const clusterQuality = evaluateClusterPublishQuality(preEvent, articles);
+    const sourceAssessment = {
+      ...(result.sourceAssessment ?? {}),
+      sourceCount: result.sourceAssessment?.sourceCount ?? new Set(preEvent.sources ?? []).size,
+      independentDomainCount: result.sourceAssessment?.independentDomainCount ?? new Set(articles.flatMap((article) => article.sourceDomains ?? [])).size,
+      sourceQuality: result.sourceAssessment?.sourceQuality ?? (clusterQuality.bestTier === "tier_1" ? "high" : clusterQuality.bestTier === "tier_2" ? "medium" : clusterQuality.bestTier === "tier_3" ? "low" : "unclassified"),
+      sourceMix: result.sourceAssessment?.sourceMix ?? (clusterQuality.bestTier === "tier_1"
+        ? "tier-1 or official sources present"
+        : clusterQuality.bestTier === "tier_2"
+          ? "reputable regional or specialist sources"
+          : "regional press, aggregators, or unclassified domains"),
+      contentTypes: result.sourceAssessment?.contentTypes ?? clusterQuality.contentTypes,
+    };
 
     attemptedEventWrites++;
     const writeResult = await insertEvent({
@@ -1125,7 +1130,7 @@ export async function runPipeline({ source = "manual", noAi = false, mode = "ful
       watchIndicators: result.watchIndicators ?? result.watchIndicators72h ?? [],
       confidenceRationale: result.confidenceRationale ?? "",
       marketImpact: result.marketImpact ?? {},
-      sourceAssessment: result.sourceAssessment ?? {},
+      sourceAssessment,
       sources: preEvent.sources,
       keywords: preEvent.keywords,
       articleIds: preEvent.articleIds,

@@ -1022,7 +1022,7 @@ function makeHotspot(ev) {
 
   const scored     = SCORED_EVENTS.find(s => s.id === ev.id) || ev;
   const pLevel     = scored.priorityLevel || "LOW";
-  const sizeScale  = ({ CRITICAL: 1.16, HIGH: 1.04, WATCH: 0.92, LOW: 0.82 }[pLevel] ?? 0.9) * (ev.lensMatched ? 1.04 : 1);
+  const sizeScale  = ({ CRITICAL: 1.26, HIGH: 1.12, WATCH: 0.92, LOW: 0.82 }[pLevel] ?? 0.9) * (ev.lensMatched ? 1.04 : 1);
   const markerLat = Number.isFinite(ev.displayLat) ? ev.displayLat : ev.lat;
   const markerLng = Number.isFinite(ev.displayLng) ? ev.displayLng : ev.lng;
   const surfacePos = geoToVec3(markerLat, markerLng, R + 0.014);
@@ -1071,18 +1071,19 @@ function makeHotspot(ev) {
   hitArea.userData = { clickable: true, eventId: ev.id, objectType: "event", objectData: ev };
   hitArea.userData.markerGroup = group;
 
-  const groundGlow = makeDisc(0.013, color, 0.1, { depthTest: true });
+  const highVisibility = ev.intensity === "high" || pLevel === "CRITICAL" || pLevel === "HIGH";
+  const groundGlow = makeDisc(highVisibility ? 0.016 : 0.013, color, highVisibility ? 0.16 : 0.1, { depthTest: true });
   groundGlow.position.z = -0.002;
-  groundGlow.userData.baseOpacity = 0.1;
+  groundGlow.userData.baseOpacity = highVisibility ? 0.16 : 0.1;
 
   const hexFill = makeHex(0.0085, 0.12, true, { depthTest: true });
-  const hexOutline = makeHex(0.0105, 0.82, false);
+  const hexOutline = makeHex(highVisibility ? 0.0118 : 0.0105, highVisibility ? 0.94 : 0.82, false);
   const core = makeDisc(0.0028, 0xffffff, 0.92);
   core.userData = { clickable: true, eventId: ev.id, objectType: "event", objectData: ev };
   core.userData.markerGroup = group;
 
-  const pulse1 = makeHex(0.0136, ev.intensity === "high" ? 0.22 : 0.14, false);
-  pulse1.userData = { pulse: true, speed: cfg.pulseSpeed * 0.82, base: ev.intensity === "high" ? 0.22 : 0.14, phase: 0 };
+  const pulse1 = makeHex(highVisibility ? 0.0155 : 0.0136, highVisibility ? 0.28 : 0.14, false);
+  pulse1.userData = { pulse: true, speed: cfg.pulseSpeed * 0.82, base: highVisibility ? 0.28 : 0.14, phase: 0 };
 
   group.add(hitArea, groundGlow, hexFill, hexOutline, core, pulse1);
 
@@ -1614,6 +1615,40 @@ function decorateEventForUi(event) {
   };
 }
 
+function isPublicSignalDisplayable(event) {
+  const title = String(event.title ?? "");
+  const summary = String(event.summary ?? event.briefSummary ?? "");
+  const corpus = `${title} ${summary} ${(event.keywords ?? []).join(" ")}`;
+  const locationLabel = String(event.location?.label ?? "").trim().toLowerCase();
+  const unresolvedRegion = !locationLabel || locationLabel === "region under review" || locationLabel === "unknown region";
+  const sourceSignals = getEventSourceSignals(event);
+  const sourceQuality = String(event.sourceAssessment?.sourceQuality ?? "").toLowerCase();
+  const contentTypes = event.sourceAssessment?.contentTypes ?? event.contentTypes ?? [];
+  const looksOpinion = /\b(opinion|op-ed|editorial|letter to the editor|commentary|thoughts on|i think|i was shocked|i wondered|our young men)\b/i.test(corpus) ||
+    contentTypes.some((type) => /opinion|editorial|letter/i.test(String(type)));
+  const ambiguousDraft = /\bdraft\b/i.test(corpus) &&
+    !/\b(conscription|mobilization|mobilisation|military draft|selective service|call-up)\b/i.test(corpus) &&
+    /\b(nfl|nba|sports|mock draft|draft pick|thoughts on|pittsburgh|triblive)\b/i.test(corpus);
+  const weakSingleSource = sourceSignals.sourceCount <= 1 && (event.confidence === "Low" || sourceQuality === "low");
+
+  if (looksOpinion || ambiguousDraft) return false;
+  if (unresolvedRegion && weakSingleSource) return false;
+  if (unresolvedRegion && Number(event.impactScore ?? 0) < 70 && event.confidence !== "High") return false;
+  return true;
+}
+
+function normalizePublicSignalLabels(event) {
+  const locationLabel = String(event.location?.label ?? "").trim().toLowerCase();
+  if (locationLabel !== "region under review") return event;
+  return {
+    ...event,
+    location: {
+      ...event.location,
+      label: "Location under review",
+    },
+  };
+}
+
 function withNoStoreUrl(path, forceFresh = false) {
   if (!forceFresh) return resolveBackendUrl(path);
   const separator = path.includes("?") ? "&" : "?";
@@ -1632,10 +1667,11 @@ async function fetchBackendEvents(forceFresh = false, { scope = "active", limit 
   const rawNormalized = Array.isArray(data.events)
     ? data.events.map((event) => decorateEventForUi(normalizeBackendEvent(event)))
     : [];
+  const publicEvents = rawNormalized.filter(isPublicSignalDisplayable);
 
-  const withTrends = rawNormalized.map((event) => ({
+  const withTrends = publicEvents.map((event) => normalizePublicSignalLabels({
     ...event,
-    recentTrend: deriveRecentTrend(event, rawNormalized),
+    recentTrend: deriveRecentTrend(event, publicEvents),
   }));
 
   return {
@@ -1643,7 +1679,7 @@ async function fetchBackendEvents(forceFresh = false, { scope = "active", limit 
     meta: {
       scope: data.scope ?? scope,
       count: data.count ?? rawNormalized.length,
-      total: data.total ?? rawNormalized.length,
+      total: data.total ?? publicEvents.length,
       fallbackUsed: Boolean(data.fallbackUsed),
       fallbackReason: data.fallbackReason ?? "unknown",
       freshnessMode: data.freshnessMode ?? "best_available",
@@ -2121,7 +2157,7 @@ function BriefingPanel({ briefing, strategicBrief, selectedLens, onLensChange, o
             </div>
             <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
               <TrafficPill level={newsFreshness.tone}>{newsFreshness.label}</TrafficPill>
-              <TrafficPill level={aiFreshness.tone}>AI {aiFreshness.label}</TrafficPill>
+              <TrafficPill level={aiFreshness.tone}>{formatAiFreshnessLabel(aiFreshness)}</TrafficPill>
               <TrafficPill level="neutral">AI remaining {strategicBrief?.aiRemainingToday ?? 0}</TrafficPill>
             </div>
             {feedState?.message ? (
@@ -2280,7 +2316,7 @@ function BriefingCompactCard({ briefing, strategicBrief, systemStatus, feedState
       </div>
       <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
         <TrafficPill level={newsFreshness.tone}>News {newsFreshness.label}</TrafficPill>
-        <TrafficPill level={aiFreshness.tone}>AI {aiFreshness.label}</TrafficPill>
+        <TrafficPill level={aiFreshness.tone}>{formatAiFreshnessLabel(aiFreshness)}</TrafficPill>
       </div>
     </div>
   );
@@ -2410,6 +2446,106 @@ function MarketImpactCompactCard({ aggregate, onExpand, onSelectCategory }) {
         ))}
       </div>
     </div>
+  );
+}
+
+function IntroTrustCard({ onDismiss, onMethodology, leftOffset = 304, topOffset = 76 }) {
+  return (
+    <div style={{
+      position: "absolute",
+      left: leftOffset,
+      top: topOffset,
+      width: 372,
+      maxWidth: "calc(100vw - 620px)",
+      zIndex: 35,
+      padding: "13px 14px",
+      borderRadius: 16,
+      border: "1px solid rgba(94,164,195,0.14)",
+      background: "linear-gradient(180deg, rgba(5,12,24,0.72), rgba(5,11,22,0.82))",
+      boxShadow: "0 16px 36px rgba(0,0,0,0.28)",
+      backdropFilter: "blur(14px)",
+      WebkitBackdropFilter: "blur(14px)",
+    }}>
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "flex-start", marginBottom: 8 }}>
+        <div style={{ color: "rgba(103,220,255,0.56)", fontSize: 10, fontFamily: mono, letterSpacing: "0.14em", textTransform: "uppercase" }}>
+          What is Grigori?
+        </div>
+        <button
+          onClick={onDismiss}
+          aria-label="Dismiss Grigori intro"
+          style={{ width: 24, height: 24, padding: 0, borderRadius: 999, border: "1px solid rgba(94,164,195,0.16)", background: "rgba(6,15,30,0.62)", color: "rgba(189,226,248,0.7)", cursor: "pointer" }}
+        >
+          ×
+        </button>
+      </div>
+      <div style={{ color: "rgba(214,235,255,0.86)", fontSize: 12, lineHeight: 1.55, fontFamily: bodyFont }}>
+        Grigori turns open-source geopolitical signals into a live operating picture: active risk signals, source confidence, AI-assisted briefings, and market-sensitive context.
+      </div>
+      <div style={{ color: "rgba(148,175,198,0.7)", fontSize: 11, lineHeight: 1.5, fontFamily: bodyFont, marginTop: 7 }}>
+        Built for strategic monitoring, not prediction or financial advice.
+      </div>
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 12 }}>
+        <button onClick={onDismiss} style={{ minHeight: 32, padding: "7px 11px", borderRadius: 999, border: "1px solid rgba(87,216,255,0.18)", background: "rgba(10,31,52,0.76)", color: "#d6ebff", fontFamily: mono, fontSize: 9, letterSpacing: "0.1em", textTransform: "uppercase", cursor: "pointer" }}>
+          Got it
+        </button>
+        <button onClick={onMethodology} style={{ minHeight: 32, padding: "7px 11px", borderRadius: 999, border: "1px solid rgba(94,164,195,0.14)", background: "rgba(6,15,30,0.66)", color: "rgba(214,235,255,0.82)", fontFamily: mono, fontSize: 9, letterSpacing: "0.1em", textTransform: "uppercase", cursor: "pointer" }}>
+          How it works
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function MethodologyPanel({ onClose }) {
+  const sections = [
+    ["What Grigori is", "Grigori is an experimental OSINT-driven strategic intelligence dashboard. It helps turn open-source geopolitical reporting into structured situational awareness."],
+    ["Source collection", "Grigori uses configured public news and open-source data providers. Provider availability, quota limits, and latency may affect coverage."],
+    ["Signal clustering", "Articles are grouped into signals based on topic, region, timing, source quality, and keyword similarity. Opinion, letter, and low-signal local commentary are filtered before public publication."],
+    ["Freshness", "Freshness reflects when a signal was created, updated, or reconfirmed by the news pipeline."],
+    ["AI enrichment", "AI enrichment structures summaries, scenarios, watch indicators, and context. It does not replace human judgment."],
+    ["Confidence scoring", "Confidence reflects source count, independent domains, corroboration, freshness, source tier, location match, and category match. It is not a guarantee of truth."],
+    ["Market-impact context", "Market-impact labels are directional context only and are not financial advice."],
+    ["Limitations", "Open-source intelligence can be incomplete, delayed, duplicated, or wrong. Grigori should be used as an aid for monitoring, not as a sole source of truth."],
+    ["Disclaimer", "Grigori does not provide financial, legal, security, or investment advice."],
+  ];
+  return (
+    <FloatingPanel title="How Grigori Works" subtitle="Methodology and limitations" top={FLOATING_TOP + 8} right={16} width={390} onClose={onClose}>
+      <div style={{ display: "grid", gap: 12 }}>
+        {sections.map(([title, body]) => (
+          <div key={title} style={{ padding: "11px 12px", borderRadius: 14, border: "1px solid rgba(94,164,195,0.12)", background: "rgba(8,20,36,0.68)" }}>
+            <div style={{ color: "#d6ebff", fontFamily: display, fontSize: 13, fontWeight: 700, marginBottom: 5 }}>{title}</div>
+            <div style={{ color: "rgba(160,198,225,0.74)", fontSize: 11, lineHeight: 1.6, fontFamily: bodyFont }}>{body}</div>
+          </div>
+        ))}
+      </div>
+    </FloatingPanel>
+  );
+}
+
+function HowToReadChip({ onOpen }) {
+  return (
+    <button
+      onClick={onOpen}
+      style={{
+        position: "absolute",
+        right: 18,
+        bottom: 52,
+        zIndex: 30,
+        minHeight: 32,
+        padding: "7px 11px",
+        borderRadius: 999,
+        border: "1px solid rgba(94,164,195,0.12)",
+        background: "rgba(6,15,30,0.48)",
+        color: "rgba(214,235,255,0.68)",
+        fontFamily: mono,
+        fontSize: 9,
+        letterSpacing: "0.11em",
+        textTransform: "uppercase",
+        cursor: "pointer",
+      }}
+    >
+      How to read this
+    </button>
   );
 }
 
@@ -2853,10 +2989,11 @@ const BRIEFING_PANEL_STORAGE_KEY = "grigori:briefing-panel-open";
 const BRIEFING_COMPACT_STORAGE_KEY = "grigori:briefing-compact-dismissed";
 const ACTIVE_SIGNALS_STORAGE_KEY = "grigori:active-signals-open";
 const MARKET_PANEL_STORAGE_KEY = "grigori:market-impact-expanded";
+const INTRO_STORAGE_KEY = "grigori:intro-dismissed";
 const APP_VIEWS = [
   { key: "globe", label: "Globe" },
   { key: "classic", label: "Intel Board" },
-  { key: "reports", label: "Personalized Reports", badge: "WIP" },
+  { key: "reports", label: "Personalized Reports", badge: "Preview" },
 ];
 
 const useViewport = () => {
@@ -2914,6 +3051,11 @@ function getDataFreshness(value) {
   if (hours < 6) return { label: `Recent · ${Math.round(hours)}h ago`, tone: "neutral", hours };
   if (hours <= 12) return { label: `Aging · ${Math.round(hours)}h ago`, tone: "amber", hours };
   return { label: `Stale · ${Math.round(hours)}h ago`, tone: "red", hours };
+}
+
+function formatAiFreshnessLabel(freshness) {
+  if (!freshness || freshness.hours == null) return "AI Pending";
+  return `AI Enriched · ${freshness.hours < 1 ? "<1h" : `${Math.round(freshness.hours)}h`} ago`;
 }
 
 function getAutomationNotice(systemStatus, adminUnlocked = false) {
@@ -3124,22 +3266,21 @@ function getEventStateLabels(event) {
 
   if (createdHours !== null && createdHours < 2) {
     labels.push({ text: "New signal", level: "green" });
-  } else if (updatedHours !== null && updatedHours < 6) {
-    labels.push({ text: `Updated ${formatShortAge(updatedAt)}`, level: "neutral" });
-  } else if (updatedAt) {
-    labels.push({ text: "Cached", level: "neutral" });
+  } else if (updatedHours !== null && updatedHours > 24) {
+    labels.push({ text: "Stored signal", level: "neutral" });
   }
 
-  if (event.aiStatus === "enriched") labels.push({ text: "AI enriched", level: "green" });
+  if (event.aiStatus === "enriched" && aiUpdatedAt) labels.push({ text: `AI Enriched · ${formatShortAge(aiUpdatedAt)}`, level: "green" });
+  else if (event.aiStatus === "enriched") labels.push({ text: "AI Enriched", level: "green" });
   else if (event.aiStatus === "rule_based" || event.aiStatus === "fallback") labels.push({ text: "Rule-based", level: "amber" });
   else if (event.aiStatus === "cached") labels.push({ text: "Cached", level: "neutral" });
   else if (event.aiStatus === "provider_error") labels.push({ text: "No material change", level: "neutral" });
 
-  if (aiUpdatedAt) {
+  if (aiUpdatedAt && event.aiStatus !== "enriched") {
     if (updatedHours !== null && updatedHours > 24) {
-      labels.push({ text: `AI refreshed · source stale`, level: "neutral" });
+      labels.push({ text: `AI Enriched · source signal stale`, level: "neutral" });
     } else {
-      labels.push({ text: `AI enriched ${formatShortAge(aiUpdatedAt)}`, level: "neutral" });
+      labels.push({ text: `AI Enriched · ${formatShortAge(aiUpdatedAt)}`, level: "neutral" });
     }
   }
 
@@ -3379,7 +3520,7 @@ function ConflictZonePanel({ zone, onSelectEvent, onClose, isMobile = false }) {
                   </TrafficPill>
                 </div>
                 <div style={{ color: "rgba(150,205,245,0.72)", fontSize: 10, lineHeight: 1.6, fontFamily: mono }}>
-                  {event.location?.label ?? "Region under review"} · impact {event.impactScore ?? event.importanceScore ?? 0} · severity {event.severityScore ?? 0}
+                  {event.location?.label ?? "Location under review"} · impact {event.impactScore ?? event.importanceScore ?? 0} · severity {event.severityScore ?? 0}
                 </div>
               </button>
             ))}
@@ -3570,7 +3711,7 @@ function WarRoomPanel({ topEvents, onSelect, selectedEventId, onClose, marketImp
         <div>
           <div style={{ color: "#ff4455", fontSize: 9, fontFamily: mono,
             letterSpacing: "0.2em", textTransform: "uppercase", marginBottom: 2 }}>
-            ⬛ WAR ROOM
+            Priority View
           </div>
           <div style={{ color: "rgba(220,240,255,0.9)", fontFamily: display,
             fontSize: 13, fontWeight: 700, letterSpacing: "0.05em" }}>WHAT MATTERS NOW</div>
@@ -3586,7 +3727,7 @@ function WarRoomPanel({ topEvents, onSelect, selectedEventId, onClose, marketImp
         <div style={{ padding: "12px 14px", borderBottom: "1px solid rgba(0,180,255,0.07)", display: "grid", gap: 10 }}>
           <div style={{ display: "grid", gap: 4 }}>
             <div style={{ color: "rgba(103,220,255,0.48)", fontSize: 10, fontFamily: mono, letterSpacing: "0.14em", textTransform: "uppercase" }}>
-              Command Snapshot
+              Priority Snapshot
             </div>
             {demoMode ? <TrafficPill level="neutral">Public Preview</TrafficPill> : null}
             <div style={{ color: "#d6ebff", fontFamily: display, fontSize: 17, fontWeight: 700 }}>
@@ -3594,7 +3735,7 @@ function WarRoomPanel({ topEvents, onSelect, selectedEventId, onClose, marketImp
             </div>
             <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
               <TrafficPill level={newsFreshness.tone}>{newsFreshness.label}</TrafficPill>
-              <TrafficPill level={aiFreshness.tone}>AI {aiFreshness.label}</TrafficPill>
+              <TrafficPill level={aiFreshness.tone}>{formatAiFreshnessLabel(aiFreshness)}</TrafficPill>
               {refreshState?.detail?.newestArticleAt ? (
                 <TrafficPill level={latestArticleFreshness.tone}>Latest source · {formatShortAge(refreshState.detail.newestArticleAt)}</TrafficPill>
               ) : null}
@@ -3654,13 +3795,6 @@ function WarRoomPanel({ topEvents, onSelect, selectedEventId, onClose, marketImp
                   Master Refresh with AI
                 </button>
               </div>
-            ) : !demoMode ? (
-              <button onClick={onAdminUnlock} style={{
-                minHeight: 38, borderRadius: 12, border: "1px solid rgba(87,216,255,0.18)", background: "rgba(10,31,52,0.76)",
-                color: "#d6ebff", fontFamily: mono, fontSize: 10, letterSpacing: "0.12em", textTransform: "uppercase", cursor: "pointer",
-              }}>
-                Admin Unlock
-              </button>
             ) : null}
           </div>
         </div>
@@ -3902,7 +4036,7 @@ function EventDetailContent({ event, activeScenario, onScenarioChange, allEvents
         {event.priorityScore !== undefined && (
           <div style={{ padding: "13px 18px", borderBottom: "1px solid rgba(0,180,255,0.07)" }}>
             <div style={{ color: "rgba(0,200,255,0.3)", fontSize: 9, fontFamily: mono,
-              letterSpacing: "0.15em", textTransform: "uppercase", marginBottom: 10 }}>WAR ROOM PRIORITY</div>
+              letterSpacing: "0.15em", textTransform: "uppercase", marginBottom: 10 }}>Priority View</div>
             <ScoreBreakdownPanel event={event} />
           </div>
         )}
@@ -4316,7 +4450,7 @@ function GlobalViewButton({ onReset, mobile = false, offsetLeft = 18 }) {
         boxShadow: "0 16px 40px rgba(0,0,0,0.34)",
       }}
     >
-      Return to Global View
+      Global View
     </button>
   );
 }
@@ -4344,7 +4478,7 @@ function LiveSunButton({ enabled, onToggle, mobile = false, offsetLeft = 18 }) {
         boxShadow: "0 16px 40px rgba(0,0,0,0.26)",
       }}
     >
-      Live Sun {enabled ? "On" : "Off"}
+      Day/Night {enabled ? "On" : "Off"}
     </button>
   );
 }
@@ -4496,7 +4630,7 @@ function MobileBottomSheet({ events, selectedEvent, activeScenario, onScenarioCh
               <MobileSheetTabButton active={activeTab === "signals"} onClick={() => setActiveTab("signals")}>Signals</MobileSheetTabButton>
               <MobileSheetTabButton active={activeTab === "layers"} onClick={() => setActiveTab("layers")}>Layers</MobileSheetTabButton>
               <MobileSheetTabButton active={activeTab === "market"} onClick={() => setActiveTab("market")}>Market</MobileSheetTabButton>
-              <MobileSheetTabButton active={activeTab === "warroom"} onClick={() => setActiveTab("warroom")}>War Room</MobileSheetTabButton>
+              <MobileSheetTabButton active={activeTab === "warroom"} onClick={() => setActiveTab("warroom")}>Priority</MobileSheetTabButton>
             </div>
           </div>
         )}
@@ -4517,7 +4651,7 @@ function MobileBottomSheet({ events, selectedEvent, activeScenario, onScenarioCh
                       News {getDataFreshness(systemStatus?.automation?.lastNewsRefreshAt).label}
                     </TrafficPill>
                     <TrafficPill level={getDataFreshness(systemStatus?.automation?.lastAiRefreshAt).tone}>
-                      AI {getDataFreshness(systemStatus?.automation?.lastAiRefreshAt).label}
+                      {formatAiFreshnessLabel(getDataFreshness(systemStatus?.automation?.lastAiRefreshAt))}
                     </TrafficPill>
                   </div>
                   {refreshState?.message ? (
@@ -4564,7 +4698,7 @@ function MobileBottomSheet({ events, selectedEvent, activeScenario, onScenarioCh
                         {ev.briefSummary}
                       </div>
                       <div style={{ display: "flex", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
-                        <span style={{ color: "rgba(0,180,255,0.38)", fontSize: 9, fontFamily: mono }}>{ev.location?.label ?? "Region under review"}</span>
+                        <span style={{ color: "rgba(0,180,255,0.38)", fontSize: 9, fontFamily: mono }}>{ev.location?.label ?? "Location under review"}</span>
                         <span style={{ color: pcfg.color, fontSize: 9, fontFamily: mono, fontWeight: 700 }}>{Math.round(ev.priorityQueueScore ?? ev.lensPriorityScore ?? ev.priorityScore ?? 0)} pts</span>
                       </div>
                       <div style={{ display: "flex", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
@@ -4600,7 +4734,7 @@ function MobileBottomSheet({ events, selectedEvent, activeScenario, onScenarioCh
                     ))}
                   </div>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, paddingTop: 8, borderTop: "1px solid rgba(94,164,195,0.12)" }}>
-                    <span style={{ color: "rgba(214,235,255,0.84)", fontSize: 12, fontFamily: bodyFont }}>Live Sun</span>
+                    <span style={{ color: "rgba(214,235,255,0.84)", fontSize: 12, fontFamily: bodyFont }}>Day/Night lighting</span>
                     <TopControlButton active={liveSunEnabled} onClick={onToggleLiveSun}>{liveSunEnabled ? "On" : "Off"}</TopControlButton>
                   </div>
                 </div>
@@ -4641,7 +4775,7 @@ function MobileBottomSheet({ events, selectedEvent, activeScenario, onScenarioCh
                       {getDataFreshness(systemStatus?.automation?.lastNewsRefreshAt).label}
                     </TrafficPill>
                     <TrafficPill level={getDataFreshness(systemStatus?.automation?.lastAiRefreshAt).tone}>
-                      AI {getDataFreshness(systemStatus?.automation?.lastAiRefreshAt).label}
+                      {formatAiFreshnessLabel(getDataFreshness(systemStatus?.automation?.lastAiRefreshAt))}
                     </TrafficPill>
                   </div>
                   {refreshState?.message ? (
@@ -4698,25 +4832,6 @@ function MobileBottomSheet({ events, selectedEvent, activeScenario, onScenarioCh
                         Refresh AI
                       </button>
                     </div>
-                  ) : !demoMode ? (
-                    <button
-                      onClick={onAdminUnlock}
-                      style={{
-                        marginTop: 10,
-                        minHeight: 40,
-                        width: "100%",
-                        borderRadius: 12,
-                        border: "1px solid rgba(87,216,255,0.18)",
-                        background: "rgba(10,31,52,0.72)",
-                        color: "#d6ebff",
-                        fontFamily: mono,
-                        fontSize: 10,
-                        letterSpacing: "0.12em",
-                        textTransform: "uppercase",
-                      }}
-                    >
-                      Admin Unlock
-                    </button>
                   ) : null}
                 </div>
               </div>
@@ -5215,7 +5330,7 @@ function TopBar({ counts, bordersLoaded, activeLayers, onLayerToggle, isMobile, 
         )}
 
         {!compact ? <TopControlButton onClick={() => { setShowLayersMenu((value) => !value); setShowStatusMenu(false); setShowAdminMenu(false); }} active={showLayersMenu}>Layers</TopControlButton> : null}
-        {!compact ? <TopControlButton onClick={onWarRoom} active={showWarRoom}>War Room</TopControlButton> : null}
+        {!compact ? <TopControlButton onClick={onWarRoom} active={showWarRoom}>Priority View</TopControlButton> : null}
         {!compact ? (
           <TopControlButton onClick={() => { setShowStatusMenu((value) => !value); setShowLayersMenu(false); setShowAdminMenu(false); }} subtle>
             Operational · {aiRemaining}
@@ -5223,7 +5338,7 @@ function TopBar({ counts, bordersLoaded, activeLayers, onLayerToggle, isMobile, 
         ) : null}
         {!compact && !demoMode ? (
           <TopControlButton onClick={() => { setShowAdminMenu((value) => !value); setShowLayersMenu(false); setShowStatusMenu(false); }} subtle>
-            Admin
+            {adminUnlocked ? "Operator" : "Unlock"}
           </TopControlButton>
         ) : null}
 
@@ -5237,7 +5352,7 @@ function TopBar({ counts, bordersLoaded, activeLayers, onLayerToggle, isMobile, 
                 ))}
               </div>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, paddingTop: 8, borderTop: "1px solid rgba(94,164,195,0.12)" }}>
-                <span style={{ color: "rgba(214,235,255,0.84)", fontSize: 12, fontFamily: bodyFont }}>Live Sun</span>
+                <span style={{ color: "rgba(214,235,255,0.84)", fontSize: 12, fontFamily: bodyFont }}>Day/Night lighting</span>
                 <TopControlButton active={liveSunEnabled} onClick={onToggleLiveSun}>{liveSunEnabled ? "On" : "Off"}</TopControlButton>
               </div>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 }}>
@@ -5270,9 +5385,12 @@ function TopBar({ counts, bordersLoaded, activeLayers, onLayerToggle, isMobile, 
                 <span style={{ color: "rgba(148,175,198,0.78)", fontFamily: mono, fontSize: 10 }}>{time} UTC</span>
               </div>
               <div style={{ color: "rgba(214,235,255,0.84)", fontSize: 12, fontFamily: bodyFont }}>AI remaining today {aiRemaining}</div>
+              <div style={{ color: "rgba(148,175,198,0.78)", fontFamily: mono, fontSize: 10 }}>
+                Data as of: {formatLayerTime(systemStatus?.automation?.lastNewsRefreshAt ?? systemStatus?.automation?.newestEventAt)}
+              </div>
               <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
                 <TrafficPill level={newsFreshness.tone}>{newsFreshness.label}</TrafficPill>
-                <TrafficPill level={aiFreshness.tone}>AI {aiFreshness.label}</TrafficPill>
+                <TrafficPill level={aiFreshness.tone}>{formatAiFreshnessLabel(aiFreshness)}</TrafficPill>
               </div>
               {refreshState?.message ? (
                 <div style={{ color: "rgba(214,235,255,0.84)", fontSize: 12, fontFamily: bodyFont, lineHeight: 1.55 }}>
@@ -5297,7 +5415,7 @@ function TopBar({ counts, bordersLoaded, activeLayers, onLayerToggle, isMobile, 
         {showAdminMenu && !compact && !demoMode ? (
           <HeaderPopover right={0} minWidth={228}>
             <div style={{ padding: "12px", display: "grid", gap: 10 }}>
-              <div style={{ color: "rgba(103, 220, 255, 0.48)", fontSize: 10, fontFamily: mono, letterSpacing: "0.12em", textTransform: "uppercase" }}>Admin</div>
+              <div style={{ color: "rgba(103, 220, 255, 0.48)", fontSize: 10, fontFamily: mono, letterSpacing: "0.12em", textTransform: "uppercase" }}>Operator Mode</div>
               {adminUnlocked ? (
                 <>
                   <TopControlButton onClick={() => onAdminRefresh("news")}>Refresh Newsfeed</TopControlButton>
@@ -5314,7 +5432,7 @@ function TopBar({ counts, bordersLoaded, activeLayers, onLayerToggle, isMobile, 
                   {feedState?.message ? <div style={{ color: "rgba(148,175,198,0.76)", fontFamily: mono, fontSize: 10 }}>{feedState.message}</div> : null}
                 </>
               ) : (
-                <TopControlButton onClick={onAdminUnlock}>Unlock Admin</TopControlButton>
+                <TopControlButton onClick={onAdminUnlock}>Unlock Operator Mode</TopControlButton>
               )}
             </div>
           </HeaderPopover>
@@ -5380,7 +5498,7 @@ function DesktopSidebar({ events, selectedEvent, onSelect, modeHours, onModeChan
         </div>
         <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 12 }}>
           <TrafficPill level={newsFreshness.tone}>News {newsFreshness.label}</TrafficPill>
-          <TrafficPill level={aiFreshness.tone}>AI {aiFreshness.label}</TrafficPill>
+          <TrafficPill level={aiFreshness.tone}>{formatAiFreshnessLabel(aiFreshness)}</TrafficPill>
         </div>
         {feedState?.message ? (
           <div style={{ marginTop: 8, color: "rgba(150,205,245,0.78)", fontSize: 11, lineHeight: 1.55, fontFamily: bodyFont }}>
@@ -5468,7 +5586,7 @@ function DesktopSidebar({ events, selectedEvent, onSelect, modeHours, onModeChan
               </div>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
                 <div style={{ color: "rgba(120,178,214,0.58)", fontSize: 10, fontFamily: mono, letterSpacing: "0.04em" }}>
-                  {ev.location?.label ?? "Region under review"}
+                  {ev.location?.label ?? "Location under review"}
                 </div>
                 <span style={{ color: pcfg.color, fontSize: 9, fontFamily: mono,
                   fontWeight: 700, background: pcfg.bg,
@@ -5476,17 +5594,26 @@ function DesktopSidebar({ events, selectedEvent, onSelect, modeHours, onModeChan
                   padding: "4px 8px" }}>{Math.round(ev.priorityQueueScore ?? ev.lensPriorityScore ?? ev.priorityScore ?? 0)}</span>
               </div>
               <div style={{ marginTop: 12, display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
-                <div style={{ padding: "8px 10px", borderRadius: 12, background: "rgba(8,20,36,0.58)", border: "1px solid rgba(94,164,195,0.1)" }}>
+                <div
+                  title="Impact is a 0-100 Grigori score estimating potential operational, market, or strategic relevance based on severity, region, affected sectors, and source signals."
+                  style={{ padding: "8px 10px", borderRadius: 12, background: "rgba(8,20,36,0.58)", border: "1px solid rgba(94,164,195,0.1)" }}
+                >
                   <div style={{ color: "rgba(120,178,214,0.52)", fontSize: 9, fontFamily: mono, letterSpacing: "0.08em", textTransform: "uppercase" }}>Impact</div>
                   <div style={{ color: "#eaf7ff", fontSize: 14, fontFamily: display, fontWeight: 700, marginTop: 4 }}>{ev.impactScore ?? 0}</div>
                 </div>
-                <div style={{ padding: "8px 10px", borderRadius: 12, background: "rgba(8,20,36,0.58)", border: "1px solid rgba(94,164,195,0.1)" }}>
+                <div
+                  title="Confidence reflects source count, domain diversity, corroboration, freshness, source tier, and location/category match. It is not a guarantee of accuracy."
+                  style={{ padding: "8px 10px", borderRadius: 12, background: "rgba(8,20,36,0.58)", border: "1px solid rgba(94,164,195,0.1)" }}
+                >
                   <div style={{ color: "rgba(120,178,214,0.52)", fontSize: 9, fontFamily: mono, letterSpacing: "0.08em", textTransform: "uppercase" }}>Confidence</div>
                   <div style={{ color: "#eaf7ff", fontSize: 14, fontFamily: display, fontWeight: 700, marginTop: 4 }}>{ev.confidence}</div>
                 </div>
               </div>
               <div style={{ marginTop: 10, display: "flex", justifyContent: "space-between", gap: 8, color: "rgba(150,200,240,0.54)", fontSize: 10, fontFamily: mono, flexWrap: "wrap" }}>
-                <span>{ev.sourceSignals?.sourceCount ?? 0} sources</span>
+                <span title="Number of source signals clustered into this event.">
+                  {ev.sourceSignals?.sourceCount ?? 0} sources
+                  {ev.sourceAssessment?.sourceQuality ? ` · ${String(ev.sourceAssessment.sourceQuality).replace("_", " ")} quality` : ""}
+                </span>
                 <span>{ev.recentTrend ?? "Stable"}</span>
                 <span>{freshnessMeta.detail}</span>
               </div>
@@ -5579,6 +5706,8 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
   const [refreshState,    setRefreshState]    = useState({ status: "idle", message: "", detail: null });
   const [briefing,        setBriefing]        = useState(buildBriefing(SCORED_EVENTS));
   const [briefingCompactDismissed, setBriefingCompactDismissed] = useState(() => readStoredBoolean(BRIEFING_COMPACT_STORAGE_KEY, false));
+  const [introDismissed, setIntroDismissed] = useState(() => readStoredBoolean(INTRO_STORAGE_KEY, false));
+  const [showMethodology, setShowMethodology] = useState(false);
   const [selectedMarketKey, setSelectedMarketKey] = useState(null);
   const [timelineHours,   setTimelineHours]   = useState(24 * 7);
   const [timelineSlider,  setTimelineSlider]  = useState(100);
@@ -5702,6 +5831,11 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
   }, [briefingCompactDismissed]);
 
   useEffect(() => {
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem(INTRO_STORAGE_KEY, String(Boolean(introDismissed)));
+  }, [introDismissed]);
+
+  useEffect(() => {
     let cancelled = false;
     if (!activeLayers.flights) return undefined;
 
@@ -5767,13 +5901,13 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
   }, [activeLayers.social]);
 
   const handleAdminUnlock = useCallback(() => {
-    const secret = window.prompt("Enter ADMIN_SECRET to unlock admin controls for this session.");
+    const secret = window.prompt("Enter operator secret to unlock controls for this session.");
     if (!secret) return;
     setAdminSession({ unlocked: true, secret });
   }, []);
 
   const handleAdminRefresh = useCallback(async (mode = "full") => {
-    const secret = adminSession.secret || window.prompt("Enter ADMIN_SECRET to refresh the pipeline.");
+    const secret = adminSession.secret || window.prompt("Enter operator secret to refresh the pipeline.");
     if (!secret) return;
     if (!adminSession.secret) {
       setAdminSession({ unlocked: true, secret });
@@ -5923,6 +6057,12 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
 
   const handleRestoreBriefingCompact = useCallback(() => {
     setBriefingCompactDismissed(false);
+  }, []);
+
+  const handleOpenMethodology = useCallback(() => {
+    setIntroDismissed(true);
+    setShowMethodology(true);
+    setPanelVisibility((current) => ({ ...current, briefing: false, marketImpact: false, dataConfidence: false }));
   }, []);
 
   const handleExpandMarketImpact = useCallback(() => {
@@ -6374,7 +6514,7 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
         let tooltipText = null;
         if (hit.objectType === "event") {
           const ev2 = interactiveEvents.find(ev => ev.id === hit.eventId);
-          tooltipText = ev2 ? `${ev2.title}\n${ev2.location?.label ?? "Region under review"} · ${ev2.category ?? "Political"} · ${ev2.tone}\nImpact ${ev2.impactScore ?? ev2.importanceScore ?? 0} · Severity ${ev2.severityScore ?? 0}` : null;
+          tooltipText = ev2 ? `${ev2.title}\n${ev2.location?.label ?? "Location under review"} · ${ev2.category ?? "Political"} · ${ev2.tone}\nImpact ${ev2.impactScore ?? ev2.importanceScore ?? 0} · Severity ${ev2.severityScore ?? 0}` : null;
         } else if (hit.objectType === "zone") {
           const zone = hit.objectData;
           tooltipText = zone ? `${zone.label}\n${zone.eventCount} events · ${zone.sourcesCount} sources` : null;
@@ -6806,7 +6946,10 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
                 onClose={handleCloseBriefing}
               />
             ) : null}
-            {panelVisibility.marketImpact && activeLayers.intelBoard && !panelVisibility.briefing && !selectedMarketImpact ? (
+            {showMethodology ? (
+              <MethodologyPanel onClose={() => setShowMethodology(false)} />
+            ) : null}
+            {panelVisibility.marketImpact && activeLayers.intelBoard && !panelVisibility.briefing && !selectedMarketImpact && !showMethodology ? (
               <MarketImpactDashboard
                 aggregate={marketImpact}
                 emphasis={lensConfig.emphasis}
@@ -6814,14 +6957,14 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
                 onClose={() => setPanelVisibility((current) => ({ ...current, marketImpact: false }))}
               />
             ) : null}
-            {!panelVisibility.marketImpact && activeLayers.intelBoard && !panelVisibility.briefing && !selectedDetail && !selectedMarketImpact ? (
+            {!panelVisibility.marketImpact && activeLayers.intelBoard && !panelVisibility.briefing && !selectedDetail && !selectedMarketImpact && !showMethodology ? (
               <MarketImpactCompactCard
                 aggregate={marketImpact}
                 onExpand={handleExpandMarketImpact}
                 onSelectCategory={setSelectedMarketKey}
               />
             ) : null}
-            {panelVisibility.dataConfidence && activeLayers.intelBoard && !panelVisibility.briefing ? (
+            {panelVisibility.dataConfidence && activeLayers.intelBoard && !panelVisibility.briefing && !showMethodology ? (
               <DataConfidencePanel
                 stats={confidenceStats}
                 onClose={() => setPanelVisibility((current) => ({ ...current, dataConfidence: false }))}
@@ -6894,8 +7037,21 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
           )}
         </div>
 
-        <GlobalViewButton onReset={handleReturnToGlobalView} mobile={isMobile} offsetLeft={panelVisibility.events && activeLayers.intelBoard ? 302 : 18} />
-        {!isMobile && activeLayers.intelBoard && !panelVisibility.briefing && !selectedDetail && !briefingCompactDismissed ? (
+        {selectedEvent || selectedZone || selectedObject ? (
+          <GlobalViewButton onReset={handleReturnToGlobalView} mobile={isMobile} offsetLeft={panelVisibility.events && activeLayers.intelBoard ? 302 : 18} />
+        ) : null}
+        {!isMobile && activeLayers.intelBoard && !introDismissed && !selectedDetail && !panelVisibility.briefing ? (
+          <IntroTrustCard
+            leftOffset={panelVisibility.events && activeLayers.intelBoard ? 302 : 18}
+            topOffset={headerHeight + 16}
+            onDismiss={() => setIntroDismissed(true)}
+            onMethodology={handleOpenMethodology}
+          />
+        ) : null}
+        {!isMobile && activeLayers.intelBoard && introDismissed && !showMethodology ? (
+          <HowToReadChip onOpen={handleOpenMethodology} />
+        ) : null}
+        {!isMobile && activeLayers.intelBoard && introDismissed && !panelVisibility.briefing && !selectedDetail && !briefingCompactDismissed ? (
           <BriefingCompactCard
             briefing={briefing}
             strategicBrief={strategicBrief}
@@ -6906,7 +7062,7 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
             leftOffset={panelVisibility.events && activeLayers.intelBoard ? 302 : 18}
           />
         ) : null}
-        {!isMobile && activeLayers.intelBoard && !panelVisibility.briefing && !selectedDetail && briefingCompactDismissed ? (
+        {!isMobile && activeLayers.intelBoard && introDismissed && !panelVisibility.briefing && !selectedDetail && briefingCompactDismissed ? (
           <BriefingMiniChip
             onOpen={handleRestoreBriefingCompact}
             leftOffset={panelVisibility.events && activeLayers.intelBoard ? 302 : 18}

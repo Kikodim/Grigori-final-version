@@ -7,13 +7,13 @@ export const BRAND = {
   description: "Real-time geopolitical intelligence, strategic risk monitoring, live situational awareness, and personalized executive reports.",
 };
 
-export const REPORT_STATUS_BADGE = "Work in Progress";
-export const REPORTS_WIP_COPY = "Personalized intelligence reports are currently being prepared. This section previews the upcoming premium reporting system.";
+export const REPORT_STATUS_BADGE = "Reports Preview";
+export const REPORTS_WIP_COPY = "Personalized intelligence reports are in private preview. This section shows the premium reporting workflow before wider release.";
 
 export const PREMIUM_PLANS = [
   {
-    tier: "confidential",
-    name: "Confidential Clearance",
+    tier: "analyst",
+    name: "Analyst",
     priceLabel: "€20 / month",
     reportsPerDay: 1,
     watchlists: 1,
@@ -25,8 +25,8 @@ export const PREMIUM_PLANS = [
     ],
   },
   {
-    tier: "top_secret",
-    name: "Top Secret Clearance",
+    tier: "strategic",
+    name: "Strategic",
     priceLabel: "€59 / month",
     reportsPerDay: 5,
     watchlists: "Multiple",
@@ -89,10 +89,10 @@ export const REPORT_OUTPUT_SECTIONS = [
 ];
 
 export function getTierConfig(tier = "free") {
-  if (tier === "confidential") {
+  if (tier === "analyst" || tier === "confidential") {
     return PREMIUM_PLANS[0];
   }
-  if (tier === "top_secret") {
+  if (tier === "strategic" || tier === "top_secret") {
     return PREMIUM_PLANS[1];
   }
   return {

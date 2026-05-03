@@ -210,6 +210,8 @@ export function cluster({ threshold = 0.18 } = {}) {
       articleIds: c.articles.map((a) => a.id),
       sources: [...new Set(c.articles.map((a) => a.source))],
       sourceDomains: [...new Set(c.articles.flatMap((a) => a.sourceDomains ?? []))],
+      sourceTiers: [...new Set(c.articles.map((a) => a.sourceTier ?? "unknown"))],
+      contentTypes: [...new Set(c.articles.map((a) => a.contentType ?? "unknown"))],
       relevanceScore: Math.round(c.articles.reduce((sum, article) => sum + Number(article.relevanceScore ?? 0), 0) / Math.max(c.articles.length, 1)),
       // Raw text passed to the AI summarizer
       articlesText: c.articles

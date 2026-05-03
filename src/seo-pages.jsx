@@ -94,7 +94,7 @@ export const SEO_ROUTE_CONFIG = {
       },
       {
         heading: "Key features",
-        body: "Core features include a living Earth view, a priority-sorted Active Signals queue, a structured event detail panel, War Room summaries, and source-confidence context. The system also distinguishes between fresh updates, no-change refreshes, and filtered-out noise, which is critical when operating in environments where signals may be sparse, repetitive, or overhyped. Strategic users benefit from seeing not only a new event, but whether it altered the board in a meaningful way or simply confirmed what was already known."
+        body: "Core features include a living Earth view, a priority-sorted Active Signals queue, a structured event detail panel, Priority View summaries, and source-confidence context. The system also distinguishes between fresh updates, no-change refreshes, and filtered-out noise, which is critical when operating in environments where signals may be sparse, repetitive, or overhyped. Strategic users benefit from seeing not only a new event, but whether it altered the board in a meaningful way or simply confirmed what was already known."
       },
       {
         heading: "Who it is for",
