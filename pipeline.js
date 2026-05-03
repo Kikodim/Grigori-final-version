@@ -261,6 +261,8 @@ function getNewsActivityTime(event) {
     event.refreshed_at ??
     event.lastSeenAt ??
     event.last_seen_at ??
+    event.newestSourceAt ??
+    event.newest_source_at ??
     event.updatedAt ??
     event.updated_at ??
     event.createdAt ??
@@ -379,6 +381,7 @@ async function runAiOnlyRefresh({ source, noAi, startedAt }) {
   const maxAiCallsPerRun = config.maxAiCallsPerRun;
   const automationRemaining = Math.max(0, aiStatus.automationBudget - aiStatus.aiCallsToday);
   const isAutomatedRun = source !== "manual";
+  const aiCheckAt = new Date().toISOString();
   const allowedCallsThisRun = automatedAiEnabled
     ? Math.max(0, Math.min(maxAiCallsPerRun, isAutomatedRun ? automationRemaining : maxAiCallsPerRun))
     : 0;
@@ -438,6 +441,12 @@ async function runAiOnlyRefresh({ source, noAi, startedAt }) {
       return new Date(b.newsActivityAt ?? b.event.timestamp ?? 0).getTime() - new Date(a.newsActivityAt ?? a.event.timestamp ?? 0).getTime();
     });
 
+  const freshEligibleCandidates = candidates.filter((candidate) => {
+    const activityMs = new Date(candidate.newsActivityAt ?? candidate.event.timestamp ?? 0).getTime();
+    const ageHours = Number.isFinite(activityMs) ? (Date.now() - activityMs) / 3600_000 : Number.POSITIVE_INFINITY;
+    return ["Fresh", "Recent", "Aging"].includes(candidate.freshnessStatus) && ageHours <= 72;
+  });
+
   if (!automatedAiEnabled) {
     log.info("AI skipped reason automated_ai_disabled");
     return {
@@ -455,7 +464,7 @@ async function runAiOnlyRefresh({ source, noAi, startedAt }) {
       reason: "Automated AI disabled",
       ...baseDiagnostics,
       aiSkippedReason: "automated_ai_disabled",
-      lastAiRefreshAt: null,
+      lastAiRefreshAt: aiCheckAt,
       message: buildAiRefreshMessage({ aiCalls: 0, changed: false, aiSkippedReason: "automated_ai_disabled" }),
     };
   }
@@ -477,7 +486,7 @@ async function runAiOnlyRefresh({ source, noAi, startedAt }) {
       reason: "Gemini is not configured",
       ...baseDiagnostics,
       aiSkippedReason: "gemini_not_configured",
-      lastAiRefreshAt: null,
+      lastAiRefreshAt: aiCheckAt,
       message: buildAiRefreshMessage({ aiCalls: 0, changed: false, aiSkippedReason: "gemini_not_configured" }),
     };
   }
@@ -499,7 +508,7 @@ async function runAiOnlyRefresh({ source, noAi, startedAt }) {
       reason: "MAX_AI_CALLS_PER_RUN is zero",
       ...baseDiagnostics,
       aiSkippedReason: "max_ai_calls_per_run_zero",
-      lastAiRefreshAt: null,
+      lastAiRefreshAt: aiCheckAt,
       message: buildAiRefreshMessage({ aiCalls: 0, changed: false, aiSkippedReason: "max_ai_calls_per_run_zero" }),
     };
   }
@@ -521,7 +530,7 @@ async function runAiOnlyRefresh({ source, noAi, startedAt }) {
       reason: "AI daily budget exhausted",
       ...baseDiagnostics,
       aiSkippedReason: "daily_budget_exhausted",
-      lastAiRefreshAt: null,
+      lastAiRefreshAt: aiCheckAt,
       message: buildAiRefreshMessage({ aiCalls: 0, changed: false, aiSkippedReason: "daily_budget_exhausted" }),
     };
   }
@@ -562,12 +571,47 @@ async function runAiOnlyRefresh({ source, noAi, startedAt }) {
       historicalEventsSkipped,
       reasonSelected: fallbackReason,
       aiSkippedReason: skipReason,
-      lastAiRefreshAt: null,
+      lastAiRefreshAt: aiCheckAt,
       message: buildAiRefreshMessage({ aiCalls: 0, changed: false, aiSkippedReason: skipReason, fallbackReason }),
     };
   }
 
-  const target = candidates[0];
+  if (isAutomatedRun && freshEligibleCandidates.length === 0) {
+    const previousTarget = previousEvents
+      .slice()
+      .sort((a, b) => (Number(b.importanceScore ?? 0) - Number(a.importanceScore ?? 0)))
+      .find(Boolean);
+    log.info("AI skipped reason no_fresh_eligible_event");
+    return {
+      ok: true,
+      events: 0,
+      articles: 0,
+      clusters: 0,
+      cached: 0,
+      aiCalls: 0,
+      purged: 0,
+      mode: "ai",
+      refreshMode: "ai",
+      elapsed: getElapsed(startedAt),
+      changed: false,
+      reason: "Scheduled AI check found no fresh eligible event",
+      ...baseDiagnostics,
+      targetEventId: previousTarget?.id ?? null,
+      targetTitle: previousTarget?.title ?? null,
+      targetFreshnessStatus: previousTarget ? getFreshnessStatus(previousTarget) : null,
+      targetNewsActivityAt: previousTarget ? getNewsActivityTime(previousTarget) : null,
+      targetAiUpdatedAtBefore: previousTarget?.aiUpdatedAt ?? previousTarget?.ai_updated_at ?? null,
+      activeEventsConsidered: previousEvents.length,
+      staleEventsSkipped,
+      historicalEventsSkipped,
+      reasonSelected: fallbackReason,
+      aiSkippedReason: "no_fresh_eligible_event",
+      lastAiRefreshAt: aiCheckAt,
+      message: "Scheduled AI check completed. No fresh eligible event required enrichment.",
+    };
+  }
+
+  const target = isAutomatedRun ? freshEligibleCandidates[0] : candidates[0];
   log.info(`AI mode selected target id=${target.event.id} title="${target.event.title}" aiStatus=${target.event.aiStatus ?? "unknown"} scenarios=${Array.isArray(target.event.scenarios) ? target.event.scenarios.length : 0} importance=${target.importanceScore}`);
   if (allowedCallsThisRun <= 0) {
     await insertEvent({
@@ -604,7 +648,7 @@ async function runAiOnlyRefresh({ source, noAi, startedAt }) {
       reasonSelected: fallbackReason,
       aiSkippedReason: "automation_budget_exhausted",
       targetAiStatusAfter: "budget_exhausted",
-      lastAiRefreshAt: null,
+      lastAiRefreshAt: aiCheckAt,
       message: buildAiRefreshMessage({ aiCalls: 0, changed: false, aiSkippedReason: "automation_budget_exhausted", fallbackReason }),
     };
   }
@@ -634,7 +678,7 @@ async function runAiOnlyRefresh({ source, noAi, startedAt }) {
   const scenariosChanged = JSON.stringify(result.scenarios ?? []) !== JSON.stringify(target.event.scenarios ?? []);
   const changed = titleChanged || summaryChanged || developmentsChanged || scenariosChanged || target.event.aiStatus !== targetAiStatusAfter;
 
-  await insertEvent({
+  const writeResult = await insertEvent({
     ...target.event,
     title: result.title,
     location: result.location ?? target.event.location,
@@ -653,15 +697,20 @@ async function runAiOnlyRefresh({ source, noAi, startedAt }) {
       ? (result.aiSkippedReason === "provider_error" ? "provider_error" : "rule_based")
       : "enriched",
     aiUpdatedAt: lastAiRefreshAt,
+    persistenceStage: "ai_event_update",
     updatedAt: target.event.updatedAt ?? target.event.updated_at ?? target.event.createdAt ?? target.event.created_at ?? target.event.timestamp,
     lastSeenAt: target.event.lastSeenAt ?? target.event.last_seen_at ?? null,
     refreshedAt: target.event.refreshedAt ?? target.event.refreshed_at ?? null,
     clusterSignature: target.preEvent._clusterSignature,
     importanceScore: target.importanceScore,
   });
+  const eventUpdatePersisted = Boolean(writeResult.persisted);
+  const eventUpdateReadBack = writeResult.mode === "supabase" && eventUpdatePersisted;
+  const persistenceErrors = writeResult.errorInfo ? [writeResult.errorInfo] : [];
 
   return {
-    ok: true,
+    ok: eventUpdatePersisted,
+    status: eventUpdatePersisted ? "ok" : "ai_event_update_failed",
     events: 1,
     articles: 0,
     clusters: 1,
@@ -693,7 +742,14 @@ async function runAiOnlyRefresh({ source, noAi, startedAt }) {
     aiSkippedReason,
     aiProviderError,
     lastAiRefreshAt,
-    message: buildAiRefreshMessage({ aiCalls: result.generationMethod === "rule-based" ? 0 : 1, changed, aiSkippedReason, fallbackReason }),
+    eventUpdatePersisted,
+    eventUpdateReadBack,
+    persistenceErrors,
+    saveFailures: eventUpdatePersisted ? 0 : 1,
+    supabaseErrorCount: eventUpdatePersisted ? 0 : 1,
+    message: eventUpdatePersisted
+      ? buildAiRefreshMessage({ aiCalls: result.generationMethod === "rule-based" ? 0 : 1, changed, aiSkippedReason, fallbackReason })
+      : "AI enrichment generated but event update failed to persist.",
   };
 }
 
@@ -1031,6 +1087,7 @@ export async function runPipeline({ source = "manual", noAi = false, mode = "ful
   let failedEventWrites = 0;
   let supabaseErrorCount = 0;
   let memoryFallbackUsed = false;
+  const persistenceErrors = [];
   const eventTimestamps = [];
   for (const preEvent of publishablePreEvents) {
     const result = results.get(preEvent._clusterId);
@@ -1087,6 +1144,7 @@ export async function runPipeline({ source = "manual", noAi = false, mode = "ful
       failedEventWrites++;
       supabaseErrorCount += writeResult.error ? 1 : 0;
       if (writeResult.mode === "memory") memoryFallbackUsed = true;
+      if (writeResult.errorInfo) persistenceErrors.push(writeResult.errorInfo);
       for (const [provider, articleCount] of Object.entries(clusterProviderCounts)) {
         const bucket = providerDiagnostics.get(provider);
         if (bucket) bucket.save_failed += articleCount;
@@ -1154,6 +1212,7 @@ export async function runPipeline({ source = "manual", noAi = false, mode = "ful
       failedEventWrites++;
       supabaseErrorCount += writeResult.error ? 1 : 0;
       if (writeResult.mode === "memory") memoryFallbackUsed = true;
+      if (writeResult.errorInfo) persistenceErrors.push(writeResult.errorInfo);
       if (bucket) bucket.save_failed += 1;
     }
     eventsRefreshed++;
@@ -1176,7 +1235,10 @@ export async function runPipeline({ source = "manual", noAi = false, mode = "ful
   const resolvedProviderDiagnostics = resolveProviderDiagnostics(providerDiagnostics);
   const unaccountedArticles = resolvedProviderDiagnostics.reduce((sum, item) => sum + item.unaccounted, 0);
   const summary = {
-    ok: true,
+    ok: failedEventWrites === 0,
+    status: failedEventWrites > 0
+      ? (persistenceErrors.some((item) => item.stage === "ai_event_update") ? "ai_event_update_failed" : "event_persistence_failed")
+      : "ok",
     events: created,
     articles: ingestResult.saved,
     articlesFetched: ingestResult.fetched,
@@ -1231,10 +1293,15 @@ export async function runPipeline({ source = "manual", noAi = false, mode = "ful
     saveFailures: failedEventWrites,
     supabaseErrorCount,
     memoryFallbackUsed,
+    persistenceErrors,
+    eventUpdatePersisted: failedEventWrites === 0,
+    eventUpdateReadBack: failedEventWrites === 0 && successfulEventWrites > 0,
     unaccountedArticles,
-    message: unaccountedArticles > 0
-      ? "Articles were fetched but did not fully update active signals. Check diagnostics."
-      : buildNewsRefreshMessage({
+    message: failedEventWrites > 0
+      ? "Events were generated but failed to persist to Supabase."
+      : unaccountedArticles > 0
+        ? "Articles were fetched but did not fully update active signals. Check diagnostics."
+        : buildNewsRefreshMessage({
       eventsCreated,
       eventsUpdated,
       eventsRefreshed,

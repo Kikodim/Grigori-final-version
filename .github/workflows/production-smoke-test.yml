@@ -31,6 +31,15 @@ jobs:
           echo "Health HTTP status: $HEALTH_STATUS"
           echo "Stats HTTP status: $STATS_STATUS"
           echo "Events HTTP status: $EVENTS_STATUS"
+          echo "Health body:"
+          cat "$HEALTH_BODY"
+          echo
+          echo "Stats body:"
+          cat "$STATS_BODY"
+          echo
+          echo "Events body:"
+          cat "$EVENTS_BODY"
+          echo
 
           HEALTH_BODY="$HEALTH_BODY" STATS_BODY="$STATS_BODY" EVENTS_BODY="$EVENTS_BODY" \
           HEALTH_STATUS="$HEALTH_STATUS" STATS_STATUS="$STATS_STATUS" EVENTS_STATUS="$EVENTS_STATUS" \
@@ -83,6 +92,9 @@ jobs:
           console.log(`lastAiRefreshAt=${lastAiRefreshAt ?? "missing"}`);
           console.log(`scheduledNews=${JSON.stringify(automation.news ?? {})}`);
           console.log(`scheduledAi=${JSON.stringify(automation.ai ?? {})}`);
+          console.log(`envStatus=${JSON.stringify(health.envStatus ?? {})}`);
+          console.log(`storage=${JSON.stringify(health.storage ?? {})}`);
+          console.log(`data=${JSON.stringify(data)}`);
 
           if (health.ok !== true) throw new Error("Health ok !== true");
           if (data.supabaseStatus && data.supabaseStatus !== "ok") throw new Error(`Supabase status ${data.supabaseStatus}: ${data.supabaseError ?? "unknown"}`);

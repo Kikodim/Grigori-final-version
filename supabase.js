@@ -22,6 +22,30 @@ const memoryWatchlists = [];
 let clientPromise = null;
 let clientDisabled = false;
 
+function sanitizeSupabaseError(error, context = {}) {
+  if (!error) return null;
+  const message = String(error.message ?? error.error_description ?? error.toString?.() ?? "Supabase operation failed");
+  const details = error.details ? String(error.details) : null;
+  const hint = error.hint ? String(error.hint) : null;
+  const code = error.code ? String(error.code) : null;
+  const missingColumn = message.match(/column ["']?([a-zA-Z0-9_]+)["']?/i)?.[1]
+    ?? details?.match(/column ["']?([a-zA-Z0-9_]+)["']?/i)?.[1]
+    ?? null;
+  return {
+    stage: context.stage ?? "supabase",
+    table: context.table ?? null,
+    operation: context.operation ?? null,
+    code,
+    message,
+    hint: missingColumn ? `Missing ${context.table ?? "table"}.${missingColumn}. Run the latest Supabase migrations.` : hint,
+    details,
+    eventId: context.eventId ?? null,
+    eventTitle: context.eventTitle ? String(context.eventTitle).slice(0, 160) : null,
+    key: context.key ?? null,
+    rejectedFields: context.rejectedFields ?? [],
+  };
+}
+
 function getSupabaseConfigStatus() {
   const url = describeEnvVar("SUPABASE_URL");
   const key = describeEnvVar("SUPABASE_SERVICE_ROLE_KEY");
@@ -290,6 +314,13 @@ function buildSupabaseRow(event, id = event.id) {
       newestSourceAt,
     }),
   };
+}
+
+function classifyPersistenceError(errorInfo, fallback = "persistence_failed") {
+  const text = `${errorInfo?.message ?? ""} ${errorInfo?.details ?? ""} ${errorInfo?.hint ?? ""}`.toLowerCase();
+  if (text.includes("column") || text.includes("schema cache") || text.includes("relation") || text.includes("does not exist")) return "schema_mismatch";
+  if (text.includes("permission") || text.includes("row-level security") || text.includes("rls") || text.includes("jwt")) return "supabase_write_error";
+  return fallback;
 }
 
 function utcDayStartIso(now = Date.now()) {
@@ -579,9 +610,18 @@ export async function insertEvent(event) {
 
   const db = await getClient();
   if (!db) {
+    const status = getSupabaseConfigStatus();
     return {
       persisted: false,
       mode: "memory",
+      error: status.usable ? "Supabase client unavailable" : "SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY missing or unusable",
+      errorInfo: sanitizeSupabaseError(new Error(status.usable ? "Supabase client unavailable" : "SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY missing or unusable"), {
+        stage: "event_write",
+        table: "events",
+        operation: "upsert",
+        eventId: hydratedMemoryEvent.id,
+        eventTitle: hydratedMemoryEvent.title,
+      }),
       action: equivalentMemoryEvent ? "updated" : "inserted",
       id: hydratedMemoryEvent.id,
     };
@@ -608,7 +648,15 @@ export async function insertEvent(event) {
     const { error } = await db.from("events").upsert(row);
     if (error) {
       log.warn(`Supabase upsert failed for event ${event.id}: ${error.message}`);
-      return { persisted: false, mode: "memory", error: error.message };
+      const errorInfo = sanitizeSupabaseError(error, {
+        stage: event.persistenceStage ?? "event_write",
+        table: "events",
+        operation: "upsert",
+        eventId: row.id,
+        eventTitle: row.title,
+        rejectedFields: Object.keys(row),
+      });
+      return { persisted: false, mode: "memory", error: error.message, errorInfo, status: classifyPersistenceError(errorInfo, "event_persistence_failed") };
     }
 
     return {
@@ -619,7 +667,14 @@ export async function insertEvent(event) {
     };
   } catch (err) {
     log.warn(`Supabase upsert failed for event ${event.id}: ${err.message}`);
-    return { persisted: false, mode: "memory", error: err.message };
+    const errorInfo = sanitizeSupabaseError(err, {
+      stage: event.persistenceStage ?? "event_write",
+      table: "events",
+      operation: "upsert",
+      eventId: event.id,
+      eventTitle: event.title,
+    });
+    return { persisted: false, mode: "memory", error: err.message, errorInfo, status: classifyPersistenceError(errorInfo, "event_persistence_failed") };
   }
 }
 
@@ -1025,7 +1080,10 @@ export async function healthCheck() {
         latestEventCreatedAt: null,
         latestEventUpdatedAt: null,
         latestNewestSourceAt: null,
+        refreshStateReadable: false,
+        refreshStateWritableKnown: false,
         readError: "SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY not set",
+        writeError: null,
         writeCapableCheck: "not_checked",
       },
     };
@@ -1046,7 +1104,10 @@ export async function healthCheck() {
         latestEventCreatedAt: null,
         latestEventUpdatedAt: null,
         latestNewestSourceAt: null,
+        refreshStateReadable: false,
+        refreshStateWritableKnown: false,
         readError: "Supabase credentials are placeholders or incomplete",
+        writeError: null,
         writeCapableCheck: "not_checked",
       },
     };
@@ -1068,7 +1129,10 @@ export async function healthCheck() {
         latestEventCreatedAt: null,
         latestEventUpdatedAt: null,
         latestNewestSourceAt: null,
+        refreshStateReadable: false,
+        refreshStateWritableKnown: false,
         readError: `SUPABASE_URL ${urlValidation.reason}`,
+        writeError: null,
         writeCapableCheck: "not_checked",
       },
     };
@@ -1090,24 +1154,29 @@ export async function healthCheck() {
         latestEventCreatedAt: null,
         latestEventUpdatedAt: null,
         latestNewestSourceAt: null,
+        refreshStateReadable: false,
+        refreshStateWritableKnown: false,
         readError: "Supabase client unavailable",
+        writeError: null,
         writeCapableCheck: "not_checked",
       },
     };
   }
 
   try {
-    const [countRes, latestCreatedRes, latestUpdatedRes, latestSourceRes] = await Promise.all([
+    const [countRes, latestCreatedRes, latestUpdatedRes, latestSourceRes, refreshStateRes] = await Promise.all([
       db.from("events").select("id", { count: "exact", head: true }),
       db.from("events").select("created_at").order("created_at", { ascending: false }).limit(1).maybeSingle(),
       db.from("events").select("updated_at").order("updated_at", { ascending: false }).limit(1).maybeSingle(),
       db.from("events").select("newest_source_at").order("newest_source_at", { ascending: false, nullsFirst: false }).limit(1).maybeSingle(),
+      db.from("external_layer_cache").select("layer_key, updated_at").limit(1),
     ]);
-    const error = countRes.error ?? latestCreatedRes.error ?? latestUpdatedRes.error ?? latestSourceRes.error ?? null;
+    const error = countRes.error ?? latestCreatedRes.error ?? latestUpdatedRes.error ?? latestSourceRes.error ?? refreshStateRes.error ?? null;
+    const statusLabel = error ? classifyPersistenceError(sanitizeSupabaseError(error, { stage: "health_read", table: "events", operation: "select" }), "error") : "ok";
     return {
       ok: !error,
       mode: error ? "memory_fallback" : "supabase",
-      supabaseStatus: error ? "error" : "ok",
+      supabaseStatus: error ? statusLabel : "ok",
       supabaseError: error?.message ?? null,
       memoryFallbackUsed: Boolean(error),
       detail: error?.message ?? "Connected",
@@ -1118,7 +1187,10 @@ export async function healthCheck() {
         latestEventCreatedAt: latestCreatedRes.data?.created_at ?? null,
         latestEventUpdatedAt: latestUpdatedRes.data?.updated_at ?? null,
         latestNewestSourceAt: latestSourceRes.data?.newest_source_at ?? null,
+        refreshStateReadable: !refreshStateRes.error,
+        refreshStateWritableKnown: status.key.usable,
         readError: error?.message ?? null,
+        writeError: null,
         writeCapableCheck: status.key.usable ? "service_role_configured" : "not_configured",
       },
     };
@@ -1137,7 +1209,10 @@ export async function healthCheck() {
         latestEventCreatedAt: null,
         latestEventUpdatedAt: null,
         latestNewestSourceAt: null,
+        refreshStateReadable: false,
+        refreshStateWritableKnown: false,
         readError: err.message,
+        writeError: null,
         writeCapableCheck: "not_checked",
       },
     };
@@ -1606,7 +1681,20 @@ export async function setRefreshState(key, metadata = {}, nextRefresh = null) {
 
   const db = await getClient();
   if (!db) {
-    return { persisted: false, mode: "memory", record };
+    const status = getSupabaseConfigStatus();
+    const message = status.usable ? "Supabase client unavailable" : "SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY missing or unusable";
+    return {
+      persisted: false,
+      mode: "memory",
+      error: message,
+      errorInfo: sanitizeSupabaseError(new Error(message), {
+        stage: "heartbeat_write",
+        key,
+        table: "external_layer_cache",
+        operation: "upsert",
+      }),
+      record,
+    };
   }
 
   try {
@@ -1629,7 +1717,18 @@ export async function setRefreshState(key, metadata = {}, nextRefresh = null) {
     return { persisted: true, mode: "supabase", record };
   } catch (err) {
     log.warn(`Supabase refresh state upsert failed for ${key}: ${err.message}`);
-    return { persisted: false, mode: "memory", error: err.message, record };
+    return {
+      persisted: false,
+      mode: "memory",
+      error: err.message,
+      errorInfo: sanitizeSupabaseError(err, {
+        stage: "heartbeat_write",
+        key,
+        table: "external_layer_cache",
+        operation: "upsert",
+      }),
+      record,
+    };
   }
 }
 

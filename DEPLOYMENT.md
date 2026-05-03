@@ -222,6 +222,29 @@ Healthy automation should expose these fields in `/api/v1/health`:
 - `data.cacheStatus`
 - `data.activeEventCount`
 
+If News Refresh returns `save_failed`, `event_persistence_failed`, or `persistence_failed`, check:
+
+1. Vercel Production has `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY`.
+2. `SUPABASE_SERVICE_ROLE_KEY` is the service role key for the same Supabase project used by production.
+3. `/api/v1/health` shows `data.supabaseStatus=ok`.
+4. `refresh.result.persistenceErrors` for the exact table, operation, code, message, hint, and rejected fields.
+5. Required event freshness migrations have been applied:
+   - `supabase_migration_grigori_event_freshness.sql`
+   - `supabase_migration_grigori_active_scope_backfill.sql`
+   - `supabase_migration_grigori_newest_source_at.sql`
+6. Live layer/cache migration has been applied if refresh state rows are failing:
+   - `supabase_migration_grigori_live_layers.sql`
+7. Reports migrations have been applied if Reports Alpha is enabled:
+   - `supabase_migration_grigori_reports_alpha.sql`
+
+If AI Refresh returns `ai_event_update_failed` or `heartbeat_persistence_failed`, check:
+
+1. The `events` table has `ai_status`, `ai_updated_at`, `summary`, `assessment`, `scenarios`, `source_assessment`, and related enrichment columns from `schema.sql`.
+2. The response `persistenceErrors` entry identifies whether the failure is the event update or the scheduled heartbeat.
+3. The AI workflow did not retry after `aiCallsUsed > 0`; this protects Gemini quota while persistence is broken.
+4. `/api/v1/health` shows `automation.ai.lastScheduledSuccessAt` after a successful scheduled check.
+5. Scheduled AI skips stale-only stored events by default; use manual/admin refresh for explicit stale enrichment tests.
+
 ## 8. Rollback
 
 Fast rollback in Vercel:

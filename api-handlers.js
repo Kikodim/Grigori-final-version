@@ -126,6 +126,7 @@ async function recordScheduledRun(mode, source) {
     heartbeatReadBack,
     persistenceSource: write.mode ?? readBack.mode ?? "unknown",
     persistenceWarning: write.persisted && heartbeatReadBack ? null : (write.error ?? "Scheduled heartbeat was not durably persisted"),
+    persistenceError: write.errorInfo ?? null,
   };
 }
 
@@ -159,6 +160,7 @@ async function recordScheduledOutcome(mode, source, scheduledRun, { ok, result =
     heartbeatReadBack,
     persistenceSource: write.mode ?? readBack.mode ?? "unknown",
     persistenceWarning: write.persisted && heartbeatReadBack ? null : (write.error ?? "Scheduled heartbeat was not durably persisted"),
+    persistenceError: write.errorInfo ?? null,
   };
 }
 
@@ -579,13 +581,17 @@ export async function handlePipelineRun(req, res) {
       heartbeatReadBack: heartbeat.heartbeatReadBack,
       persistenceSource: heartbeat.persistenceSource,
       persistenceWarning: heartbeat.persistenceWarning,
+      persistenceErrors: [
+        ...(enrichedResult.persistenceErrors ?? []),
+        ...(heartbeat.persistenceError ? [heartbeat.persistenceError] : []),
+      ],
     };
   }
   if (isScheduledSource(source) && (!heartbeat?.heartbeatPersisted || !heartbeat?.heartbeatReadBack || heartbeat?.persistenceSource !== "supabase")) {
     const failedResult = {
       ...enrichedResult,
       ok: false,
-      status: "persistence_failed",
+      status: heartbeat?.persistenceError?.stage === "heartbeat_write" ? "heartbeat_persistence_failed" : "persistence_failed",
       message: "Scheduled refresh ran but heartbeat was not durably persisted.",
     };
     log.warn(`Scheduled refresh persistence failed: mode=${mode} source=${source} heartbeat=${JSON.stringify(heartbeat ?? {})}`);
