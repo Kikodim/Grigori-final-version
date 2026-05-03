@@ -1,0 +1,94 @@
+name: Production Smoke Test
+
+on:
+  workflow_dispatch:
+
+jobs:
+  production-smoke-test:
+    runs-on: ubuntu-latest
+    env:
+      HEALTH_URL: https://grigori.oryth.io/api/v1/health
+      STATS_URL: https://grigori.oryth.io/api/v1/events/stats
+      ACTIVE_EVENTS_URL: https://grigori.oryth.io/api/v1/events?scope=active&limit=5
+      MAX_ACTIVITY_AGE_HOURS: "24"
+    steps:
+      - name: Check production health and data freshness
+        run: |
+          set -euo pipefail
+          echo "UTC run timestamp: $(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+          echo "Health endpoint: $HEALTH_URL"
+          echo "Stats endpoint: $STATS_URL"
+          echo "Active events endpoint: $ACTIVE_EVENTS_URL"
+
+          HEALTH_BODY=$(mktemp)
+          STATS_BODY=$(mktemp)
+          EVENTS_BODY=$(mktemp)
+
+          HEALTH_STATUS=$(curl -sS --max-time 45 --connect-timeout 15 -o "$HEALTH_BODY" -w "%{http_code}" "$HEALTH_URL")
+          STATS_STATUS=$(curl -sS --max-time 45 --connect-timeout 15 -o "$STATS_BODY" -w "%{http_code}" "$STATS_URL")
+          EVENTS_STATUS=$(curl -sS --max-time 45 --connect-timeout 15 -o "$EVENTS_BODY" -w "%{http_code}" "$ACTIVE_EVENTS_URL")
+
+          echo "Health HTTP status: $HEALTH_STATUS"
+          echo "Stats HTTP status: $STATS_STATUS"
+          echo "Events HTTP status: $EVENTS_STATUS"
+
+          HEALTH_BODY="$HEALTH_BODY" STATS_BODY="$STATS_BODY" EVENTS_BODY="$EVENTS_BODY" \
+          HEALTH_STATUS="$HEALTH_STATUS" STATS_STATUS="$STATS_STATUS" EVENTS_STATUS="$EVENTS_STATUS" \
+          MAX_ACTIVITY_AGE_HOURS="$MAX_ACTIVITY_AGE_HOURS" node <<'NODE'
+          const fs = require("fs");
+          const readJson = (path, label) => {
+            try {
+              return JSON.parse(fs.readFileSync(path, "utf8"));
+            } catch (err) {
+              throw new Error(`${label} JSON parse failed: ${err.message}`);
+            }
+          };
+          const assertStatus = (status, label) => {
+            const numeric = Number(status);
+            if (!Number.isFinite(numeric) || numeric < 200 || numeric >= 300) {
+              throw new Error(`${label} unreachable, HTTP ${status}`);
+            }
+          };
+          const ageHours = (value) => {
+            if (!value) return null;
+            const ts = new Date(value).getTime();
+            if (!Number.isFinite(ts)) return null;
+            return Math.max(0, (Date.now() - ts) / 3600000);
+          };
+
+          assertStatus(process.env.HEALTH_STATUS, "health");
+          assertStatus(process.env.STATS_STATUS, "stats");
+          assertStatus(process.env.EVENTS_STATUS, "events");
+
+          const health = readJson(process.env.HEALTH_BODY, "health");
+          const stats = readJson(process.env.STATS_BODY, "stats");
+          const events = readJson(process.env.EVENTS_BODY, "events");
+          const data = health.data ?? {};
+          const automation = health.automation ?? {};
+          const latestActivityAt = data.latestActivityAt ?? automation.latestActivityAt ?? null;
+          const latestActivityAge = ageHours(latestActivityAt);
+          const maxAge = Number(process.env.MAX_ACTIVITY_AGE_HOURS ?? 24);
+          const fallbackAvailable = data.cacheStatus === "fallback_available" || (data.fallbackEligibleCount ?? 0) > 0;
+          const totalStoredEvents = data.totalStoredEvents ?? stats.stats?.totalStoredEvents ?? 0;
+          const activeEventCount = data.activeEventCount ?? events.count ?? 0;
+          const freshnessOutcome = health.automation?.news?.freshnessOutcome ?? health.automation?.news?.message ?? null;
+
+          console.log("Production summary:");
+          console.log(`activeEventCount=${activeEventCount}`);
+          console.log(`totalStoredEvents=${totalStoredEvents}`);
+          console.log(`latestActivityAt=${latestActivityAt ?? "missing"}`);
+          console.log(`lastNewsRefreshAt=${automation.lastNewsRefreshAt ?? "missing"}`);
+          console.log(`lastAiRefreshAt=${automation.lastAiRefreshAt ?? "missing"}`);
+          console.log(`scheduledNews=${JSON.stringify(automation.news ?? {})}`);
+          console.log(`scheduledAi=${JSON.stringify(automation.ai ?? {})}`);
+
+          if (health.ok !== true) throw new Error("Health ok !== true");
+          if (!automation.lastNewsRefreshAt) throw new Error("Missing lastNewsRefreshAt");
+          if (!automation.lastAiRefreshAt) throw new Error("Missing lastAiRefreshAt/check timestamp");
+          if (activeEventCount === 0 && totalStoredEvents > 0 && !fallbackAvailable) {
+            throw new Error("Active events are empty while stored events exist and no fallback is available");
+          }
+          if (latestActivityAge !== null && latestActivityAge > maxAge && !/no new relevant|no recent/i.test(String(freshnessOutcome ?? ""))) {
+            throw new Error(`Latest activity is ${latestActivityAge.toFixed(1)}h old, above ${maxAge}h`);
+          }
+          NODE

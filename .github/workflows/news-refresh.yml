@@ -12,14 +12,17 @@ jobs:
       - name: Trigger news-only refresh
         env:
           GRIGORI_ADMIN_SECRET: ${{ secrets.GRIGORI_ADMIN_SECRET }}
-          GRIGORI_REFRESH_URL: https://grigori.oryth.io/api/v1/admin/refresh?mode=news
+          GRIGORI_REFRESH_URL: https://grigori.oryth.io/api/v1/admin/refresh?mode=news&source=github_action
         run: |
-          set -eu
+          set -euo pipefail
+          echo "UTC run timestamp: $(date -u +"%Y-%m-%dT%H:%M:%SZ")"
           echo "Endpoint: $GRIGORI_REFRESH_URL"
 
           ATTEMPT=1
           MAX_ATTEMPTS=2
           SUCCESS=0
+          FINAL_BODY=""
+          FINAL_STATUS=""
 
           while [ "$ATTEMPT" -le "$MAX_ATTEMPTS" ]; do
             echo "Attempt $ATTEMPT of $MAX_ATTEMPTS"
@@ -33,6 +36,8 @@ jobs:
             echo "Response body:"
             cat "$HTTP_BODY"
             echo
+            FINAL_BODY="$HTTP_BODY"
+            FINAL_STATUS="$HTTP_CODE"
 
             if [ "$HTTP_CODE" -ge 200 ] && [ "$HTTP_CODE" -lt 300 ]; then
               SUCCESS=1
@@ -52,4 +57,36 @@ jobs:
             exit 1
           fi
 
-          echo "News refresh completed successfully."
+          RESPONSE_PATH="$FINAL_BODY" HTTP_STATUS="$FINAL_STATUS" EXPECTED_MODE="news" node <<'NODE'
+          const fs = require("fs");
+          const body = fs.readFileSync(process.env.RESPONSE_PATH, "utf8");
+          const status = Number(process.env.HTTP_STATUS);
+          const fail = (message) => {
+            console.error(message);
+            process.exit(1);
+          };
+          if (!Number.isFinite(status) || status < 200 || status >= 300) fail(`Unexpected HTTP status ${process.env.HTTP_STATUS}`);
+          let parsed;
+          try {
+            parsed = JSON.parse(body);
+          } catch (err) {
+            fail(`Response JSON parse failed: ${err.message}`);
+          }
+          const result = parsed.result ?? {};
+          console.log("Parsed success:", parsed.success);
+          console.log("Parsed result.ok:", result.ok);
+          console.log("Parsed result.mode:", result.mode);
+          console.log("Parsed result.refreshMode:", result.refreshMode);
+          console.log("Parsed lastNewsRefreshAt:", result.lastNewsRefreshAt);
+          console.log("Parsed freshnessOutcome:", result.freshnessOutcome ?? "n/a");
+          const diagnostics = Array.isArray(result.providerDiagnostics) ? result.providerDiagnostics : [];
+          console.log("Provider diagnostics summary:", diagnostics.map((item) => `${item.provider}:${item.fetched ?? 0}/${item.status ?? "checked"}`).join(", ") || "none");
+          if (parsed.success !== true) fail("Refresh response success !== true");
+          if (result.ok !== true) fail("Refresh result.ok !== true");
+          if (result.mode !== "news" && result.refreshMode !== "news") fail("Refresh result mode mismatch");
+          if (!result.lastNewsRefreshAt) fail("Refresh response lacks lastNewsRefreshAt");
+          if (diagnostics.length === 0) fail("News refresh returned no provider diagnostics");
+          if (/unknown route|unauthorized/i.test(body)) fail("Refresh response contained route/auth failure text");
+          NODE
+
+          echo "News refresh validated successfully."

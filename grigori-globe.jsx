@@ -2714,6 +2714,28 @@ function getDataFreshness(value) {
   return { label: `Stale · ${Math.round(hours)}h ago`, tone: "red", hours };
 }
 
+function getAutomationNotice(systemStatus, adminUnlocked = false) {
+  const news = systemStatus?.automation?.news;
+  const ai = systemStatus?.automation?.ai;
+  if (!adminUnlocked) return null;
+  if (news?.status === "overdue" || (typeof news?.ageHours === "number" && news.ageHours > 3)) {
+    return "Scheduled news refresh overdue.";
+  }
+  if (ai?.status === "overdue" || (typeof ai?.ageHours === "number" && ai.ageHours > 4)) {
+    return "Scheduled AI refresh overdue.";
+  }
+  return null;
+}
+
+function formatAutomationLine(label, state) {
+  if (!state) return `${label}: no scheduled heartbeat`;
+  const status = state.status ?? "unknown";
+  const lastRun = formatShortAge(state.lastScheduledRunAt);
+  const lastSuccess = formatShortAge(state.lastScheduledSuccessAt);
+  const lastFailure = formatShortAge(state.lastScheduledFailureAt);
+  return `${label}: ${status} · run ${lastRun} · success ${lastSuccess} · failure ${lastFailure}`;
+}
+
 const ACTIVE_SIGNAL_SORT_OPTIONS = [
   { key: "priority", label: "Priority" },
   { key: "newest", label: "Newest" },
@@ -3312,6 +3334,7 @@ function WarRoomPanel({ topEvents, onSelect, selectedEventId, onClose, marketImp
   const latestEventFreshness = getDataFreshness(refreshState?.detail?.newestEventAt ?? null);
   const latestArticleFreshness = getDataFreshness(refreshState?.detail?.newestArticleAt ?? null);
   const providerLine = adminUnlocked ? formatProviderDiagnostics(refreshState?.detail) : "";
+  const automationNotice = getAutomationNotice(systemStatus, adminUnlocked);
   return (
     <div style={{
       position: mobile ? "fixed" : "absolute",
@@ -3378,6 +3401,11 @@ function WarRoomPanel({ topEvents, onSelect, selectedEventId, onClose, marketImp
             {refreshState?.message ? (
               <div style={{ color: "rgba(214,235,255,0.82)", fontSize: 11, lineHeight: 1.6, fontFamily: bodyFont }}>
                 {refreshState.message}
+              </div>
+            ) : null}
+            {automationNotice ? (
+              <div style={{ color: "rgba(255,191,71,0.9)", fontSize: 11, lineHeight: 1.6, fontFamily: bodyFont }}>
+                {automationNotice}
               </div>
             ) : null}
             {adminUnlocked && providerLine ? (
@@ -4841,6 +4869,7 @@ function TopBar({ counts, bordersLoaded, activeLayers, onLayerToggle, isMobile, 
   const newsFreshness = getDataFreshness(systemStatus?.automation?.lastNewsRefreshAt);
   const aiFreshness = getDataFreshness(systemStatus?.automation?.lastAiRefreshAt);
   const providerLine = adminUnlocked ? formatProviderDiagnostics(refreshState?.detail) : "";
+  const automationNotice = getAutomationNotice(systemStatus, adminUnlocked);
   const navButtons = APP_VIEWS.map((item) => {
     const active = activeView === item.key;
     return (
@@ -5045,6 +5074,9 @@ function TopBar({ counts, bordersLoaded, activeLayers, onLayerToggle, isMobile, 
                 <div style={{ display: "grid", gap: 4, paddingTop: 6, borderTop: "1px solid rgba(94,164,195,0.12)", color: "rgba(148,175,198,0.78)", fontFamily: mono, fontSize: 10 }}>
                   <div>News {formatLayerTime(systemStatus.automation.lastNewsRefreshAt)}</div>
                   <div>AI {formatLayerTime(systemStatus.automation.lastAiRefreshAt)}</div>
+                  <div>{formatAutomationLine("Scheduled news", systemStatus.automation.news)}</div>
+                  <div>{formatAutomationLine("Scheduled AI", systemStatus.automation.ai)}</div>
+                  {automationNotice ? <div style={{ color: "rgba(255,191,71,0.9)" }}>{automationNotice}</div> : null}
                   {providerLine ? <div>{providerLine}</div> : null}
                 </div>
               ) : null}
@@ -5061,6 +5093,13 @@ function TopBar({ counts, bordersLoaded, activeLayers, onLayerToggle, isMobile, 
                   <TopControlButton onClick={() => onAdminRefresh("news")}>Refresh Newsfeed</TopControlButton>
                   <TopControlButton onClick={() => onAdminRefresh("ai")}>Master Refresh with AI</TopControlButton>
                   {refreshState?.message ? <div style={{ color: "rgba(214,235,255,0.82)", fontFamily: bodyFont, fontSize: 12, lineHeight: 1.55 }}>{refreshState.message}</div> : null}
+                  {automationNotice ? <div style={{ color: "rgba(255,191,71,0.9)", fontFamily: bodyFont, fontSize: 12, lineHeight: 1.55 }}>{automationNotice}</div> : null}
+                  {systemStatus?.automation ? (
+                    <div style={{ color: "rgba(148,175,198,0.76)", fontFamily: mono, fontSize: 10, lineHeight: 1.5 }}>
+                      <div>{formatAutomationLine("Scheduled news", systemStatus.automation.news)}</div>
+                      <div>{formatAutomationLine("Scheduled AI", systemStatus.automation.ai)}</div>
+                    </div>
+                  ) : null}
                   {providerLine ? <div style={{ color: "rgba(148,175,198,0.76)", fontFamily: mono, fontSize: 10, lineHeight: 1.5 }}>{providerLine}</div> : null}
                   {feedState?.message ? <div style={{ color: "rgba(148,175,198,0.76)", fontFamily: mono, fontSize: 10 }}>{feedState.message}</div> : null}
                 </>
@@ -5339,7 +5378,7 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
       const feedMessage = meta?.fallbackUsed
         ? meta.fallbackReason === "historical_context"
           ? "Using historical context signals while awaiting refresh."
-          : "Using stored signals while awaiting refresh."
+          : "Using stored signals while live refresh is pending."
         : "";
       setFeedState({
         status: meta?.fallbackUsed ? "fallback" : "ok",

@@ -182,7 +182,47 @@ curl -X POST "https://YOUR_DOMAIN/api/v1/admin/refresh?mode=backfill&days=30" -H
    - add `grigori.oryth.io`
    - wait for verification and SSL issuance
 
-## 7. Rollback
+## 7. Refresh Automation Troubleshooting
+
+Grigori's live data depends on GitHub Actions calling the protected production refresh endpoint. If the app shows stored signals for too long, check the automation path first.
+
+1. Check recent GitHub Actions runs for `News Refresh` and `AI Refresh`.
+2. Run the `Production Smoke Test` workflow manually.
+3. Confirm `.github/workflows/news-refresh.yml` and `.github/workflows/ai-refresh.yml` exist on the default branch.
+4. Verify the GitHub secret `GRIGORI_ADMIN_SECRET` matches the Vercel production `ADMIN_SECRET`.
+5. Verify Vercel production env vars are present for Supabase, providers, Gemini, and `ADMIN_SECRET`.
+6. Check provider quotas and rate limits in `/api/v1/health`.
+7. Check Supabase writes through the health data source and refresh metadata.
+8. Run a manual news refresh if scheduled news is overdue.
+9. Run a manual AI refresh if scheduled AI is overdue.
+10. Compare `/api/v1/events?scope=active` with `/api/v1/events/stats` if active signals look empty.
+
+```bash
+curl -sS "https://grigori.oryth.io/api/v1/health"
+```
+
+```bash
+curl -sS -X POST "https://grigori.oryth.io/api/v1/admin/refresh?mode=news&source=manual" \
+  -H "Authorization: Bearer YOUR_ADMIN_SECRET"
+```
+
+```bash
+curl -sS -X POST "https://grigori.oryth.io/api/v1/admin/refresh?mode=ai&source=manual" \
+  -H "Authorization: Bearer YOUR_ADMIN_SECRET"
+```
+
+Healthy automation should expose these fields in `/api/v1/health`:
+
+- `automation.news.lastScheduledRunAt`
+- `automation.news.lastScheduledSuccessAt`
+- `automation.ai.lastScheduledRunAt`
+- `automation.ai.lastScheduledSuccessAt`
+- `automation.lastNewsRefreshAt`
+- `automation.lastAiRefreshAt`
+- `data.cacheStatus`
+- `data.activeEventCount`
+
+## 8. Rollback
 
 Fast rollback in Vercel:
 
@@ -199,7 +239,7 @@ git revert <BAD_COMMIT_SHA>
 git push origin main
 ```
 
-## 8. Notes
+## 9. Notes
 
 - Local Express stays available through `npm run dev`.
 - Production Vercel uses `/api/v1/...` serverless handlers, not `app.listen()`.

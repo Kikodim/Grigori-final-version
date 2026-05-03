@@ -56,15 +56,103 @@ function missingProductionSecret() {
   return process.env.NODE_ENV === "production" && !process.env.ADMIN_SECRET;
 }
 
+function ageHours(value) {
+  if (!value) return null;
+  const ts = new Date(value).getTime();
+  if (!Number.isFinite(ts)) return null;
+  return Math.max(0, (Date.now() - ts) / 3600_000);
+}
+
+function buildScheduledHeartbeat(state, expectedIntervalHours) {
+  const metadata = state?.record?.metadata ?? {};
+  const lastScheduledRunAt = metadata.lastScheduledRunAt ?? state?.record?.lastRefresh ?? null;
+  const lastScheduledSuccessAt = metadata.lastScheduledSuccessAt ?? (metadata.status === "success" ? state?.record?.lastRefresh : null);
+  const lastScheduledFailureAt = metadata.lastScheduledFailureAt ?? (metadata.status === "failure" ? state?.record?.lastRefresh : null);
+  const status = metadata.status ?? (lastScheduledSuccessAt ? "success" : lastScheduledFailureAt ? "failure" : "not_seen");
+  const reference = lastScheduledSuccessAt ?? lastScheduledRunAt;
+  const hours = ageHours(reference);
+  return {
+    lastScheduledRunAt,
+    lastScheduledSuccessAt,
+    lastScheduledFailureAt,
+    status: hours !== null && hours > expectedIntervalHours * 1.75 && status === "success" ? "overdue" : status,
+    ageHours: hours,
+    source: metadata.source ?? null,
+    message: metadata.message ?? null,
+    freshnessOutcome: metadata.freshnessOutcome ?? null,
+    aiSkippedReason: metadata.aiSkippedReason ?? null,
+  };
+}
+
+function normalizeRefreshSource(req, mode) {
+  const raw = String(req.query?.source ?? req.body?.source ?? "").toLowerCase();
+  if (["github_action", "automation", "manual"].includes(raw)) return raw;
+  if (req.headers["x-vercel-cron-secret"]) return "automation";
+  return mode === "backfill" ? "manual" : "manual";
+}
+
+function isScheduledSource(source) {
+  return source === "github_action" || source === "automation";
+}
+
+function scheduledKeyForMode(mode) {
+  if (mode === "news") return "scheduled_news";
+  if (mode === "ai") return "scheduled_ai";
+  return null;
+}
+
+async function recordScheduledRun(mode, source) {
+  if (!isScheduledSource(source)) return null;
+  const key = scheduledKeyForMode(mode);
+  if (!key) return null;
+  const previous = await getRefreshState(key);
+  const now = new Date().toISOString();
+  const metadata = {
+    ...(previous.record?.metadata ?? {}),
+    source,
+    status: "running",
+    lastScheduledRunAt: now,
+    message: "Scheduled refresh started.",
+  };
+  await setRefreshState(key, {
+    ...metadata,
+  }, null);
+  return metadata;
+}
+
+async function recordScheduledOutcome(mode, source, previousMetadata, { ok, result = null, error = null }) {
+  if (!isScheduledSource(source)) return;
+  const key = scheduledKeyForMode(mode);
+  if (!key) return;
+  const now = new Date().toISOString();
+  const metadata = {
+    ...(previousMetadata ?? {}),
+    source,
+    status: ok ? "success" : "failure",
+    lastScheduledRunAt: previousMetadata?.lastScheduledRunAt ?? now,
+    lastScheduledSuccessAt: ok ? now : previousMetadata?.lastScheduledSuccessAt ?? null,
+    lastScheduledFailureAt: ok ? previousMetadata?.lastScheduledFailureAt ?? null : now,
+    message: result?.message ?? error ?? null,
+    mode: result?.mode ?? mode,
+    refreshMode: result?.refreshMode ?? mode,
+    freshnessOutcome: result?.freshnessOutcome ?? null,
+    aiSkippedReason: result?.aiSkippedReason ?? null,
+    providerDiagnostics: result?.providerDiagnostics ?? previousMetadata?.providerDiagnostics ?? [],
+  };
+  await setRefreshState(key, metadata, null);
+}
+
 export async function handleHealth(_req, res) {
   applyNoStore(res);
   const config = getConfig();
   const integrations = getIntegrationConfigStatus();
-  const [layers, ai, newsRefresh, aiRefresh, newsRefreshUsage, aiRefreshUsage, stats, newsProviders] = await Promise.all([
+  const [layers, ai, newsRefresh, aiRefresh, scheduledNews, scheduledAi, newsRefreshUsage, aiRefreshUsage, stats, newsProviders] = await Promise.all([
     getLayersStatus(),
     getAIStatus(),
     getRefreshState("news"),
     getRefreshState("ai"),
+    getRefreshState("scheduled_news"),
+    getRefreshState("scheduled_ai"),
     getRefreshUsageStats("news"),
     getRefreshUsageStats("ai"),
     getStats(),
@@ -84,6 +172,9 @@ export async function handleHealth(_req, res) {
   const newestEventAt = newsRefresh.record?.metadata?.newestEventAt ?? stats.newestUpdatedEvent ?? stats.newestEvent ?? null;
   const latestActivityAt = stats.latestActivityAt ?? newestEventAt ?? null;
   const lastNewsRefreshAt = newsRefresh.record?.lastRefresh ?? null;
+  const lastAiRefreshAt = aiRefresh.record?.lastRefresh ?? null;
+  const scheduledNewsHeartbeat = buildScheduledHeartbeat(scheduledNews, 1);
+  const scheduledAiHeartbeat = buildScheduledHeartbeat(scheduledAi, 2);
   const refreshAgeHours = lastNewsRefreshAt
     ? Math.max(0, (Date.now() - new Date(lastNewsRefreshAt).getTime()) / 3600_000)
     : null;
@@ -133,6 +224,7 @@ export async function handleHealth(_req, res) {
       news: newsProviders,
     },
     data: {
+      dataSource: stats.mode ?? storage.mode ?? "memory",
       eventsDataSource: stats.mode ?? storage.mode ?? "memory",
       totalStoredEvents: stats.totalStoredEvents ?? stats.eventCount ?? 0,
       newestArticleAt,
@@ -146,10 +238,13 @@ export async function handleHealth(_req, res) {
       cacheStatus,
     },
     automation: {
+      news: scheduledNewsHeartbeat,
+      ai: scheduledAiHeartbeat,
       aiCallsToday: ai.aiCallsToday,
       aiRemainingToday: ai.aiRemainingToday,
       lastNewsRefreshAt,
-      lastAiRefreshAt: aiRefresh.record?.lastRefresh ?? null,
+      lastAiRefreshAt,
+      lastAiCheckAt: lastAiRefreshAt,
       nextEstimatedNewsRefresh: newsRefresh.record?.nextRefresh ?? null,
       nextEstimatedAiRefresh: aiRefresh.record?.nextRefresh ?? null,
       newsRefreshesToday: newsRefreshUsage.callsToday ?? 0,
@@ -224,11 +319,13 @@ export async function handleEventById(req, res) {
 
 export async function handleEventStats(_req, res) {
   applyNoStore(res);
-  const [stats, ai, newsRefresh, aiRefresh, newsRefreshUsage, aiRefreshUsage] = await Promise.all([
+  const [stats, ai, newsRefresh, aiRefresh, scheduledNews, scheduledAi, newsRefreshUsage, aiRefreshUsage] = await Promise.all([
     getStats(),
     getAIStatus(),
     getRefreshState("news"),
     getRefreshState("ai"),
+    getRefreshState("scheduled_news"),
+    getRefreshState("scheduled_ai"),
     getRefreshUsageStats("news"),
     getRefreshUsageStats("ai"),
   ]);
@@ -237,8 +334,11 @@ export async function handleEventStats(_req, res) {
     stats,
     ai,
     automation: {
+      news: buildScheduledHeartbeat(scheduledNews, 1),
+      ai: buildScheduledHeartbeat(scheduledAi, 2),
       lastNewsRefreshAt: newsRefresh.record?.lastRefresh ?? null,
       lastAiRefreshAt: aiRefresh.record?.lastRefresh ?? null,
+      lastAiCheckAt: aiRefresh.record?.lastRefresh ?? null,
       nextEstimatedNewsRefresh: newsRefresh.record?.nextRefresh ?? null,
       nextEstimatedAiRefresh: aiRefresh.record?.nextRefresh ?? null,
       newsRefreshesToday: newsRefreshUsage.callsToday ?? 0,
@@ -346,10 +446,20 @@ export async function handlePipelineRun(req, res) {
   const mode = ["news", "ai", "backfill"].includes(requestedMode) ? requestedMode : "full";
   const days = Number.parseInt(String(req.query?.days ?? req.body?.days ?? "30"), 10);
   const noAi = mode === "news" || req.query?.noAi === "true" || req.body?.noAi === true;
-  const source = mode === "news" || mode === "ai" || req.headers["x-vercel-cron-secret"] ? "automation" : "manual";
-  const result = await runPipeline({ source, noAi, mode, days });
+  const source = normalizeRefreshSource(req, mode);
   const nextNewsRefresh = new Date(Date.now() + 60 * 60 * 1000).toISOString();
   const nextAiRefresh = new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString();
+  const scheduledPreviousMetadata = await recordScheduledRun(mode, source);
+  let result;
+  try {
+    result = await runPipeline({ source, noAi, mode, days });
+  } catch (err) {
+    await recordScheduledOutcome(mode, source, scheduledPreviousMetadata, {
+      ok: false,
+      error: err?.message ?? "Pipeline failed",
+    });
+    throw err;
+  }
   let enrichedResult = { ...result };
   if (result.ok) {
     if (mode === "news" || mode === "full") {
@@ -371,6 +481,7 @@ export async function handlePipelineRun(req, res) {
         newestEventAt: result.newestEventAt ?? null,
         message: result.message ?? null,
         providerDiagnostics: result.providerDiagnostics ?? [],
+        freshnessOutcome: result.freshnessOutcome ?? null,
       }, nextNewsRefresh);
       enrichedResult = {
         ...enrichedResult,
@@ -390,6 +501,7 @@ export async function handlePipelineRun(req, res) {
         changed: result.changed ?? null,
         aiSkippedReason: result.aiSkippedReason ?? null,
         lastAiRefreshAt: result.lastAiRefreshAt ?? null,
+        lastAiCheckAt: result.lastAiRefreshAt ?? null,
         message: result.message ?? null,
       }, nextAiRefresh);
       enrichedResult = {
@@ -409,6 +521,10 @@ export async function handlePipelineRun(req, res) {
       }, null);
     }
   }
+  await recordScheduledOutcome(mode, source, scheduledPreviousMetadata, {
+    ok: Boolean(result.ok),
+    result: enrichedResult,
+  });
   const status = result.ok ? 202 : 500;
   log.info(`Pipeline run completed: ok=${result.ok} mode=${result.mode} refreshMode=${mode} events=${result.events}`);
   return res.status(status).json({ success: result.ok, result: enrichedResult });
