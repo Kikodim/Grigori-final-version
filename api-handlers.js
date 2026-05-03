@@ -114,19 +114,29 @@ async function recordScheduledRun(mode, source) {
     lastScheduledRunAt: now,
     message: "Scheduled refresh started.",
   };
-  await setRefreshState(key, {
+  const write = await setRefreshState(key, {
     ...metadata,
   }, null);
-  return metadata;
+  const readBack = await getRefreshState(key);
+  const heartbeatReadBack = readBack.mode === "supabase" &&
+    readBack.record?.metadata?.lastScheduledRunAt === metadata.lastScheduledRunAt;
+  return {
+    metadata,
+    heartbeatPersisted: Boolean(write.persisted),
+    heartbeatReadBack,
+    persistenceSource: write.mode ?? readBack.mode ?? "unknown",
+    persistenceWarning: write.persisted && heartbeatReadBack ? null : (write.error ?? "Scheduled heartbeat was not durably persisted"),
+  };
 }
 
-async function recordScheduledOutcome(mode, source, previousMetadata, { ok, result = null, error = null }) {
-  if (!isScheduledSource(source)) return;
+async function recordScheduledOutcome(mode, source, scheduledRun, { ok, result = null, error = null }) {
+  if (!isScheduledSource(source)) return null;
   const key = scheduledKeyForMode(mode);
-  if (!key) return;
+  if (!key) return null;
   const now = new Date().toISOString();
+  const previousMetadata = scheduledRun?.metadata ?? {};
   const metadata = {
-    ...(previousMetadata ?? {}),
+    ...previousMetadata,
     source,
     status: ok ? "success" : "failure",
     lastScheduledRunAt: previousMetadata?.lastScheduledRunAt ?? now,
@@ -139,7 +149,17 @@ async function recordScheduledOutcome(mode, source, previousMetadata, { ok, resu
     aiSkippedReason: result?.aiSkippedReason ?? null,
     providerDiagnostics: result?.providerDiagnostics ?? previousMetadata?.providerDiagnostics ?? [],
   };
-  await setRefreshState(key, metadata, null);
+  const write = await setRefreshState(key, metadata, null);
+  const readBack = await getRefreshState(key);
+  const heartbeatReadBack = readBack.mode === "supabase" &&
+    readBack.record?.metadata?.lastScheduledRunAt === metadata.lastScheduledRunAt &&
+    readBack.record?.metadata?.status === metadata.status;
+  return {
+    heartbeatPersisted: Boolean(write.persisted),
+    heartbeatReadBack,
+    persistenceSource: write.mode ?? readBack.mode ?? "unknown",
+    persistenceWarning: write.persisted && heartbeatReadBack ? null : (write.error ?? "Scheduled heartbeat was not durably persisted"),
+  };
 }
 
 export async function handleHealth(_req, res) {
@@ -175,10 +195,22 @@ export async function handleHealth(_req, res) {
   const lastAiRefreshAt = aiRefresh.record?.lastRefresh ?? null;
   const scheduledNewsHeartbeat = buildScheduledHeartbeat(scheduledNews, 1);
   const scheduledAiHeartbeat = buildScheduledHeartbeat(scheduledAi, 2);
+  const enabledProviders = [
+    String(process.env.ENABLE_CURRENTS ?? "false").toLowerCase() === "true" ? "currents" : null,
+    integrations.gnews?.usable ? "gnews" : null,
+    String(process.env.ENABLE_NEWSDATA ?? "false").toLowerCase() === "true" ? "newsdata" : null,
+    integrations.newsApi?.usable ? "newsapi" : null,
+    String(process.env.ENABLE_GDELT ?? "false").toLowerCase() === "true" ? "gdelt" : null,
+    String(process.env.ENABLE_RSS ?? "false").toLowerCase() === "true" ? "rss" : null,
+  ].filter(Boolean);
   const refreshAgeHours = lastNewsRefreshAt
     ? Math.max(0, (Date.now() - new Date(lastNewsRefreshAt).getTime()) / 3600_000)
     : null;
-  const cacheStatus = storage.mode === "memory"
+  const cacheStatus = storage.supabaseStatus === "missing_env"
+    ? "supabase_not_configured"
+    : storage.supabaseStatus === "error"
+      ? "supabase_error"
+      : storage.mode === "memory" || storage.mode === "memory_fallback"
     ? "memory_fallback"
     : stats.activeFallbackReason && stats.activeFallbackReason !== "fresh_active"
       ? "fallback_available"
@@ -187,7 +219,7 @@ export async function handleHealth(_req, res) {
         : refreshAgeHours <= 12 ? "fresh" : "stale";
 
   return res.status(200).json({
-    ok: true,
+    ok: Boolean(storage.ok),
     label: integrations.newsApi.usable && integrations.gemini.usable && storage.ok ? "ok" : "degraded",
     checks: {
       env: { ok: missing.length === 0, missing },
@@ -203,6 +235,13 @@ export async function handleHealth(_req, res) {
         adminSecret: describeEnvVar("ADMIN_SECRET"),
       },
       storage,
+    },
+    envStatus: {
+      hasSupabaseUrl: Boolean(storage.env?.hasSupabaseUrl),
+      hasSupabaseServiceRoleKey: Boolean(storage.env?.hasSupabaseServiceRoleKey),
+      hasAdminSecret: integrations.adminSecret.usable,
+      hasGeminiKey: integrations.gemini.usable,
+      enabledProviders,
     },
     config: {
       port: config.port,
@@ -224,12 +263,18 @@ export async function handleHealth(_req, res) {
       news: newsProviders,
     },
     data: {
-      dataSource: stats.mode ?? storage.mode ?? "memory",
-      eventsDataSource: stats.mode ?? storage.mode ?? "memory",
+      dataSource: stats.eventsDataSource ?? stats.mode ?? storage.mode ?? "memory_fallback",
+      eventsDataSource: stats.eventsDataSource ?? stats.mode ?? storage.mode ?? "memory_fallback",
+      supabaseStatus: stats.supabaseStatus ?? storage.supabaseStatus ?? "unknown",
+      supabaseError: stats.supabaseError ?? storage.supabaseError ?? null,
+      memoryFallbackUsed: Boolean(stats.memoryFallbackUsed ?? storage.memoryFallbackUsed),
       totalStoredEvents: stats.totalStoredEvents ?? stats.eventCount ?? 0,
       newestArticleAt,
       newestEventAt,
       latestActivityAt,
+      lastNewsRefreshAt,
+      lastAiRefreshAt,
+      lastAiCheckAt: lastAiRefreshAt,
       activeEventCount: stats.activeEventCount ?? 0,
       freshEventCount: stats.freshEventCount ?? 0,
       staleEventCount: stats.staleEventCount ?? 0,
@@ -237,6 +282,7 @@ export async function handleHealth(_req, res) {
       fallbackEligibleCount: stats.fallbackEligibleCount ?? 0,
       cacheStatus,
     },
+    storage: storage.storage ?? null,
     automation: {
       news: scheduledNewsHeartbeat,
       ai: scheduledAiHeartbeat,
@@ -258,7 +304,7 @@ export async function handleHealth(_req, res) {
       staleEventCount: stats.staleEventCount ?? 0,
       historicalEventCount: stats.historicalEventCount ?? 0,
       fallbackEligibleCount: stats.fallbackEligibleCount ?? 0,
-      eventsDataSource: stats.mode ?? storage.mode ?? "memory",
+      eventsDataSource: stats.eventsDataSource ?? stats.mode ?? storage.mode ?? "memory_fallback",
       cacheStatus,
     },
     timestamp: new Date().toISOString(),
@@ -454,10 +500,11 @@ export async function handlePipelineRun(req, res) {
   try {
     result = await runPipeline({ source, noAi, mode, days });
   } catch (err) {
-    await recordScheduledOutcome(mode, source, scheduledPreviousMetadata, {
+    const heartbeat = await recordScheduledOutcome(mode, source, scheduledPreviousMetadata, {
       ok: false,
       error: err?.message ?? "Pipeline failed",
     });
+    log.warn(`Pipeline run failed before response: ${err?.message ?? err}; heartbeat=${JSON.stringify(heartbeat ?? {})}`);
     throw err;
   }
   let enrichedResult = { ...result };
@@ -521,10 +568,29 @@ export async function handlePipelineRun(req, res) {
       }, null);
     }
   }
-  await recordScheduledOutcome(mode, source, scheduledPreviousMetadata, {
+  const heartbeat = await recordScheduledOutcome(mode, source, scheduledPreviousMetadata, {
     ok: Boolean(result.ok),
     result: enrichedResult,
   });
+  if (heartbeat) {
+    enrichedResult = {
+      ...enrichedResult,
+      heartbeatPersisted: heartbeat.heartbeatPersisted,
+      heartbeatReadBack: heartbeat.heartbeatReadBack,
+      persistenceSource: heartbeat.persistenceSource,
+      persistenceWarning: heartbeat.persistenceWarning,
+    };
+  }
+  if (isScheduledSource(source) && (!heartbeat?.heartbeatPersisted || !heartbeat?.heartbeatReadBack || heartbeat?.persistenceSource !== "supabase")) {
+    const failedResult = {
+      ...enrichedResult,
+      ok: false,
+      status: "persistence_failed",
+      message: "Scheduled refresh ran but heartbeat was not durably persisted.",
+    };
+    log.warn(`Scheduled refresh persistence failed: mode=${mode} source=${source} heartbeat=${JSON.stringify(heartbeat ?? {})}`);
+    return res.status(500).json({ success: false, result: failedResult });
+  }
   const status = result.ok ? 202 : 500;
   log.info(`Pipeline run completed: ok=${result.ok} mode=${result.mode} refreshMode=${mode} events=${result.events}`);
   return res.status(status).json({ success: result.ok, result: enrichedResult });

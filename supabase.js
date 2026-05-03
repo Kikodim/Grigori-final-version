@@ -34,6 +34,16 @@ function getSupabaseConfigStatus() {
   };
 }
 
+function getSupabaseEnvDiagnostics() {
+  const status = getSupabaseConfigStatus();
+  return {
+    hasSupabaseUrl: status.url.usable,
+    hasSupabaseServiceRoleKey: status.key.usable,
+    supabaseStatus: status.usable ? "ok" : status.present ? "missing_env" : "missing_env",
+    supabaseError: status.usable ? null : "SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY is missing or not usable",
+  };
+}
+
 function validateSupabaseUrl(rawUrl) {
   try {
     const parsed = new URL(rawUrl);
@@ -782,7 +792,14 @@ export async function getStats() {
   const db = await getClient();
 
   if (!db) {
-    return getMemoryStatsSnapshot();
+    return {
+      ...getMemoryStatsSnapshot(),
+      mode: "memory_fallback",
+      eventsDataSource: "memory_fallback",
+      memoryFallbackUsed: true,
+      supabaseStatus: getSupabaseConfigStatus().usable ? "error" : "missing_env",
+      supabaseError: getSupabaseConfigStatus().usable ? "Supabase client unavailable" : "SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY missing or unusable",
+    };
   }
 
   try {
@@ -798,7 +815,14 @@ export async function getStats() {
 
     if (countRes.error || eventRowsRes.error) {
       log.warn(`Supabase stats failed — falling back to memory (${countRes.error?.message ?? eventRowsRes.error?.message})`);
-      return getMemoryStatsSnapshot();
+      return {
+        ...getMemoryStatsSnapshot(),
+        mode: "memory_fallback",
+        eventsDataSource: "memory_fallback",
+        memoryFallbackUsed: true,
+        supabaseStatus: "error",
+        supabaseError: countRes.error?.message ?? eventRowsRes.error?.message ?? "Supabase stats query failed",
+      };
     }
 
     const normalizedRows = (eventRowsRes.data ?? []).map(normalizeEvent);
@@ -814,6 +838,10 @@ export async function getStats() {
 
     return {
       mode: "supabase",
+      eventsDataSource: "supabase",
+      memoryFallbackUsed: false,
+      supabaseStatus: "ok",
+      supabaseError: null,
       eventCount: countRes.count ?? 0,
       totalStoredEvents: countRes.count ?? 0,
       oldestEvent: oldestRes.data?.timestamp ?? null,
@@ -831,7 +859,14 @@ export async function getStats() {
     };
   } catch (err) {
     log.warn(`Supabase stats failed — falling back to memory (${err.message})`);
-    return getMemoryStatsSnapshot();
+    return {
+      ...getMemoryStatsSnapshot(),
+      mode: "memory_fallback",
+      eventsDataSource: "memory_fallback",
+      memoryFallbackUsed: true,
+      supabaseStatus: "error",
+      supabaseError: err.message,
+    };
   }
 }
 
@@ -973,53 +1008,138 @@ export async function healthCheck() {
   const url = process.env.SUPABASE_URL;
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
   const status = getSupabaseConfigStatus();
+  const env = getSupabaseEnvDiagnostics();
 
   if (!url || !key) {
     return {
-      ok: true,
-      mode: "memory",
+      ok: false,
+      mode: "memory_fallback",
+      supabaseStatus: "missing_env",
+      supabaseError: "SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY not set",
+      memoryFallbackUsed: true,
       detail: "SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY not set",
+      env,
+      storage: {
+        eventsTableReadable: false,
+        eventsCount: null,
+        latestEventCreatedAt: null,
+        latestEventUpdatedAt: null,
+        latestNewestSourceAt: null,
+        readError: "SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY not set",
+        writeCapableCheck: "not_checked",
+      },
     };
   }
 
   if (!status.usable) {
     return {
-      ok: true,
-      mode: "memory",
+      ok: false,
+      mode: "memory_fallback",
+      supabaseStatus: "missing_env",
+      supabaseError: "Supabase credentials are placeholders or incomplete",
+      memoryFallbackUsed: true,
       detail: "Supabase credentials are placeholders or incomplete",
+      env,
+      storage: {
+        eventsTableReadable: false,
+        eventsCount: null,
+        latestEventCreatedAt: null,
+        latestEventUpdatedAt: null,
+        latestNewestSourceAt: null,
+        readError: "Supabase credentials are placeholders or incomplete",
+        writeCapableCheck: "not_checked",
+      },
     };
   }
 
   const urlValidation = validateSupabaseUrl(url);
   if (!urlValidation.ok) {
     return {
-      ok: true,
-      mode: "memory",
+      ok: false,
+      mode: "memory_fallback",
+      supabaseStatus: "error",
+      supabaseError: `SUPABASE_URL ${urlValidation.reason}`,
+      memoryFallbackUsed: true,
       detail: `SUPABASE_URL ${urlValidation.reason}`,
+      env,
+      storage: {
+        eventsTableReadable: false,
+        eventsCount: null,
+        latestEventCreatedAt: null,
+        latestEventUpdatedAt: null,
+        latestNewestSourceAt: null,
+        readError: `SUPABASE_URL ${urlValidation.reason}`,
+        writeCapableCheck: "not_checked",
+      },
     };
   }
 
   const db = await getClient();
   if (!db) {
     return {
-      ok: true,
-      mode: "memory",
+      ok: false,
+      mode: "memory_fallback",
+      supabaseStatus: "error",
+      supabaseError: "Supabase client unavailable",
+      memoryFallbackUsed: true,
       detail: "Supabase client unavailable",
+      env,
+      storage: {
+        eventsTableReadable: false,
+        eventsCount: null,
+        latestEventCreatedAt: null,
+        latestEventUpdatedAt: null,
+        latestNewestSourceAt: null,
+        readError: "Supabase client unavailable",
+        writeCapableCheck: "not_checked",
+      },
     };
   }
 
   try {
-    const { error } = await db.from("events").select("id", { head: true }).limit(1);
+    const [countRes, latestCreatedRes, latestUpdatedRes, latestSourceRes] = await Promise.all([
+      db.from("events").select("id", { count: "exact", head: true }),
+      db.from("events").select("created_at").order("created_at", { ascending: false }).limit(1).maybeSingle(),
+      db.from("events").select("updated_at").order("updated_at", { ascending: false }).limit(1).maybeSingle(),
+      db.from("events").select("newest_source_at").order("newest_source_at", { ascending: false, nullsFirst: false }).limit(1).maybeSingle(),
+    ]);
+    const error = countRes.error ?? latestCreatedRes.error ?? latestUpdatedRes.error ?? latestSourceRes.error ?? null;
     return {
       ok: !error,
-      mode: error ? "memory" : "supabase",
+      mode: error ? "memory_fallback" : "supabase",
+      supabaseStatus: error ? "error" : "ok",
+      supabaseError: error?.message ?? null,
+      memoryFallbackUsed: Boolean(error),
       detail: error?.message ?? "Connected",
+      env,
+      storage: {
+        eventsTableReadable: !error,
+        eventsCount: error ? null : countRes.count ?? 0,
+        latestEventCreatedAt: latestCreatedRes.data?.created_at ?? null,
+        latestEventUpdatedAt: latestUpdatedRes.data?.updated_at ?? null,
+        latestNewestSourceAt: latestSourceRes.data?.newest_source_at ?? null,
+        readError: error?.message ?? null,
+        writeCapableCheck: status.key.usable ? "service_role_configured" : "not_configured",
+      },
     };
   } catch (err) {
     return {
       ok: false,
-      mode: "memory",
+      mode: "memory_fallback",
+      supabaseStatus: "error",
+      supabaseError: err.message,
+      memoryFallbackUsed: true,
       detail: err.message,
+      env,
+      storage: {
+        eventsTableReadable: false,
+        eventsCount: null,
+        latestEventCreatedAt: null,
+        latestEventUpdatedAt: null,
+        latestNewestSourceAt: null,
+        readError: err.message,
+        writeCapableCheck: "not_checked",
+      },
     };
   }
 }

@@ -13,6 +13,7 @@ jobs:
         env:
           GRIGORI_ADMIN_SECRET: ${{ secrets.GRIGORI_ADMIN_SECRET }}
           GRIGORI_REFRESH_URL: https://grigori.oryth.io/api/v1/admin/refresh?mode=ai&source=github_action
+          GRIGORI_HEALTH_URL: https://grigori.oryth.io/api/v1/health
         run: |
           set -euo pipefail
           echo "UTC run timestamp: $(date -u +"%Y-%m-%dT%H:%M:%SZ")"
@@ -84,7 +85,43 @@ jobs:
           if (result.ok !== true) fail("Refresh result.ok !== true");
           if (result.mode !== "ai" && result.refreshMode !== "ai") fail("Refresh result mode mismatch");
           if (!result.lastAiRefreshAt) fail("AI refresh response lacks lastAiRefreshAt/check timestamp");
+          if (result.heartbeatPersisted !== true) fail("Scheduled AI heartbeat was not persisted");
+          if (result.heartbeatReadBack !== true) fail("Scheduled AI heartbeat did not read back");
+          if (result.persistenceSource !== "supabase") fail(`Scheduled AI heartbeat used non-durable persistence: ${result.persistenceSource}`);
           if (/unknown route|unauthorized/i.test(body)) fail("Refresh response contained route/auth failure text");
+          NODE
+
+          HEALTH_BODY=$(mktemp)
+          HEALTH_STATUS=$(curl -sS --max-time 45 --connect-timeout 15 -o "$HEALTH_BODY" -w "%{http_code}" "$GRIGORI_HEALTH_URL")
+          echo "Health HTTP status: $HEALTH_STATUS"
+          echo "Health body:"
+          cat "$HEALTH_BODY"
+          echo
+
+          HEALTH_BODY="$HEALTH_BODY" HEALTH_STATUS="$HEALTH_STATUS" node <<'NODE'
+          const fs = require("fs");
+          const fail = (message) => {
+            console.error(message);
+            process.exit(1);
+          };
+          const status = Number(process.env.HEALTH_STATUS);
+          if (!Number.isFinite(status) || status < 200 || status >= 300) fail(`Unexpected health HTTP status ${process.env.HEALTH_STATUS}`);
+          let health;
+          try {
+            health = JSON.parse(fs.readFileSync(process.env.HEALTH_BODY, "utf8"));
+          } catch (err) {
+            fail(`Health JSON parse failed: ${err.message}`);
+          }
+          const automation = health.automation ?? {};
+          const ai = automation.ai ?? {};
+          const lastSuccess = ai.lastScheduledSuccessAt;
+          const lastAiRefreshAt = automation.lastAiRefreshAt ?? automation.lastAiCheckAt ?? health.data?.lastAiRefreshAt ?? health.data?.lastAiCheckAt;
+          const ageMinutes = lastSuccess ? (Date.now() - new Date(lastSuccess).getTime()) / 60000 : Infinity;
+          console.log("Health scheduled AI:", JSON.stringify(ai));
+          console.log("Health lastAiRefreshAt:", lastAiRefreshAt ?? "missing");
+          if (!lastSuccess || ageMinutes > 10) fail("Health did not show scheduled AI success within 10 minutes");
+          if (!lastAiRefreshAt) fail("Health did not show lastAiRefreshAt/check timestamp");
+          if (health.data?.supabaseStatus && health.data.supabaseStatus !== "ok") fail(`Health reports Supabase status ${health.data.supabaseStatus}: ${health.data.supabaseError ?? "unknown"}`);
           NODE
 
           echo "AI refresh validated successfully."

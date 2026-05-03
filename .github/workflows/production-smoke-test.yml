@@ -66,6 +66,8 @@ jobs:
           const data = health.data ?? {};
           const automation = health.automation ?? {};
           const latestActivityAt = data.latestActivityAt ?? automation.latestActivityAt ?? null;
+          const lastNewsRefreshAt = automation.lastNewsRefreshAt ?? data.lastNewsRefreshAt ?? data.lastNewsCheckAt ?? null;
+          const lastAiRefreshAt = automation.lastAiRefreshAt ?? automation.lastAiCheckAt ?? data.lastAiRefreshAt ?? data.lastAiCheckAt ?? null;
           const latestActivityAge = ageHours(latestActivityAt);
           const maxAge = Number(process.env.MAX_ACTIVITY_AGE_HOURS ?? 24);
           const fallbackAvailable = data.cacheStatus === "fallback_available" || (data.fallbackEligibleCount ?? 0) > 0;
@@ -77,14 +79,15 @@ jobs:
           console.log(`activeEventCount=${activeEventCount}`);
           console.log(`totalStoredEvents=${totalStoredEvents}`);
           console.log(`latestActivityAt=${latestActivityAt ?? "missing"}`);
-          console.log(`lastNewsRefreshAt=${automation.lastNewsRefreshAt ?? "missing"}`);
-          console.log(`lastAiRefreshAt=${automation.lastAiRefreshAt ?? "missing"}`);
+          console.log(`lastNewsRefreshAt=${lastNewsRefreshAt ?? "missing"}`);
+          console.log(`lastAiRefreshAt=${lastAiRefreshAt ?? "missing"}`);
           console.log(`scheduledNews=${JSON.stringify(automation.news ?? {})}`);
           console.log(`scheduledAi=${JSON.stringify(automation.ai ?? {})}`);
 
           if (health.ok !== true) throw new Error("Health ok !== true");
-          if (!automation.lastNewsRefreshAt) throw new Error("Missing lastNewsRefreshAt");
-          if (!automation.lastAiRefreshAt) throw new Error("Missing lastAiRefreshAt/check timestamp");
+          if (data.supabaseStatus && data.supabaseStatus !== "ok") throw new Error(`Supabase status ${data.supabaseStatus}: ${data.supabaseError ?? "unknown"}`);
+          if (!lastNewsRefreshAt) throw new Error("Missing lastNewsRefreshAt");
+          if (!lastAiRefreshAt) throw new Error("Missing lastAiRefreshAt/check timestamp");
           if (activeEventCount === 0 && totalStoredEvents > 0 && !fallbackAvailable) {
             throw new Error("Active events are empty while stored events exist and no fallback is available");
           }
