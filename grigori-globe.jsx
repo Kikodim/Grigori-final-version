@@ -2192,32 +2192,38 @@ function BriefingPanel({ briefing, strategicBrief, selectedLens, onLensChange, o
   );
 }
 
-function BriefingCompactCard({ briefing, strategicBrief, systemStatus, feedState, onOpen }) {
+function BriefingCompactCard({ briefing, strategicBrief, systemStatus, feedState, onOpen, onDismiss, leftOffset = 304 }) {
   const firstItem = briefing?.items?.[0] ?? null;
   const newsFreshness = getDataFreshness(systemStatus?.automation?.lastNewsRefreshAt);
   const aiFreshness = getDataFreshness(systemStatus?.automation?.lastAiRefreshAt);
   const topRegion = strategicBrief?.topEscalatingRegions?.[0] ?? firstItem?.region ?? "Global risk";
   const summary = firstItem?.summary ?? strategicBrief?.chokepointToWatch ?? feedState?.message ?? "Live signals are being ranked for the current lens.";
   return (
-    <button
+    <div
+      role="button"
+      tabIndex={0}
       onClick={onOpen}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          onOpen?.();
+        }
+      }}
       style={{
         position: "absolute",
-        left: "50%",
-        bottom: 70,
-        transform: "translateX(-50%)",
-        width: "min(420px, calc(100vw - 640px))",
-        minWidth: 300,
-        maxWidth: 420,
+        left: leftOffset,
+        bottom: 116,
+        width: 318,
+        maxWidth: "calc(100vw - 360px)",
         zIndex: 36,
         display: "grid",
-        gap: 8,
+        gap: 7,
         textAlign: "left",
-        padding: "12px 14px",
+        padding: "10px 12px",
         borderRadius: 14,
         border: "1px solid rgba(94,164,195,0.16)",
-        background: "linear-gradient(180deg, rgba(6,15,28,0.74), rgba(5,11,22,0.82))",
-        boxShadow: "0 18px 42px rgba(0,0,0,0.34)",
+        background: "linear-gradient(180deg, rgba(6,15,28,0.68), rgba(5,11,22,0.78))",
+        boxShadow: "0 14px 34px rgba(0,0,0,0.3)",
         backdropFilter: "blur(14px)",
         WebkitBackdropFilter: "blur(14px)",
         cursor: "pointer",
@@ -2227,20 +2233,85 @@ function BriefingCompactCard({ briefing, strategicBrief, systemStatus, feedState
         <div style={{ color: "rgba(103,220,255,0.58)", fontSize: 10, fontFamily: mono, letterSpacing: "0.14em", textTransform: "uppercase" }}>
           Today&apos;s Brief
         </div>
-        <span style={{ color: "#d6ebff", fontSize: 10, fontFamily: mono, letterSpacing: "0.1em", textTransform: "uppercase" }}>
-          Open
-        </span>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <span style={{ color: "#d6ebff", fontSize: 10, fontFamily: mono, letterSpacing: "0.1em", textTransform: "uppercase" }}>
+            Open
+          </span>
+          <button
+            type="button"
+            aria-label="Dismiss today's brief"
+            onClick={(event) => {
+              event.stopPropagation();
+              onDismiss?.();
+            }}
+            style={{
+              width: 22,
+              height: 22,
+              padding: 0,
+              display: "grid",
+              placeItems: "center",
+              borderRadius: 999,
+              border: "1px solid rgba(94,164,195,0.16)",
+              color: "rgba(189,226,248,0.7)",
+              background: "rgba(6,15,30,0.62)",
+              fontSize: 11,
+              lineHeight: 1,
+              cursor: "pointer",
+            }}
+          >
+            ×
+          </button>
+        </div>
       </div>
       <div style={{ color: "rgba(214,235,255,0.9)", fontFamily: display, fontSize: 14, fontWeight: 700, lineHeight: 1.25 }}>
         {topRegion}
       </div>
-      <div style={{ color: "rgba(160,198,225,0.72)", fontSize: 11, lineHeight: 1.45, fontFamily: bodyFont }}>
-        {String(summary).slice(0, 130)}
+      <div style={{
+        color: "rgba(160,198,225,0.72)",
+        fontSize: 11,
+        lineHeight: 1.42,
+        fontFamily: bodyFont,
+        display: "-webkit-box",
+        WebkitLineClamp: 2,
+        WebkitBoxOrient: "vertical",
+        overflow: "hidden",
+      }}>
+        {String(summary)}
       </div>
       <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
         <TrafficPill level={newsFreshness.tone}>News {newsFreshness.label}</TrafficPill>
         <TrafficPill level={aiFreshness.tone}>AI {aiFreshness.label}</TrafficPill>
       </div>
+    </div>
+  );
+}
+
+function BriefingMiniChip({ onOpen, leftOffset = 304 }) {
+  return (
+    <button
+      onClick={onOpen}
+      style={{
+        position: "absolute",
+        left: leftOffset,
+        bottom: 116,
+        zIndex: 36,
+        minHeight: 34,
+        padding: "8px 12px",
+        borderRadius: 999,
+        border: "1px solid rgba(94,164,195,0.16)",
+        background: "rgba(6,15,30,0.72)",
+        color: "rgba(214,235,255,0.82)",
+        fontFamily: mono,
+        fontSize: 10,
+        letterSpacing: "0.12em",
+        textTransform: "uppercase",
+        boxShadow: "0 12px 30px rgba(0,0,0,0.26)",
+        backdropFilter: "blur(12px)",
+        WebkitBackdropFilter: "blur(12px)",
+        cursor: "pointer",
+      }}
+    >
+      Brief
     </button>
   );
 }
@@ -2265,6 +2336,80 @@ function MarketImpactDashboard({ aggregate, onClose, onSelectCategory, emphasis 
         ))}
       </div>
     </FloatingPanel>
+  );
+}
+
+function MarketImpactCompactCard({ aggregate, onExpand, onSelectCategory }) {
+  const items = [aggregate.shipping, aggregate.oil, aggregate.equities].filter(Boolean);
+  return (
+    <div style={{
+      position: "absolute",
+      top: FLOATING_TOP + 8,
+      right: 16,
+      width: 260,
+      zIndex: 34,
+      padding: "12px 13px",
+      borderRadius: 16,
+      border: "1px solid rgba(94,164,195,0.14)",
+      background: "linear-gradient(180deg, rgba(5,12,24,0.76), rgba(5,11,22,0.84))",
+      boxShadow: "0 16px 36px rgba(0,0,0,0.28)",
+      backdropFilter: "blur(14px)",
+      WebkitBackdropFilter: "blur(14px)",
+    }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 10 }}>
+        <div>
+          <div style={{ color: "rgba(103,220,255,0.46)", fontSize: 9, fontFamily: mono, letterSpacing: "0.16em", textTransform: "uppercase" }}>
+            Market Impact
+          </div>
+          <div style={{ color: "rgba(214,235,255,0.86)", fontFamily: display, fontSize: 13, fontWeight: 700, marginTop: 3 }}>
+            Compact watch
+          </div>
+        </div>
+        <button
+          onClick={onExpand}
+          style={{
+            minHeight: 30,
+            padding: "6px 10px",
+            borderRadius: 999,
+            border: "1px solid rgba(87,216,255,0.18)",
+            background: "rgba(6,15,30,0.72)",
+            color: "#d6ebff",
+            fontFamily: mono,
+            fontSize: 9,
+            letterSpacing: "0.1em",
+            textTransform: "uppercase",
+            cursor: "pointer",
+          }}
+        >
+          Details
+        </button>
+      </div>
+      <div style={{ display: "grid", gap: 7 }}>
+        {items.map((item) => (
+          <button
+            key={item.key}
+            onClick={() => onSelectCategory?.(item.key)}
+            style={{
+              display: "grid",
+              gridTemplateColumns: "1fr auto",
+              alignItems: "center",
+              gap: 8,
+              padding: "9px 10px",
+              borderRadius: 12,
+              border: "1px solid rgba(94,164,195,0.1)",
+              background: "rgba(8,20,36,0.58)",
+              textAlign: "left",
+              cursor: "pointer",
+            }}
+          >
+            <span style={{ color: "rgba(214,235,255,0.84)", fontFamily: display, fontSize: 13, fontWeight: 700 }}>
+              {item.label}
+            </span>
+            <TrafficPill level={item.level}>{item.trend}</TrafficPill>
+          </button>
+        ))}
+      </div>
+    </div>
   );
 }
 
@@ -2705,7 +2850,9 @@ const DEMO_MODE = String(import.meta.env.VITE_DEMO_MODE ?? "false").toLowerCase(
 const TOP_BAR_HEIGHT = 58;
 const FLOATING_TOP = 68;
 const BRIEFING_PANEL_STORAGE_KEY = "grigori:briefing-panel-open";
+const BRIEFING_COMPACT_STORAGE_KEY = "grigori:briefing-compact-dismissed";
 const ACTIVE_SIGNALS_STORAGE_KEY = "grigori:active-signals-open";
+const MARKET_PANEL_STORAGE_KEY = "grigori:market-impact-expanded";
 const APP_VIEWS = [
   { key: "globe", label: "Globe" },
   { key: "classic", label: "Intel Board" },
@@ -5413,7 +5560,7 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
   const [panelVisibility, setPanelVisibility] = useState(() => ({
     events: readStoredBoolean(ACTIVE_SIGNALS_STORAGE_KEY, true),
     briefing: readStoredBoolean(BRIEFING_PANEL_STORAGE_KEY, false),
-    marketImpact: true,
+    marketImpact: readStoredBoolean(MARKET_PANEL_STORAGE_KEY, false),
     dataConfidence: false,
     flights: false,
     vessels: false,
@@ -5431,6 +5578,7 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
   const [activeSignalSort, setActiveSignalSort] = useState("priority");
   const [refreshState,    setRefreshState]    = useState({ status: "idle", message: "", detail: null });
   const [briefing,        setBriefing]        = useState(buildBriefing(SCORED_EVENTS));
+  const [briefingCompactDismissed, setBriefingCompactDismissed] = useState(() => readStoredBoolean(BRIEFING_COMPACT_STORAGE_KEY, false));
   const [selectedMarketKey, setSelectedMarketKey] = useState(null);
   const [timelineHours,   setTimelineHours]   = useState(24 * 7);
   const [timelineSlider,  setTimelineSlider]  = useState(100);
@@ -5545,7 +5693,13 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
     if (typeof window === "undefined") return;
     window.localStorage.setItem(BRIEFING_PANEL_STORAGE_KEY, String(Boolean(panelVisibility.briefing)));
     window.localStorage.setItem(ACTIVE_SIGNALS_STORAGE_KEY, String(Boolean(panelVisibility.events)));
-  }, [panelVisibility.briefing, panelVisibility.events]);
+    window.localStorage.setItem(MARKET_PANEL_STORAGE_KEY, String(Boolean(panelVisibility.marketImpact)));
+  }, [panelVisibility.briefing, panelVisibility.events, panelVisibility.marketImpact]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem(BRIEFING_COMPACT_STORAGE_KEY, String(Boolean(briefingCompactDismissed)));
+  }, [briefingCompactDismissed]);
 
   useEffect(() => {
     let cancelled = false;
@@ -5750,6 +5904,7 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
   }, [liveEvents]);
 
   const handleOpenBriefing = useCallback(() => {
+    setBriefingCompactDismissed(false);
     setPanelVisibility((current) => ({
       ...current,
       briefing: true,
@@ -5760,6 +5915,23 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
 
   const handleCloseBriefing = useCallback(() => {
     setPanelVisibility((current) => ({ ...current, briefing: false }));
+  }, []);
+
+  const handleDismissBriefingCompact = useCallback(() => {
+    setBriefingCompactDismissed(true);
+  }, []);
+
+  const handleRestoreBriefingCompact = useCallback(() => {
+    setBriefingCompactDismissed(false);
+  }, []);
+
+  const handleExpandMarketImpact = useCallback(() => {
+    setPanelVisibility((current) => ({
+      ...current,
+      marketImpact: true,
+      briefing: false,
+      dataConfidence: false,
+    }));
   }, []);
 
   const handleReturnToGlobalView = useCallback(() => {
@@ -6634,12 +6806,19 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
                 onClose={handleCloseBriefing}
               />
             ) : null}
-            {panelVisibility.marketImpact && activeLayers.intelBoard && !panelVisibility.briefing ? (
+            {panelVisibility.marketImpact && activeLayers.intelBoard && !panelVisibility.briefing && !selectedMarketImpact ? (
               <MarketImpactDashboard
                 aggregate={marketImpact}
                 emphasis={lensConfig.emphasis}
                 onSelectCategory={setSelectedMarketKey}
                 onClose={() => setPanelVisibility((current) => ({ ...current, marketImpact: false }))}
+              />
+            ) : null}
+            {!panelVisibility.marketImpact && activeLayers.intelBoard && !panelVisibility.briefing && !selectedDetail && !selectedMarketImpact ? (
+              <MarketImpactCompactCard
+                aggregate={marketImpact}
+                onExpand={handleExpandMarketImpact}
+                onSelectCategory={setSelectedMarketKey}
               />
             ) : null}
             {panelVisibility.dataConfidence && activeLayers.intelBoard && !panelVisibility.briefing ? (
@@ -6716,13 +6895,21 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
         </div>
 
         <GlobalViewButton onReset={handleReturnToGlobalView} mobile={isMobile} offsetLeft={panelVisibility.events && activeLayers.intelBoard ? 302 : 18} />
-        {!isMobile && activeLayers.intelBoard && !panelVisibility.briefing && !selectedDetail ? (
+        {!isMobile && activeLayers.intelBoard && !panelVisibility.briefing && !selectedDetail && !briefingCompactDismissed ? (
           <BriefingCompactCard
             briefing={briefing}
             strategicBrief={strategicBrief}
             systemStatus={systemStatus}
             feedState={feedState}
             onOpen={handleOpenBriefing}
+            onDismiss={handleDismissBriefingCompact}
+            leftOffset={panelVisibility.events && activeLayers.intelBoard ? 302 : 18}
+          />
+        ) : null}
+        {!isMobile && activeLayers.intelBoard && !panelVisibility.briefing && !selectedDetail && briefingCompactDismissed ? (
+          <BriefingMiniChip
+            onOpen={handleRestoreBriefingCompact}
+            leftOffset={panelVisibility.events && activeLayers.intelBoard ? 302 : 18}
           />
         ) : null}
         {!isMobile ? (
