@@ -83,7 +83,7 @@ export function isAmbiguousNonStrategicDraft(article = {}) {
   return SPORTS_DRAFT_PATTERNS.test(text) || LOCAL_LOW_SIGNAL_PATTERNS.test(text) || OPINION_PATTERNS.some((pattern) => pattern.test(text));
 }
 
-export function evaluateArticleQuality(article = {}) {
+export function evaluateArticleQuality(article = {}, { providerDegraded = false } = {}) {
   const domains = Array.isArray(article.sourceDomains) ? article.sourceDomains : [];
   const primaryDomain = normalizeDomain(domains[0] ?? article.url ?? "");
   const sourceTier = classifySourceTier({ domain: primaryDomain, source: article.source });
@@ -114,10 +114,13 @@ export function evaluateArticleQuality(article = {}) {
   if (!regionResolved) reasons.push("region_unresolved");
   if (!categories.length) reasons.push("no_relevant_category");
 
-  const activeEligible = score >= 4 &&
+  const minimumScore = providerDegraded ? 3 : 4;
+  const knownLowTier = sourceTier.tier === "tier_3";
+  const activeEligible = score >= minimumScore &&
     !["opinion", "editorial", "letter"].includes(contentType) &&
     !isAmbiguousNonStrategicDraft(article) &&
-    (regionResolved || sourceTier.tier === "tier_1");
+    (regionResolved || sourceTier.tier === "tier_1") &&
+    !knownLowTier;
 
   return {
     score,
@@ -131,7 +134,7 @@ export function evaluateArticleQuality(article = {}) {
   };
 }
 
-export function evaluateClusterPublishQuality(preEvent = {}, articles = []) {
+export function evaluateClusterPublishQuality(preEvent = {}, articles = [], { providerDegraded = false } = {}) {
   const sourceDomains = new Set(articles.flatMap((article) => article.sourceDomains ?? []));
   const sourceCount = new Set(preEvent.sources ?? articles.map((article) => article.source)).size || articles.length;
   const regionLabel = String(preEvent.region?.label ?? "").trim();
@@ -141,7 +144,7 @@ export function evaluateClusterPublishQuality(preEvent = {}, articles = []) {
   const opinionCount = contentTypes.filter((type) => ["opinion", "editorial", "letter"].includes(type)).length;
   const bestTierScore = Math.max(0, ...articleQuality.map((item) => item.sourceTierScore));
   const bestTier = articleQuality.find((item) => item.sourceTierScore === bestTierScore)?.sourceTier ?? "unknown";
-  const lowTierOnly = articleQuality.length > 0 && articleQuality.every((item) => item.sourceTier === "tier_3" || item.sourceTier === "unknown");
+  const lowTierOnly = articleQuality.length > 0 && articleQuality.every((item) => item.sourceTier === "tier_3");
   const relevanceScore = Number(preEvent.relevanceScore ?? 0);
   const corpus = `${preEvent.title ?? ""} ${(preEvent.keywords ?? []).join(" ")} ${articles.map((article) => `${article.title ?? ""} ${article.summary ?? ""}`).join(" ")}`;
   const highRiskEntity = /\b(hormuz|red sea|black sea|taiwan|ukraine|russia|iran|israel|gaza|nato|eu|sanctions|missile|drone|military|cyber|pipeline|shipping|tanker|election|protest|coalition)\b/i.test(corpus);
@@ -156,8 +159,16 @@ export function evaluateClusterPublishQuality(preEvent = {}, articles = []) {
   const strongSingleSource = sourceCount >= 1 && bestTier === "tier_1" && regionResolved && relevanceScore >= 4 && relevantCategory && opinionCount === 0;
   const multiSourceCorroborated = sourceDomains.size >= 2 && regionResolved && relevanceScore >= 3 && opinionCount === 0 && relevantCategory;
   const highRiskChokepoint = highRiskEntity && regionResolved && bestTierScore >= 0.7 && opinionCount === 0 && relevantCategory;
+  const degradedSingleProvider = providerDegraded &&
+    sourceCount >= 1 &&
+    regionResolved &&
+    highRiskEntity &&
+    relevantCategory &&
+    opinionCount === 0 &&
+    !lowTierOnly &&
+    !articles.some(isAmbiguousNonStrategicDraft);
 
-  const publishable = strongSingleSource || multiSourceCorroborated || highRiskChokepoint;
+  const publishable = strongSingleSource || multiSourceCorroborated || highRiskChokepoint || degradedSingleProvider;
   if (!publishable && reasons.length === 0) reasons.push("below_public_publish_threshold");
 
   return {

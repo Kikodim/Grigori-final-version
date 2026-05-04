@@ -1,0 +1,31 @@
+<svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="grigoriCore" x1="146" y1="120" x2="364" y2="382" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#69E7FF"/>
+      <stop offset="0.6" stop-color="#9DFAFF"/>
+      <stop offset="1" stop-color="#1B4F6B"/>
+    </linearGradient>
+    <linearGradient id="grigoriOrbit" x1="132" y1="146" x2="386" y2="352" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#69E7FF"/>
+      <stop offset="1" stop-color="#F5F8FF"/>
+    </linearGradient>
+    <filter id="softGlow" x="90" y="90" width="332" height="332" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feGaussianBlur stdDeviation="14" result="blur"/>
+      <feColorMatrix in="blur" type="matrix" values="0 0 0 0 0.411765 0 0 0 0 0.905882 0 0 0 0 1 0 0 0 0.22 0"/>
+    </filter>
+  </defs>
+  <g filter="url(#softGlow)">
+    <circle cx="256" cy="256" r="112" stroke="#69E7FF" stroke-opacity="0.22" stroke-width="20"/>
+  </g>
+  <circle cx="256" cy="256" r="104" stroke="url(#grigoriCore)" stroke-width="10"/>
+  <circle cx="256" cy="256" r="61" stroke="#F5F8FF" stroke-opacity="0.28" stroke-width="7"/>
+  <path d="M256 139V179" stroke="#F5F8FF" stroke-opacity="0.72" stroke-width="6" stroke-linecap="round"/>
+  <path d="M256 333V373" stroke="#F5F8FF" stroke-opacity="0.42" stroke-width="6" stroke-linecap="round"/>
+  <path d="M139 256H177" stroke="#F5F8FF" stroke-opacity="0.24" stroke-width="6" stroke-linecap="round"/>
+  <path d="M335 256H373" stroke="#F5F8FF" stroke-opacity="0.64" stroke-width="6" stroke-linecap="round"/>
+  <ellipse cx="256" cy="256" rx="169" ry="86" transform="rotate(-29 256 256)" stroke="url(#grigoriOrbit)" stroke-width="9"/>
+  <circle cx="366" cy="190" r="16" fill="#F7B84B"/>
+  <circle cx="366" cy="190" r="29" stroke="#F7B84B" stroke-opacity="0.18" stroke-width="8"/>
+  <circle cx="256" cy="256" r="16" fill="#F5F8FF"/>
+  <path d="M224 256C236 240 249 234 256 234C263 234 276 240 288 256C276 272 263 278 256 278C249 278 236 272 224 256Z" stroke="#69E7FF" stroke-width="10" stroke-linejoin="round"/>
+</svg>

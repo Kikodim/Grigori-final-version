@@ -192,6 +192,39 @@ async function getProviderRuntimeState(name) {
   };
 }
 
+async function getProviderBackoffSkip(name) {
+  const state = await getProviderRuntimeState(name);
+  const status = state.status;
+  const rateLimitedAt = state.lastRateLimitedAt ? new Date(state.lastRateLimitedAt).getTime() : 0;
+  const lastCallAt = state.lastCallAt ? new Date(state.lastCallAt).getTime() : 0;
+  const now = Date.now();
+
+  if (status === "rate_limited" && rateLimitedAt && now - rateLimitedAt < 3 * 3600_000) {
+    return {
+      status: "rate_limited",
+      error: `${name} is cooling down after rate limit.`,
+    };
+  }
+
+  if (["provider_error", "error"].includes(status) && lastCallAt && now - lastCallAt < 30 * 60_000) {
+    return {
+      status: "provider_error",
+      error: `${name} is cooling down after repeated provider errors.`,
+    };
+  }
+
+  return null;
+}
+
+function skippedProviderResult(sourceName, skip) {
+  return Promise.resolve({
+    status: skip.status,
+    sourceName,
+    articles: [],
+    error: skip.error,
+  });
+}
+
 async function saveProviderRuntimeState(name, metadata = {}) {
   const state = await getProviderRuntimeState(name);
   const nextMetadata = {
@@ -573,40 +606,52 @@ async function collectSourceFetches({ queries, pageSize, windowStart = null, win
   }
 
   if (isSourceEnabled("newsdata") && newsDataStatus.usable) {
-    tasks.push(fetchFromSource("newsdata", () => fetchNewsDataArticles({
-      apiKey: process.env.NEWSDATA_API_KEY?.trim(),
-      queries,
-      pageSize,
-      from: windowStart,
-      to: windowEnd,
-      historical,
-    }), { historical, windowStart, windowEnd }));
+    const skip = await getProviderBackoffSkip("newsdata");
+    tasks.push(skip
+      ? skippedProviderResult("newsdata", skip)
+      : fetchFromSource("newsdata", () => fetchNewsDataArticles({
+          apiKey: process.env.NEWSDATA_API_KEY?.trim(),
+          queries,
+          pageSize,
+          from: windowStart,
+          to: windowEnd,
+          historical,
+        }), { historical, windowStart, windowEnd }));
   }
 
   if (isSourceEnabled("newsapi") && newsApiStatus.usable) {
-    tasks.push(fetchFromSource("newsapi", () => fetchNewsApiArticles({
-      apiKey: process.env.NEWS_API_KEY?.trim(),
-      queries,
-      pageSize,
-      from: windowStart,
-      to: windowEnd,
-    }), { historical, windowStart, windowEnd }));
+    const skip = await getProviderBackoffSkip("newsapi");
+    tasks.push(skip
+      ? skippedProviderResult("newsapi", skip)
+      : fetchFromSource("newsapi", () => fetchNewsApiArticles({
+          apiKey: process.env.NEWS_API_KEY?.trim(),
+          queries,
+          pageSize,
+          from: windowStart,
+          to: windowEnd,
+        }), { historical, windowStart, windowEnd }));
   }
 
   if (isSourceEnabled("gdelt")) {
-    tasks.push(fetchFromSource("gdelt", () => fetchGdeltArticles({
-      queries,
-      pageSize,
-      from: windowStart,
-      to: windowEnd,
-    }), { historical, windowStart, windowEnd }));
+    const skip = await getProviderBackoffSkip("gdelt");
+    tasks.push(skip
+      ? skippedProviderResult("gdelt", skip)
+      : fetchFromSource("gdelt", () => fetchGdeltArticles({
+          queries,
+          pageSize,
+          from: windowStart,
+          to: windowEnd,
+        }), { historical, windowStart, windowEnd }));
   }
 
   if (includeRss && isSourceEnabled("rss") && !historical) {
-    tasks.push(fetchFromSource("rss", () => fetchRssArticles({
-      feedUrls: rssFeeds.length > 0 ? rssFeeds : undefined,
-      pageSize,
-    }), { historical: false }));
+    const skip = await getProviderBackoffSkip("rss");
+    tasks.push(skip
+      ? skippedProviderResult("rss", skip)
+      : fetchFromSource("rss", () => fetchRssArticles({
+          feedUrls: rssFeeds.length > 0 ? rssFeeds : undefined,
+          pageSize,
+        }), { historical: false }));
   }
 
   if (historical && !HISTORICAL_SUPPORT.rss) {
@@ -616,7 +661,7 @@ async function collectSourceFetches({ queries, pageSize, windowStart = null, win
   return tasks;
 }
 
-function finalizeArticles(rawArticles, maxItems, { seedIfEmpty = false, historical = false } = {}) {
+function finalizeArticles(rawArticles, maxItems, { seedIfEmpty = false, historical = false, providerDegraded = false } = {}) {
   const beforeCount = getAllArticles().length;
   const now = Date.now();
   const providerBuckets = new Map();
@@ -678,7 +723,7 @@ function finalizeArticles(rawArticles, maxItems, { seedIfEmpty = false, historic
       ...normalized,
       relevanceScore: score,
       categories,
-    });
+    }, { providerDegraded });
     normalized.sourceTier = quality.sourceTier;
     normalized.sourceTierLabel = quality.sourceTierLabel;
     normalized.contentType = quality.contentType;
@@ -886,7 +931,10 @@ export async function ingest({ apiKey, maxPerRun = 40 }) {
   const results = await Promise.all(tasks);
 
   const fetchedBySource = results.flatMap((result) => result.articles ?? []);
-  const final = finalizeArticles(fetchedBySource, maxPerRun, { seedIfEmpty: true, historical: false });
+  const okProviders = results.filter((result) => result.status === "ok" && (result.articles?.length ?? 0) > 0).length;
+  const unavailableProviders = results.filter((result) => ["rate_limited", "provider_error", "plan_or_auth", "skipped_budget", "error"].includes(result.status)).length;
+  const providerDegraded = okProviders > 0 && unavailableProviders > 0;
+  const final = finalizeArticles(fetchedBySource, maxPerRun, { seedIfEmpty: true, historical: false, providerDegraded });
   log.info(`[ingest] Filtered ${final.lowRelevanceCount} low-relevance articles; kept ${Math.max(0, final.fetched - final.filteredOutCount)}`);
 
   const finalizedDiagnostics = new Map((final.providerDiagnostics ?? []).map((item) => [item.provider, item]));
@@ -923,6 +971,7 @@ export async function ingest({ apiKey, maxPerRun = 40 }) {
     providersUsed,
     rateLimitedProviders,
     skippedProviders,
+    providerDegraded,
   };
 }
 
@@ -980,7 +1029,7 @@ export async function ingestHistoricalBackfill({
       }
     }
 
-    const finalized = finalizeArticles(rawWindowArticles, maxArticlesPerBatch, { seedIfEmpty: false, historical: true });
+    const finalized = finalizeArticles(rawWindowArticles, maxArticlesPerBatch, { seedIfEmpty: false, historical: true, providerDegraded: false });
     articlesFetched += finalized.fetched;
     articlesSaved += finalized.saved;
     filteredOutCount += finalized.filteredOutCount;

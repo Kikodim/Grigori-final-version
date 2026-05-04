@@ -1,0 +1,27 @@
+<svg width="980" height="184" viewBox="0 0 980 184" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="wordmarkCore" x1="24" y1="24" x2="128" y2="136" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#69E7FF"/>
+      <stop offset="0.62" stop-color="#F5F8FF"/>
+      <stop offset="1" stop-color="#1B4F6B"/>
+    </linearGradient>
+    <linearGradient id="wordmarkOrbit" x1="18" y1="32" x2="138" y2="122" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#69E7FF"/>
+      <stop offset="1" stop-color="#F5F8FF"/>
+    </linearGradient>
+  </defs>
+  <g transform="translate(16 24)">
+    <circle cx="68" cy="68" r="54" stroke="url(#wordmarkCore)" stroke-width="6"/>
+    <circle cx="68" cy="68" r="31" stroke="#F5F8FF" stroke-opacity="0.28" stroke-width="4"/>
+    <path d="M68 11V31" stroke="#F5F8FF" stroke-opacity="0.72" stroke-width="4" stroke-linecap="round"/>
+    <path d="M68 105V125" stroke="#F5F8FF" stroke-opacity="0.42" stroke-width="4" stroke-linecap="round"/>
+    <path d="M11 68H29" stroke="#F5F8FF" stroke-opacity="0.24" stroke-width="4" stroke-linecap="round"/>
+    <path d="M107 68H125" stroke="#F5F8FF" stroke-opacity="0.64" stroke-width="4" stroke-linecap="round"/>
+    <ellipse cx="68" cy="68" rx="84" ry="41" transform="rotate(-29 68 68)" stroke="url(#wordmarkOrbit)" stroke-width="5"/>
+    <circle cx="123" cy="35" r="8" fill="#F7B84B"/>
+    <circle cx="68" cy="68" r="8" fill="#F5F8FF"/>
+    <path d="M52 68C58 60 64 57 68 57C72 57 78 60 84 68C78 76 72 79 68 79C64 79 58 76 52 68Z" stroke="#69E7FF" stroke-width="6" stroke-linejoin="round"/>
+  </g>
+  <text x="172" y="78" fill="#F5F8FF" font-family="Rajdhani, Space Grotesk, Inter, Arial, sans-serif" font-size="74" font-weight="700" letter-spacing="0.18em">GRIGORI</text>
+  <text x="176" y="122" fill="#69E7FF" font-family="Inter, Space Grotesk, Rajdhani, Arial, sans-serif" font-size="28" font-weight="500" letter-spacing="0.09em">by oryth.io</text>
+</svg>

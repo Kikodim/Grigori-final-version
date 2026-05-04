@@ -124,13 +124,32 @@ export function getEventById(id) {
   return eventMap.get(id) ?? null;
 }
 
-/** Remove events older than maxAgeMs (default 24 h) */
+function getEventSourceCount(ev) {
+  const assessmentCount = Number(ev?.sourceAssessment?.sourceCount ?? ev?.source_assessment?.sourceCount ?? 0);
+  if (Number.isFinite(assessmentCount) && assessmentCount > 0) return assessmentCount;
+  if (Array.isArray(ev?.sources)) return ev.sources.length;
+  if (Array.isArray(ev?.articleIds)) return ev.articleIds.length;
+  if (Array.isArray(ev?.article_ids)) return ev.article_ids.length;
+  return 0;
+}
+
+function isRetentionProtected(ev) {
+  const importanceScore = Number(ev?.importanceScore ?? ev?.importance_score ?? ev?.impactScore ?? ev?.severityScore ?? 0);
+  return importanceScore >= 60
+    || getEventSourceCount(ev) >= 2
+    || ["enriched", "cached"].includes(ev?.aiStatus ?? ev?.ai_status ?? "");
+}
+
+/** Remove only low-value events beyond the archive retention window. */
 export function clearStaleEvents(maxAgeMs = 24 * 60 * 60 * 1000) {
-  const cutoff = Date.now() - maxAgeMs;
+  const normalRetentionMs = Math.max(maxAgeMs, 30 * 24 * 60 * 60 * 1000);
+  const protectedRetentionMs = Math.max(normalRetentionMs, 90 * 24 * 60 * 60 * 1000);
   let removed = 0;
   for (const [id, ev] of eventMap) {
     const activity = ev.refreshedAt ?? ev.refreshed_at ?? ev.lastSeenAt ?? ev.last_seen_at ?? ev.updatedAt ?? ev.updated_at ?? ev.timestamp;
-    if (!ev.isHistorical && new Date(activity).getTime() < cutoff) {
+    const retentionMs = isRetentionProtected(ev) ? protectedRetentionMs : normalRetentionMs;
+    const cutoff = Date.now() - retentionMs;
+    if (!ev.isHistorical && !ev.is_historical && new Date(activity).getTime() < cutoff) {
       eventMap.delete(id);
       removed++;
     }

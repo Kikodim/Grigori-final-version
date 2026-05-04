@@ -1156,12 +1156,24 @@ export function buildStrategicBrief(events, systemStatus = {}, lensId = "global_
 
 export function filterEventsByTimeWindow(events, hours, sliderPercent = 100) {
   if (!Array.isArray(events) || events.length === 0) return [];
-  const newest = Math.max(...events.map((event) => new Date(event.timestamp ?? Date.now()).getTime()));
+  const activityTime = (event) => new Date(
+    event.refreshedAt ??
+    event.refreshed_at ??
+    event.lastSeenAt ??
+    event.last_seen_at ??
+    event.newestSourceAt ??
+    event.newest_source_at ??
+    event.updatedAt ??
+    event.updated_at ??
+    event.timestamp ??
+    Date.now()
+  ).getTime();
+  const newest = Math.max(...events.map(activityTime));
   const windowStart = newest - hours * 3600_000;
   const cutoff = windowStart + (Math.max(0, Math.min(100, sliderPercent)) / 100) * (newest - windowStart);
 
   return events.filter((event) => {
-    const eventTime = new Date(event.timestamp ?? Date.now()).getTime();
+    const eventTime = activityTime(event);
     return eventTime >= windowStart && eventTime <= cutoff;
   });
 }

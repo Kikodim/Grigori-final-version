@@ -68,18 +68,38 @@ function buildScheduledHeartbeat(state, expectedIntervalHours) {
   const lastScheduledRunAt = metadata.lastScheduledRunAt ?? state?.record?.lastRefresh ?? null;
   const lastScheduledSuccessAt = metadata.lastScheduledSuccessAt ?? (metadata.status === "success" ? state?.record?.lastRefresh : null);
   const lastScheduledFailureAt = metadata.lastScheduledFailureAt ?? (metadata.status === "failure" ? state?.record?.lastRefresh : null);
-  const status = metadata.status ?? (lastScheduledSuccessAt ? "success" : lastScheduledFailureAt ? "failure" : "not_seen");
+  const storedStatus = metadata.status ?? (lastScheduledSuccessAt ? "success" : lastScheduledFailureAt ? "failure" : "not_seen");
   const reference = lastScheduledSuccessAt ?? lastScheduledRunAt;
   const hours = ageHours(reference);
+  const failureAfterSuccess = lastScheduledFailureAt
+    && (!lastScheduledSuccessAt || new Date(lastScheduledFailureAt).getTime() > new Date(lastScheduledSuccessAt).getTime());
+  let status = storedStatus;
+  if (failureAfterSuccess) {
+    status = "failure";
+  } else if (!lastScheduledSuccessAt) {
+    status = lastScheduledFailureAt ? "failure" : "not_seen";
+  } else if (expectedIntervalHours <= 1) {
+    if (hours === null || hours <= 2) status = "success";
+    else if (hours <= 4) status = "delayed";
+    else if (hours <= 8) status = "degraded";
+    else status = "overdue";
+  } else {
+    if (hours === null || hours <= 3) status = "success";
+    else if (hours <= 6) status = "delayed";
+    else status = "overdue";
+  }
+
   return {
     lastScheduledRunAt,
     lastScheduledSuccessAt,
     lastScheduledFailureAt,
-    status: hours !== null && hours > expectedIntervalHours * 1.75 && status === "success" ? "overdue" : status,
+    status,
     ageHours: hours,
     source: metadata.source ?? null,
     message: metadata.message ?? null,
     freshnessOutcome: metadata.freshnessOutcome ?? null,
+    providerCoverageStatus: metadata.providerCoverageStatus ?? null,
+    providerSummaryText: metadata.providerSummaryText ?? null,
     aiSkippedReason: metadata.aiSkippedReason ?? null,
   };
 }
@@ -149,6 +169,12 @@ async function recordScheduledOutcome(mode, source, scheduledRun, { ok, result =
     freshnessOutcome: result?.freshnessOutcome ?? null,
     aiSkippedReason: result?.aiSkippedReason ?? null,
     providerDiagnostics: result?.providerDiagnostics ?? previousMetadata?.providerDiagnostics ?? [],
+    providerCoverageStatus: result?.providerCoverageStatus ?? previousMetadata?.providerCoverageStatus ?? null,
+    providerSummaryText: result?.providerSummaryText ?? previousMetadata?.providerSummaryText ?? null,
+    providersSucceeded: result?.providersSucceeded ?? previousMetadata?.providersSucceeded ?? [],
+    providersRateLimited: result?.providersRateLimited ?? previousMetadata?.providersRateLimited ?? [],
+    providersErrored: result?.providersErrored ?? previousMetadata?.providersErrored ?? [],
+    primaryProviderUsed: result?.primaryProviderUsed ?? previousMetadata?.primaryProviderUsed ?? null,
   };
   const write = await setRefreshState(key, metadata, null);
   const readBack = await getRefreshState(key);
@@ -278,6 +304,16 @@ export async function handleHealth(_req, res) {
       lastAiRefreshAt,
       lastAiCheckAt: lastAiRefreshAt,
       activeEventCount: stats.activeEventCount ?? 0,
+      visibleActiveCount: stats.visibleActiveCount ?? stats.freshActiveCount ?? 0,
+      visibleWithFallbackCount: stats.visibleWithFallbackCount ?? stats.activeEventCount ?? 0,
+      freshActiveCount: stats.freshActiveCount ?? 0,
+      recentContextCount: stats.recentContextCount ?? 0,
+      storedRelevantCount: stats.storedRelevantCount ?? 0,
+      archivedCount: stats.archivedCount ?? 0,
+      heldForReviewCount: stats.heldForReviewCount ?? 0,
+      rejectedQualityCount: stats.rejectedQualityCount ?? 0,
+      groupedDuplicates: stats.groupedDuplicates ?? 0,
+      storedContextIncluded: stats.storedContextIncluded ?? 0,
       freshEventCount: stats.freshEventCount ?? 0,
       staleEventCount: stats.staleEventCount ?? 0,
       historicalEventCount: stats.historicalEventCount ?? 0,
@@ -302,10 +338,22 @@ export async function handleHealth(_req, res) {
       latestActivityAt,
       totalStoredEvents: stats.totalStoredEvents ?? stats.eventCount ?? 0,
       activeEventCount: stats.activeEventCount ?? 0,
+      visibleActiveCount: stats.visibleActiveCount ?? stats.freshActiveCount ?? 0,
+      visibleWithFallbackCount: stats.visibleWithFallbackCount ?? stats.activeEventCount ?? 0,
+      freshActiveCount: stats.freshActiveCount ?? 0,
+      recentContextCount: stats.recentContextCount ?? 0,
+      storedRelevantCount: stats.storedRelevantCount ?? 0,
+      archivedCount: stats.archivedCount ?? 0,
+      heldForReviewCount: stats.heldForReviewCount ?? 0,
+      rejectedQualityCount: stats.rejectedQualityCount ?? 0,
+      groupedDuplicates: stats.groupedDuplicates ?? 0,
+      storedContextIncluded: stats.storedContextIncluded ?? 0,
       freshEventCount: stats.freshEventCount ?? 0,
       staleEventCount: stats.staleEventCount ?? 0,
       historicalEventCount: stats.historicalEventCount ?? 0,
       fallbackEligibleCount: stats.fallbackEligibleCount ?? 0,
+      providerCoverageStatus: scheduledNewsHeartbeat.providerCoverageStatus ?? newsRefresh.record?.metadata?.providerCoverageStatus ?? null,
+      providerSummaryText: scheduledNewsHeartbeat.providerSummaryText ?? newsRefresh.record?.metadata?.providerSummaryText ?? null,
       eventsDataSource: stats.eventsDataSource ?? stats.mode ?? storage.mode ?? "memory_fallback",
       cacheStatus,
     },
@@ -345,6 +393,10 @@ export async function handleEvents(req, res) {
     fallbackReason: result.fallbackReason ?? "unknown",
     dataSource: result.dataSource ?? result.mode,
     freshnessMode: result.freshnessMode ?? (scope === "active" ? "best_available" : scope),
+    groupedDuplicates: result.groupedDuplicates ?? 0,
+    storedContextIncluded: result.storedContextIncluded ?? 0,
+    stateCounts: result.stateCounts ?? null,
+    visibleWithFallbackCount: result.visibleWithFallbackCount ?? result.total,
     events: result.events,
   });
 }
@@ -394,6 +446,8 @@ export async function handleEventStats(_req, res) {
       newestArticleAt: newsRefresh.record?.metadata?.newestArticleAt ?? null,
       newestEventAt: newsRefresh.record?.metadata?.newestEventAt ?? stats.newestUpdatedEvent ?? stats.newestEvent ?? null,
       latestActivityAt: stats.latestActivityAt ?? stats.newestUpdatedEvent ?? stats.newestEvent ?? null,
+      providerCoverageStatus: newsRefresh.record?.metadata?.providerCoverageStatus ?? null,
+      providerSummaryText: newsRefresh.record?.metadata?.providerSummaryText ?? null,
     },
   });
 }
@@ -530,6 +584,12 @@ export async function handlePipelineRun(req, res) {
         newestEventAt: result.newestEventAt ?? null,
         message: result.message ?? null,
         providerDiagnostics: result.providerDiagnostics ?? [],
+        providerCoverageStatus: result.providerCoverageStatus ?? null,
+        providerSummaryText: result.providerSummaryText ?? null,
+        providersSucceeded: result.providersSucceeded ?? [],
+        providersRateLimited: result.providersRateLimited ?? [],
+        providersErrored: result.providersErrored ?? [],
+        quality: result.quality ?? null,
         freshnessOutcome: result.freshnessOutcome ?? null,
       }, nextNewsRefresh);
       enrichedResult = {

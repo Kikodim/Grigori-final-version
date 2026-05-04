@@ -1684,6 +1684,10 @@ async function fetchBackendEvents(forceFresh = false, { scope = "active", limit 
       fallbackReason: data.fallbackReason ?? "unknown",
       freshnessMode: data.freshnessMode ?? "best_available",
       dataSource: data.dataSource ?? data.mode ?? "backend",
+      groupedDuplicates: Number(data.groupedDuplicates ?? 0),
+      storedContextIncluded: Number(data.storedContextIncluded ?? 0),
+      stateCounts: data.stateCounts ?? null,
+      visibleWithFallbackCount: Number(data.visibleWithFallbackCount ?? data.total ?? publicEvents.length),
     },
   };
 }
@@ -3062,18 +3066,35 @@ function getAutomationNotice(systemStatus, adminUnlocked = false) {
   const news = systemStatus?.automation?.news;
   const ai = systemStatus?.automation?.ai;
   if (!adminUnlocked) return null;
-  if (news?.status === "overdue" || (typeof news?.ageHours === "number" && news.ageHours > 3)) {
+  if (news?.status === "overdue" || (typeof news?.ageHours === "number" && news.ageHours > 8)) {
     return "Scheduled news refresh overdue.";
   }
-  if (ai?.status === "overdue" || (typeof ai?.ageHours === "number" && ai.ageHours > 4)) {
+  if (news?.status === "degraded" || news?.providerCoverageStatus === "limited" || news?.providerCoverageStatus === "degraded") {
+    return "Limited source coverage. Showing best available signals and stored context.";
+  }
+  if (news?.status === "delayed") {
+    return "Scheduled news refresh delayed.";
+  }
+  if (ai?.status === "overdue" || (typeof ai?.ageHours === "number" && ai.ageHours > 6)) {
     return "Scheduled AI refresh overdue.";
+  }
+  if (ai?.status === "delayed") {
+    return "Scheduled AI check delayed.";
   }
   return null;
 }
 
 function formatAutomationLine(label, state) {
   if (!state) return `${label}: no scheduled heartbeat`;
-  const status = state.status ?? "unknown";
+  const statusLabels = {
+    success: "ok",
+    delayed: "delayed",
+    degraded: "limited",
+    overdue: "overdue",
+    failure: "failed",
+    not_seen: "not seen",
+  };
+  const status = statusLabels[state.status] ?? state.status ?? "unknown";
   const lastRun = formatShortAge(state.lastScheduledRunAt);
   const lastSuccess = formatShortAge(state.lastScheduledSuccessAt);
   const lastFailure = formatShortAge(state.lastScheduledFailureAt);
@@ -3144,6 +3165,43 @@ function computeActiveSignalPriority(event) {
 }
 
 function getSignalFreshnessMeta(event) {
+  const eventState = event.eventState ?? event.event_state ?? null;
+  const { value, kind } = getBestEventTimestamp(event, "freshness");
+  const age = formatShortAge(value);
+
+  if (eventState === "recent_context") {
+    return {
+      label: `Recent context · last seen ${age}`,
+      tone: "neutral",
+      state: "Recent context",
+      detail: `Last seen ${age}`,
+      relative: age,
+    };
+  }
+
+  if (eventState === "stored_relevant") {
+    return {
+      label: `Stored context · last seen ${age}`,
+      tone: "amber",
+      state: "Stored context",
+      detail: `Last seen ${age}`,
+      relative: age,
+    };
+  }
+
+  if (eventState === "archived") {
+    const archivedDate = value || event.timestamp
+      ? new Date(value ?? event.timestamp).toLocaleDateString("en-US", { month: "short", day: "numeric" })
+      : "Archived";
+    return {
+      label: `Archived · ${archivedDate}`,
+      tone: "neutral",
+      state: "Archived",
+      detail: "Archived context",
+      relative: archivedDate,
+    };
+  }
+
   if (event.isHistorical) {
     const historicalDate = event.timestamp ? new Date(event.timestamp).toLocaleDateString("en-US", { month: "short", day: "numeric" }) : "Historical";
     return {
@@ -3155,9 +3213,7 @@ function getSignalFreshnessMeta(event) {
     };
   }
 
-  const { value, kind } = getBestEventTimestamp(event, "freshness");
   const freshness = getDataFreshness(value);
-  const age = formatShortAge(value);
   const detail = `${kind} ${age}`;
   if (freshness.tone === "red" && Number(event.impactScore ?? 0) >= 80) {
     return {
@@ -5491,6 +5547,11 @@ function DesktopSidebar({ events, selectedEvent, onSelect, modeHours, onModeChan
         <div style={{ color: "rgba(214,235,255,0.92)", fontSize: 22, fontFamily: display, fontWeight: 700, marginTop: 6 }}>
           {events.length}
         </div>
+        {Number(feedState?.contextCount ?? 0) > 0 || Number(feedState?.freshCount ?? 0) > 0 ? (
+          <div style={{ color: "rgba(105,231,255,0.7)", fontSize: 10, marginTop: 4, fontFamily: mono, letterSpacing: 1.2, textTransform: "uppercase" }}>
+            {Number(feedState?.freshCount ?? 0)} fresh · {Number(feedState?.contextCount ?? 0)} recent context
+          </div>
+        ) : null}
         <div style={{ color: "rgba(148,175,198,0.72)", fontSize: 12, lineHeight: 1.5, marginTop: 4, fontFamily: bodyFont }}>
           {feedState?.status === "fallback"
             ? "Best available intelligence signals while live refresh is pending."
@@ -5767,15 +5828,27 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
       } catch {
         setBriefing(buildBriefing(evs, selectedLens));
       }
+      const stateCounts = meta?.stateCounts ?? {};
+      const freshCount = Number(stateCounts.fresh_active ?? 0);
+      const contextCount = Number(stateCounts.recent_context ?? 0) + Number(stateCounts.stored_relevant ?? 0);
+      const duplicateText = Number(meta?.groupedDuplicates ?? 0) > 0
+        ? ` ${meta.groupedDuplicates} related signal${meta.groupedDuplicates === 1 ? "" : "s"} grouped.`
+        : "";
       const feedMessage = meta?.fallbackUsed
         ? meta.fallbackReason === "historical_context"
-          ? "Using historical context signals while awaiting refresh."
-          : "Using stored signals while live refresh is pending."
-        : "";
+          ? "Using historical context signals while live refresh is pending."
+          : `Limited fresh signals under current provider coverage. Showing best available signals and recent stored context.${duplicateText}`
+        : Number(meta?.groupedDuplicates ?? 0) > 0
+          ? `${meta.groupedDuplicates} related signal${meta.groupedDuplicates === 1 ? "" : "s"} grouped for a cleaner active feed.`
+          : "";
       setFeedState({
         status: meta?.fallbackUsed ? "fallback" : "ok",
         message: feedMessage,
         fallbackReason: meta?.fallbackReason ?? "fresh_active",
+        freshCount,
+        contextCount,
+        groupedDuplicates: Number(meta?.groupedDuplicates ?? 0),
+        storedContextIncluded: Number(meta?.storedContextIncluded ?? 0),
       });
     } catch {
       setFeedState({

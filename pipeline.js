@@ -237,6 +237,75 @@ function deriveFreshnessOutcome({
   return "no_relevant_recent_articles";
 }
 
+function buildProviderCoverage(providerDiagnostics = []) {
+  const providersSucceeded = providerDiagnostics
+    .filter((item) => item.status === "ok" && Number(item.articlesFetched ?? item.fetched ?? 0) > 0)
+    .map((item) => item.provider);
+  const providersRateLimited = providerDiagnostics
+    .filter((item) => item.status === "rate_limited" || item.status === "skipped_budget")
+    .map((item) => item.provider);
+  const providersErrored = providerDiagnostics
+    .filter((item) => ["provider_error", "error", "plan_or_auth"].includes(item.status))
+    .map((item) => item.provider);
+  const attempted = providerDiagnostics.filter((item) => item.status && item.status !== "unsupported" && item.status !== "disabled").length;
+  const primaryProviderUsed = providersSucceeded[0] ?? null;
+  const providerCoverageStatus = providersSucceeded.length === 0
+    ? "failed"
+    : providersSucceeded.length >= Math.max(2, Math.ceil(attempted / 2))
+      ? "ok"
+      : providersRateLimited.length + providersErrored.length >= 3
+        ? "limited"
+        : "degraded";
+  const providerSummaryText = providerCoverageStatus === "ok"
+    ? `Coverage ok · ${providersSucceeded.join(", ")} returned articles.`
+    : providerCoverageStatus === "failed"
+      ? "Provider coverage failed · no source returned usable articles."
+      : `Limited coverage · ${providersSucceeded.join(", ") || "available providers"} returned articles; ${[...providersRateLimited.map((p) => `${p} rate-limited`), ...providersErrored.map((p) => `${p} errored`)].join("; ")}.`;
+
+  return {
+    providerCoverageStatus,
+    providersSucceeded,
+    providersRateLimited,
+    providersErrored,
+    primaryProviderUsed,
+    providerSummaryText,
+  };
+}
+
+function buildQualityDiagnostics(providerDiagnostics = [], { clustersEvaluated = 0, activeEligible = 0, publishable = 0, providerDegraded = false, groupedDuplicates = 0, storedContextIncluded = 0 } = {}) {
+  const quality = {
+    articlesEvaluated: 0,
+    clustersEvaluated,
+    activeEligible,
+    publishable,
+    rejectedOpinion: 0,
+    rejectedEditorial: 0,
+    rejectedLetter: 0,
+    rejectedAmbiguousDraft: 0,
+    rejectedUnresolvedRegion: 0,
+    rejectedLowSourceTier: 0,
+    rejectedInsufficientCorroboration: 0,
+    acceptedSingleProviderDueToDegradation: providerDegraded ? publishable : 0,
+    groupedDuplicates,
+    storedContextIncluded,
+    qualityErrors: [],
+  };
+
+  for (const item of providerDiagnostics) {
+    quality.articlesEvaluated += Number(item.normalized ?? item.articlesUsable ?? 0);
+    const reasons = item.qualityRejectReasons ?? {};
+    quality.rejectedOpinion += Number(reasons.content_type_opinion ?? 0);
+    quality.rejectedEditorial += Number(reasons.content_type_editorial ?? 0);
+    quality.rejectedLetter += Number(reasons.content_type_letter ?? 0);
+    quality.rejectedAmbiguousDraft += Number(reasons.ambiguous_non_geopolitical_draft ?? 0);
+    quality.rejectedUnresolvedRegion += Number(reasons.region_unresolved ?? 0);
+    quality.rejectedLowSourceTier += Number(reasons.low_source_tier ?? 0) + Number(reasons.low_source_quality ?? 0);
+    quality.rejectedInsufficientCorroboration += Number(reasons.insufficient_corroboration ?? 0);
+  }
+
+  return quality;
+}
+
 function resolveProviderDiagnostics(providerDiagnostics) {
   return [...providerDiagnostics.values()].map((item) => ({
     ...item,
@@ -892,12 +961,14 @@ export async function runPipeline({ source = "manual", noAi = false, mode = "ful
   const preEvents = cluster({ threshold });
   const articleStore = new Map(getAllArticles().map((article) => [article.id, article]));
   const providerDiagnostics = new Map((ingestResult.providerDiagnostics ?? []).map((item) => [item.provider, { ...item }]));
+  const providerCoverage = buildProviderCoverage(ingestResult.providerDiagnostics ?? []);
+  const providerDegraded = ["degraded", "limited"].includes(providerCoverage.providerCoverageStatus) || Boolean(ingestResult.providerDegraded);
   const suppressedPreEvents = [];
   const publishablePreEvents = preEvents.filter((preEvent) => {
     const articles = preEvent.articleIds
       .map((id) => articleStore.get(id))
       .filter(Boolean);
-    const allowed = shouldPublishPreEvent(preEvent, articles);
+    const allowed = evaluateClusterPublishQuality(preEvent, articles, { providerDegraded }).publishable;
     if (!allowed) suppressedPreEvents.push({ preEvent, articles });
     return allowed;
   });
@@ -921,6 +992,14 @@ export async function runPipeline({ source = "manual", noAi = false, mode = "ful
     const stats = await getStats();
     const resolvedProviderDiagnostics = resolveProviderDiagnostics(providerDiagnostics);
     const unaccountedArticles = resolvedProviderDiagnostics.reduce((sum, item) => sum + (item.unaccounted ?? 0), 0);
+    const quality = buildQualityDiagnostics(resolvedProviderDiagnostics, {
+      clustersEvaluated: preEvents.length,
+      activeEligible: ingestResult.articlesUsable ?? 0,
+      publishable: 0,
+      providerDegraded,
+      groupedDuplicates: stats.groupedDuplicates ?? 0,
+      storedContextIncluded: stats.storedContextIncluded ?? 0,
+    });
     const message = buildNewsRefreshMessage({
       eventsCreated: 0,
       eventsUpdated: 0,
@@ -960,6 +1039,13 @@ export async function runPipeline({ source = "manual", noAi = false, mode = "ful
       newestSourceAt: ingestResult.newestArticleAt ?? null,
       newestEventAt: null,
       providerDiagnostics: resolvedProviderDiagnostics,
+      providerCoverageStatus: providerCoverage.providerCoverageStatus,
+      providersSucceeded: providerCoverage.providersSucceeded,
+      providersRateLimited: providerCoverage.providersRateLimited,
+      providersErrored: providerCoverage.providersErrored,
+      primaryProviderUsed: providerCoverage.primaryProviderUsed,
+      providerSummaryText: providerCoverage.providerSummaryText,
+      quality,
       providersUsed: ingestResult.providersUsed ?? [],
       skippedProviders: ingestResult.skippedProviders ?? [],
       rateLimitedProviders: ingestResult.rateLimitedProviders ?? [],
@@ -974,6 +1060,7 @@ export async function runPipeline({ source = "manual", noAi = false, mode = "ful
       memoryFallbackUsed: false,
       unaccountedArticles,
       freshnessOutcome: (ingestResult.articlesUsable ?? 0) > 0 ? "pipeline_warning" : "no_relevant_recent_articles",
+      purgePolicy: "retain credible archive 30d; high-impact/AI/corroborated 90d",
       message: (ingestResult.articlesUsable ?? 0) > 0
         ? "Articles were fetched but did not update active signals. Check diagnostics."
         : message,
@@ -1100,7 +1187,7 @@ export async function runPipeline({ source = "manual", noAi = false, mode = "ful
       keywords: preEvent.keywords,
       articleIds: preEvent.articleIds,
     }, articles);
-    const clusterQuality = evaluateClusterPublishQuality(preEvent, articles);
+    const clusterQuality = evaluateClusterPublishQuality(preEvent, articles, { providerDegraded });
     const sourceAssessment = {
       ...(result.sourceAssessment ?? {}),
       sourceCount: result.sourceAssessment?.sourceCount ?? new Set(preEvent.sources ?? []).size,
@@ -1238,7 +1325,16 @@ export async function runPipeline({ source = "manual", noAi = false, mode = "ful
   const lastNewsRefreshAt = new Date().toISOString();
   const stats = await getStats();
   const resolvedProviderDiagnostics = resolveProviderDiagnostics(providerDiagnostics);
+  const finalProviderCoverage = buildProviderCoverage(resolvedProviderDiagnostics);
   const unaccountedArticles = resolvedProviderDiagnostics.reduce((sum, item) => sum + item.unaccounted, 0);
+  const quality = buildQualityDiagnostics(resolvedProviderDiagnostics, {
+    clustersEvaluated: preEvents.length,
+    activeEligible: ingestResult.articlesUsable ?? 0,
+    publishable: publishablePreEvents.length,
+    providerDegraded,
+    groupedDuplicates: stats.groupedDuplicates ?? 0,
+    storedContextIncluded: stats.storedContextIncluded ?? 0,
+  });
   const summary = {
     ok: failedEventWrites === 0,
     status: failedEventWrites > 0
@@ -1277,6 +1373,13 @@ export async function runPipeline({ source = "manual", noAi = false, mode = "ful
     ]),
     newestEventAt,
     providerDiagnostics: resolvedProviderDiagnostics,
+    providerCoverageStatus: finalProviderCoverage.providerCoverageStatus,
+    providersSucceeded: finalProviderCoverage.providersSucceeded,
+    providersRateLimited: finalProviderCoverage.providersRateLimited,
+    providersErrored: finalProviderCoverage.providersErrored,
+    primaryProviderUsed: finalProviderCoverage.primaryProviderUsed,
+    providerSummaryText: finalProviderCoverage.providerSummaryText,
+    quality,
     providersUsed: ingestResult.providersUsed ?? [],
     skippedProviders: ingestResult.skippedProviders ?? [],
     rateLimitedProviders: ingestResult.rateLimitedProviders ?? [],
@@ -1292,12 +1395,17 @@ export async function runPipeline({ source = "manual", noAi = false, mode = "ful
     lastNewsRefreshAt,
     activeEventCount: stats.activeEventCount ?? 0,
     activeEventCountAfterRefresh: stats.activeEventCount ?? 0,
+    visibleWithFallbackCount: stats.visibleWithFallbackCount ?? stats.activeEventCount ?? 0,
+    freshActiveCount: stats.freshActiveCount ?? 0,
+    recentContextCount: stats.recentContextCount ?? 0,
+    storedRelevantCount: stats.storedRelevantCount ?? 0,
     attemptedEventWrites,
     successfulEventWrites,
     failedEventWrites,
     saveFailures: failedEventWrites,
     supabaseErrorCount,
     memoryFallbackUsed,
+    purgePolicy: "retain credible archive 30d; high-impact/AI/corroborated 90d",
     persistenceErrors,
     eventUpdatePersisted: failedEventWrites === 0,
     eventUpdateReadBack: failedEventWrites === 0 && successfulEventWrites > 0,
