@@ -223,6 +223,11 @@ export async function handleHealth(_req, res) {
   const lastAiRefreshAt = aiRefresh.record?.lastRefresh ?? null;
   const scheduledNewsHeartbeat = buildScheduledHeartbeat(scheduledNews, 1);
   const scheduledAiHeartbeat = buildScheduledHeartbeat(scheduledAi, 2);
+  const lastNewsFailureAt = scheduledNewsHeartbeat.lastScheduledFailureAt ?? null;
+  const lastNewsRecoveryAt = lastNewsFailureAt && scheduledNewsHeartbeat.lastScheduledSuccessAt
+    && new Date(scheduledNewsHeartbeat.lastScheduledSuccessAt).getTime() > new Date(lastNewsFailureAt).getTime()
+    ? scheduledNewsHeartbeat.lastScheduledSuccessAt
+    : null;
   const enabledProviders = [
     String(process.env.ENABLE_CURRENTS ?? "false").toLowerCase() === "true" ? "currents" : null,
     integrations.gnews?.usable ? "gnews" : null,
@@ -301,11 +306,16 @@ export async function handleHealth(_req, res) {
       newestEventAt,
       latestActivityAt,
       lastNewsRefreshAt,
+      lastNewsFailureAt,
+      lastNewsRecoveryAt,
       lastAiRefreshAt,
       lastAiCheckAt: lastAiRefreshAt,
       activeEventCount: stats.activeEventCount ?? 0,
       visibleActiveCount: stats.visibleActiveCount ?? stats.freshActiveCount ?? 0,
       visibleWithFallbackCount: stats.visibleWithFallbackCount ?? stats.activeEventCount ?? 0,
+      freshEligibleCount: stats.freshEligibleCount ?? stats.freshActiveCount ?? 0,
+      groupedDuplicateCount: stats.groupedDuplicateCount ?? stats.groupedDuplicates ?? 0,
+      diversitySuppressedCount: stats.diversitySuppressedCount ?? 0,
       freshActiveCount: stats.freshActiveCount ?? 0,
       recentContextCount: stats.recentContextCount ?? 0,
       storedRelevantCount: stats.storedRelevantCount ?? 0,
@@ -327,6 +337,8 @@ export async function handleHealth(_req, res) {
       aiCallsToday: ai.aiCallsToday,
       aiRemainingToday: ai.aiRemainingToday,
       lastNewsRefreshAt,
+      lastNewsFailureAt,
+      lastNewsRecoveryAt,
       lastAiRefreshAt,
       lastAiCheckAt: lastAiRefreshAt,
       nextEstimatedNewsRefresh: newsRefresh.record?.nextRefresh ?? null,
@@ -340,6 +352,9 @@ export async function handleHealth(_req, res) {
       activeEventCount: stats.activeEventCount ?? 0,
       visibleActiveCount: stats.visibleActiveCount ?? stats.freshActiveCount ?? 0,
       visibleWithFallbackCount: stats.visibleWithFallbackCount ?? stats.activeEventCount ?? 0,
+      freshEligibleCount: stats.freshEligibleCount ?? stats.freshActiveCount ?? 0,
+      groupedDuplicateCount: stats.groupedDuplicateCount ?? stats.groupedDuplicates ?? 0,
+      diversitySuppressedCount: stats.diversitySuppressedCount ?? 0,
       freshActiveCount: stats.freshActiveCount ?? 0,
       recentContextCount: stats.recentContextCount ?? 0,
       storedRelevantCount: stats.storedRelevantCount ?? 0,
@@ -394,9 +409,16 @@ export async function handleEvents(req, res) {
     dataSource: result.dataSource ?? result.mode,
     freshnessMode: result.freshnessMode ?? (scope === "active" ? "best_available" : scope),
     groupedDuplicates: result.groupedDuplicates ?? 0,
+    groupedDuplicateCount: result.groupedDuplicateCount ?? result.groupedDuplicates ?? 0,
     storedContextIncluded: result.storedContextIncluded ?? 0,
     stateCounts: result.stateCounts ?? null,
     visibleWithFallbackCount: result.visibleWithFallbackCount ?? result.total,
+    visibleActiveCount: result.visibleActiveCount ?? result.total,
+    freshEligibleCount: result.freshEligibleCount ?? result.stateCounts?.fresh_active ?? 0,
+    recentContextCount: result.recentContextCount ?? result.stateCounts?.recent_context ?? 0,
+    storedRelevantCount: result.storedRelevantCount ?? result.stateCounts?.stored_relevant ?? 0,
+    archivedCount: result.archivedCount ?? result.stateCounts?.archived ?? 0,
+    diversitySuppressedCount: result.diversitySuppressedCount ?? 0,
     events: result.events,
   });
 }
@@ -429,14 +451,22 @@ export async function handleEventStats(_req, res) {
     getRefreshUsageStats("news"),
     getRefreshUsageStats("ai"),
   ]);
+  const scheduledNewsHeartbeat = buildScheduledHeartbeat(scheduledNews, 1);
+  const lastNewsFailureAt = scheduledNewsHeartbeat.lastScheduledFailureAt ?? null;
+  const lastNewsRecoveryAt = lastNewsFailureAt && scheduledNewsHeartbeat.lastScheduledSuccessAt
+    && new Date(scheduledNewsHeartbeat.lastScheduledSuccessAt).getTime() > new Date(lastNewsFailureAt).getTime()
+    ? scheduledNewsHeartbeat.lastScheduledSuccessAt
+    : null;
   return res.status(200).json({
     ok: true,
     stats,
     ai,
     automation: {
-      news: buildScheduledHeartbeat(scheduledNews, 1),
+      news: scheduledNewsHeartbeat,
       ai: buildScheduledHeartbeat(scheduledAi, 2),
       lastNewsRefreshAt: newsRefresh.record?.lastRefresh ?? null,
+      lastNewsFailureAt,
+      lastNewsRecoveryAt,
       lastAiRefreshAt: aiRefresh.record?.lastRefresh ?? null,
       lastAiCheckAt: aiRefresh.record?.lastRefresh ?? null,
       nextEstimatedNewsRefresh: newsRefresh.record?.nextRefresh ?? null,

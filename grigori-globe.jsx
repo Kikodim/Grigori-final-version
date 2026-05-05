@@ -1685,9 +1685,15 @@ async function fetchBackendEvents(forceFresh = false, { scope = "active", limit 
       freshnessMode: data.freshnessMode ?? "best_available",
       dataSource: data.dataSource ?? data.mode ?? "backend",
       groupedDuplicates: Number(data.groupedDuplicates ?? 0),
+      groupedDuplicateCount: Number(data.groupedDuplicateCount ?? data.groupedDuplicates ?? 0),
       storedContextIncluded: Number(data.storedContextIncluded ?? 0),
       stateCounts: data.stateCounts ?? null,
       visibleWithFallbackCount: Number(data.visibleWithFallbackCount ?? data.total ?? publicEvents.length),
+      visibleActiveCount: Number(data.visibleActiveCount ?? data.total ?? publicEvents.length),
+      freshEligibleCount: Number(data.freshEligibleCount ?? data.stateCounts?.fresh_active ?? 0),
+      recentContextCount: Number(data.recentContextCount ?? data.stateCounts?.recent_context ?? 0),
+      storedRelevantCount: Number(data.storedRelevantCount ?? data.stateCounts?.stored_relevant ?? 0),
+      archivedCount: Number(data.archivedCount ?? data.stateCounts?.archived ?? 0),
     },
   };
 }
@@ -3098,7 +3104,10 @@ function formatAutomationLine(label, state) {
   const lastRun = formatShortAge(state.lastScheduledRunAt);
   const lastSuccess = formatShortAge(state.lastScheduledSuccessAt);
   const lastFailure = formatShortAge(state.lastScheduledFailureAt);
-  return `${label}: ${status} · run ${lastRun} · success ${lastSuccess} · failure ${lastFailure}`;
+  const recovered = state.lastScheduledFailureAt && state.lastScheduledSuccessAt
+    && new Date(state.lastScheduledSuccessAt).getTime() > new Date(state.lastScheduledFailureAt).getTime();
+  const recoveryText = recovered ? " · recovered on latest success" : "";
+  return `${label}: ${status} · run ${lastRun} · success ${lastSuccess} · failure ${lastFailure}${recoveryText}`;
 }
 
 function readStoredBoolean(key, fallback) {
@@ -3273,6 +3282,46 @@ function sortActiveSignals(events, sortMode = "priority") {
     );
   });
   return ranked;
+}
+
+function getSignalDiversityRegion(event) {
+  return String(event.location?.label ?? event.region?.label ?? "unknown").trim().toLowerCase();
+}
+
+function getSignalDiversityCategory(event) {
+  return String(event.category ?? event.categories?.[0] ?? event.keywords?.[0] ?? event.tone ?? "general").trim().toLowerCase();
+}
+
+function applyVisibleSignalDiversity(events, sortMode = "priority") {
+  if (sortMode !== "priority" || events.length <= 3) return events;
+  const remaining = [...events];
+  const selected = [];
+  const takeAt = (index) => {
+    if (index < 0) return false;
+    selected.push(remaining.splice(index, 1)[0]);
+    return true;
+  };
+
+  takeAt(0);
+  const firstRegion = getSignalDiversityRegion(selected[0]);
+  takeAt(remaining.findIndex((event) => getSignalDiversityRegion(event) !== firstRegion));
+  const selectedCategories = new Set(selected.map(getSignalDiversityCategory));
+  takeAt(remaining.findIndex((event) => !selectedCategories.has(getSignalDiversityCategory(event))));
+
+  const regionCounts = new Map(selected.map((event) => [getSignalDiversityRegion(event), 1]));
+  const fill = [];
+  for (const event of remaining) {
+    const region = getSignalDiversityRegion(event);
+    const count = regionCounts.get(region) ?? 0;
+    if (count < 3 || selected.length + fill.length < 8) {
+      fill.push(event);
+      regionCounts.set(region, count + 1);
+    } else {
+      fill.push(event);
+    }
+  }
+
+  return [...selected, ...fill];
 }
 
 function formatShortAge(value) {
@@ -5549,7 +5598,10 @@ function DesktopSidebar({ events, selectedEvent, onSelect, modeHours, onModeChan
         </div>
         {Number(feedState?.contextCount ?? 0) > 0 || Number(feedState?.freshCount ?? 0) > 0 ? (
           <div style={{ color: "rgba(105,231,255,0.7)", fontSize: 10, marginTop: 4, fontFamily: mono, letterSpacing: 1.2, textTransform: "uppercase" }}>
-            {Number(feedState?.freshCount ?? 0)} fresh · {Number(feedState?.contextCount ?? 0)} recent context
+            {modeHours >= 168 ? `${Math.round(modeHours / 24)}d lens · ` : ""}
+            {events.length} active · {Number(feedState?.freshCount ?? 0)} fresh
+            {Number(feedState?.groupedDuplicates ?? 0) > 0 ? ` · ${Number(feedState.groupedDuplicates)} grouped` : ""}
+            {` · ${Number(feedState?.recentContextCount ?? 0)} recent · ${Number(feedState?.storedRelevantCount ?? 0)} stored`}
           </div>
         ) : null}
         <div style={{ color: "rgba(148,175,198,0.72)", fontSize: 12, lineHeight: 1.5, marginTop: 4, fontFamily: bodyFont }}>
@@ -5829,25 +5881,30 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
         setBriefing(buildBriefing(evs, selectedLens));
       }
       const stateCounts = meta?.stateCounts ?? {};
-      const freshCount = Number(stateCounts.fresh_active ?? 0);
-      const contextCount = Number(stateCounts.recent_context ?? 0) + Number(stateCounts.stored_relevant ?? 0);
-      const duplicateText = Number(meta?.groupedDuplicates ?? 0) > 0
-        ? ` ${meta.groupedDuplicates} related signal${meta.groupedDuplicates === 1 ? "" : "s"} grouped.`
+      const freshCount = Number(meta?.freshEligibleCount ?? stateCounts.fresh_active ?? 0);
+      const recentContextCount = Number(meta?.recentContextCount ?? stateCounts.recent_context ?? 0);
+      const storedRelevantCount = Number(meta?.storedRelevantCount ?? stateCounts.stored_relevant ?? 0);
+      const contextCount = recentContextCount + storedRelevantCount;
+      const groupedDuplicateCount = Number(meta?.groupedDuplicateCount ?? meta?.groupedDuplicates ?? 0);
+      const duplicateText = groupedDuplicateCount > 0
+        ? ` ${groupedDuplicateCount} related signal${groupedDuplicateCount === 1 ? "" : "s"} grouped.`
         : "";
       const feedMessage = meta?.fallbackUsed
         ? meta.fallbackReason === "historical_context"
           ? "Using historical context signals while live refresh is pending."
           : `Limited fresh signals under current provider coverage. Showing best available signals and recent stored context.${duplicateText}`
-        : Number(meta?.groupedDuplicates ?? 0) > 0
-          ? `${meta.groupedDuplicates} related signal${meta.groupedDuplicates === 1 ? "" : "s"} grouped for a cleaner active feed.`
+        : groupedDuplicateCount > 0
+          ? `${groupedDuplicateCount} related signal${groupedDuplicateCount === 1 ? "" : "s"} grouped for a cleaner active feed.`
           : "";
       setFeedState({
         status: meta?.fallbackUsed ? "fallback" : "ok",
         message: feedMessage,
         fallbackReason: meta?.fallbackReason ?? "fresh_active",
         freshCount,
+        recentContextCount,
+        storedRelevantCount,
         contextCount,
-        groupedDuplicates: Number(meta?.groupedDuplicates ?? 0),
+        groupedDuplicates: groupedDuplicateCount,
         storedContextIncluded: Number(meta?.storedContextIncluded ?? 0),
       });
     } catch {
@@ -6023,7 +6080,7 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
       priorityQueueScore: computeActiveSignalPriority(event),
     }));
     const lensApplied = distributeContactPositions(applyDecisionLens(filtered, selectedLens));
-    return sortActiveSignals(lensApplied, activeSignalSort).map((event) => ({
+    return applyVisibleSignalDiversity(sortActiveSignals(lensApplied, activeSignalSort), activeSignalSort).map((event) => ({
       ...event,
       priorityQueueScore: computeActiveSignalPriority(event),
     }));

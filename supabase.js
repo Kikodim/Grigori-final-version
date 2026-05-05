@@ -682,8 +682,9 @@ function buildActiveScopeSelection(events, { limit = 50, offset = 0 } = {}) {
   const freshActive = nonHistorical.filter((event) => getEventState(event) === "fresh_active");
   const recentStored = nonHistorical.filter((event) => {
     const state = getEventState(event);
-    return state === "recent_context" || (freshActive.length < 5 && state === "stored_relevant" && isRecentWithinDays(event, 7));
+    return state === "recent_context";
   });
+  const storedRelevant = nonHistorical.filter((event) => getEventState(event) === "stored_relevant" && isRecentWithinDays(event, 30));
   const highImpactStale = sortEventsForScope(
     nonHistorical.filter((event) => isHighImpactFallbackEvent(event) && !freshActive.some((fresh) => fresh.id === event.id)),
     "all"
@@ -694,6 +695,7 @@ function buildActiveScopeSelection(events, { limit = 50, offset = 0 } = {}) {
   );
   const fallbackEligibleCount = new Set([
     ...recentStored.map((event) => event.id),
+    ...storedRelevant.map((event) => event.id),
     ...highImpactStale.map((event) => event.id),
     ...historicalContext.map((event) => event.id),
   ]).size;
@@ -715,12 +717,20 @@ function buildActiveScopeSelection(events, { limit = 50, offset = 0 } = {}) {
     fallbackReason = "fresh_active";
   }
 
-  if (selectedById.size < 5 && recentStored.length > 0) {
+  if (recentStored.length > 0) {
     const before = selectedById.size;
     appendEvents(recentStored);
     storedContextIncluded += Math.max(0, selectedById.size - before);
     fallbackReason = fallbackReason === "fresh_active" ? "fresh_with_recent_context" : "recent_context";
-    fallbackUsed = true;
+    fallbackUsed = freshActive.length === 0;
+  }
+
+  if (storedRelevant.length > 0) {
+    const before = selectedById.size;
+    appendEvents(storedRelevant);
+    storedContextIncluded += Math.max(0, selectedById.size - before);
+    fallbackReason = fallbackReason === "no_events_available" ? "stored_relevant" : fallbackReason;
+    fallbackUsed = freshActive.length === 0;
   }
 
   if (selectedById.size < 5 && highImpactStale.length > 0) {
@@ -750,9 +760,16 @@ function buildActiveScopeSelection(events, { limit = 50, offset = 0 } = {}) {
     freshnessMode: fallbackReason === "fresh_active" ? "fresh_active" : "best_available",
     fallbackEligibleCount,
     groupedDuplicates: grouped.groupedDuplicates,
+    groupedDuplicateCount: grouped.groupedDuplicates,
     storedContextIncluded,
     stateCounts,
     visibleWithFallbackCount: grouped.events.length,
+    visibleActiveCount: grouped.events.length,
+    freshEligibleCount: freshActive.length,
+    recentContextCount: recentStored.length,
+    storedRelevantCount: storedRelevant.length,
+    archivedCount: historicalContext.length,
+    diversitySuppressedCount: 0,
   };
 }
 
@@ -779,8 +796,11 @@ function getMemoryStatsSnapshot() {
     newestUpdatedEvent: getEventActivityTimestamp(newestUpdatedEvent),
     latestActivityAt: getEventActivityTimestamp(newestUpdatedEvent),
     activeEventCount: activeSelection.total,
-    visibleActiveCount: activeSelection.stateCounts?.fresh_active ?? stateCounts.fresh_active ?? 0,
+    visibleActiveCount: activeSelection.visibleActiveCount ?? activeSelection.total,
     visibleWithFallbackCount: activeSelection.visibleWithFallbackCount ?? activeSelection.total,
+    freshEligibleCount: activeSelection.freshEligibleCount ?? stateCounts.fresh_active ?? 0,
+    groupedDuplicateCount: activeSelection.groupedDuplicateCount ?? activeSelection.groupedDuplicates ?? 0,
+    diversitySuppressedCount: activeSelection.diversitySuppressedCount ?? 0,
     activeFallbackReason: activeSelection.fallbackReason,
     groupedDuplicates: activeSelection.groupedDuplicates ?? 0,
     storedContextIncluded: activeSelection.storedContextIncluded ?? 0,
@@ -924,9 +944,16 @@ export async function getEvents({ limit = 50, offset = 0, tone, confidence, regi
       dataSource: "memory",
       freshnessMode: selection.freshnessMode,
       groupedDuplicates: selection.groupedDuplicates ?? 0,
+      groupedDuplicateCount: selection.groupedDuplicateCount ?? selection.groupedDuplicates ?? 0,
       storedContextIncluded: selection.storedContextIncluded ?? 0,
       stateCounts: selection.stateCounts ?? countEventStates(selection.events ?? []),
       visibleWithFallbackCount: selection.visibleWithFallbackCount ?? selection.total,
+      visibleActiveCount: selection.visibleActiveCount ?? selection.total,
+      freshEligibleCount: selection.freshEligibleCount ?? selection.stateCounts?.fresh_active ?? 0,
+      recentContextCount: selection.recentContextCount ?? selection.stateCounts?.recent_context ?? 0,
+      storedRelevantCount: selection.storedRelevantCount ?? selection.stateCounts?.stored_relevant ?? 0,
+      archivedCount: selection.archivedCount ?? selection.stateCounts?.archived ?? 0,
+      diversitySuppressedCount: selection.diversitySuppressedCount ?? 0,
     };
   }
 
@@ -973,9 +1000,16 @@ export async function getEvents({ limit = 50, offset = 0, tone, confidence, regi
       dataSource: "supabase",
       freshnessMode: selection.freshnessMode,
       groupedDuplicates: selection.groupedDuplicates ?? 0,
+      groupedDuplicateCount: selection.groupedDuplicateCount ?? selection.groupedDuplicates ?? 0,
       storedContextIncluded: selection.storedContextIncluded ?? 0,
       stateCounts: selection.stateCounts ?? countEventStates(selection.events ?? []),
       visibleWithFallbackCount: selection.visibleWithFallbackCount ?? selection.total,
+      visibleActiveCount: selection.visibleActiveCount ?? selection.total,
+      freshEligibleCount: selection.freshEligibleCount ?? selection.stateCounts?.fresh_active ?? 0,
+      recentContextCount: selection.recentContextCount ?? selection.stateCounts?.recent_context ?? 0,
+      storedRelevantCount: selection.storedRelevantCount ?? selection.stateCounts?.stored_relevant ?? 0,
+      archivedCount: selection.archivedCount ?? selection.stateCounts?.archived ?? 0,
+      diversitySuppressedCount: selection.diversitySuppressedCount ?? 0,
     };
   } catch (err) {
     log.warn(`Supabase query failed — serving in-memory events instead (${err.message})`);
@@ -1004,9 +1038,16 @@ export async function getEvents({ limit = 50, offset = 0, tone, confidence, regi
       dataSource: "memory",
       freshnessMode: selection.freshnessMode,
       groupedDuplicates: selection.groupedDuplicates ?? 0,
+      groupedDuplicateCount: selection.groupedDuplicateCount ?? selection.groupedDuplicates ?? 0,
       storedContextIncluded: selection.storedContextIncluded ?? 0,
       stateCounts: selection.stateCounts ?? countEventStates(selection.events ?? []),
       visibleWithFallbackCount: selection.visibleWithFallbackCount ?? selection.total,
+      visibleActiveCount: selection.visibleActiveCount ?? selection.total,
+      freshEligibleCount: selection.freshEligibleCount ?? selection.stateCounts?.fresh_active ?? 0,
+      recentContextCount: selection.recentContextCount ?? selection.stateCounts?.recent_context ?? 0,
+      storedRelevantCount: selection.storedRelevantCount ?? selection.stateCounts?.stored_relevant ?? 0,
+      archivedCount: selection.archivedCount ?? selection.stateCounts?.archived ?? 0,
+      diversitySuppressedCount: selection.diversitySuppressedCount ?? 0,
     };
   }
 }
@@ -1153,8 +1194,11 @@ export async function getStats() {
       newestUpdatedEvent: getEventActivityTimestamp(newestUpdatedEvent),
       latestActivityAt: getEventActivityTimestamp(newestUpdatedEvent),
       activeEventCount: activeSelection.total,
-      visibleActiveCount: activeSelection.stateCounts?.fresh_active ?? stateCounts.fresh_active ?? 0,
+      visibleActiveCount: activeSelection.visibleActiveCount ?? activeSelection.total,
       visibleWithFallbackCount: activeSelection.visibleWithFallbackCount ?? activeSelection.total,
+      freshEligibleCount: activeSelection.freshEligibleCount ?? stateCounts.fresh_active ?? 0,
+      groupedDuplicateCount: activeSelection.groupedDuplicateCount ?? activeSelection.groupedDuplicates ?? 0,
+      diversitySuppressedCount: activeSelection.diversitySuppressedCount ?? 0,
       activeFallbackReason: activeSelection.fallbackReason,
       groupedDuplicates: activeSelection.groupedDuplicates ?? 0,
       storedContextIncluded: activeSelection.storedContextIncluded ?? 0,
