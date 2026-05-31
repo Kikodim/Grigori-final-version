@@ -34,6 +34,7 @@ import {
   getContextItemsForLayer,
   getLayerDensityCap,
 } from "./context-layers.js";
+import { buildContextFusion, buildDashboardChangeSummary } from "./context-fusion.js";
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // DATA
@@ -2233,7 +2234,26 @@ function WatchlistPanel({ watchlist, selectedEvent, onToggleRegion, onToggleTopi
   );
 }
 
-function BriefingPanel({ briefing, strategicBrief, selectedLens, onLensChange, onSelect, onClose, systemStatus, feedState }) {
+function WhatChangedSummaryCard({ summary }) {
+  if (!summary?.summaryBullets?.length) return null;
+  return (
+    <div style={{ background: "rgba(8,20,36,0.76)", border: "1px solid rgba(94, 164, 195, 0.12)", borderRadius: 16, padding: "12px 13px" }}>
+      <div style={{ color: "rgba(0,200,255,0.38)", fontSize: 9, fontFamily: mono, letterSpacing: "0.14em", textTransform: "uppercase", marginBottom: 8 }}>
+        Since last refresh
+      </div>
+      <div style={{ display: "grid", gap: 7 }}>
+        {summary.summaryBullets.slice(0, 5).map((item) => (
+          <div key={item} style={{ display: "flex", gap: 8, color: "rgba(155,205,250,0.74)", fontSize: 11, lineHeight: 1.55 }}>
+            <span style={{ color: "rgba(0,200,255,0.55)", flexShrink: 0 }}>•</span>
+            <span>{item}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function BriefingPanel({ briefing, strategicBrief, selectedLens, onLensChange, onSelect, onClose, systemStatus, feedState, whatChangedSummary }) {
   const lens = strategicBrief?.lens ?? DECISION_LENSES[0];
   const newsFreshness = getDataFreshness(systemStatus?.automation?.lastNewsRefreshAt);
   const aiFreshness = getDataFreshness(systemStatus?.automation?.lastAiRefreshAt);
@@ -2290,6 +2310,7 @@ function BriefingPanel({ briefing, strategicBrief, selectedLens, onLensChange, o
             ) : null}
           </div>
         </div>
+        <WhatChangedSummaryCard summary={whatChangedSummary} />
       </div>
       {briefing.items.length === 0 ? (
         <div style={{ color: "rgba(130,185,230,0.62)", fontSize: 11, fontFamily: mono }}>Awaiting next intelligence refresh.</div>
@@ -2353,7 +2374,7 @@ function BriefingPanel({ briefing, strategicBrief, selectedLens, onLensChange, o
   );
 }
 
-function BriefingCompactCard({ briefing, strategicBrief, systemStatus, feedState, situations = [], onOpen, onDismiss, leftOffset = 304 }) {
+function BriefingCompactCard({ briefing, strategicBrief, systemStatus, feedState, situations = [], whatChangedSummary, onOpen, onDismiss, leftOffset = 304 }) {
   const firstItem = briefing?.items?.[0] ?? null;
   const newsFreshness = getDataFreshness(systemStatus?.automation?.lastNewsRefreshAt);
   const aiFreshness = getDataFreshness(systemStatus?.automation?.lastAiRefreshAt);
@@ -2439,6 +2460,11 @@ function BriefingCompactCard({ briefing, strategicBrief, systemStatus, feedState
       }}>
         {String(summary)}
       </div>
+      {whatChangedSummary?.summaryBullets?.[0] ? (
+        <div style={{ color: "rgba(150,205,245,0.68)", fontSize: 10, lineHeight: 1.45, fontFamily: mono }}>
+          Since last refresh: {whatChangedSummary.summaryBullets[0]}
+        </div>
+      ) : null}
       <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
         <TrafficPill level={newsFreshness.tone}>News {newsFreshness.label}</TrafficPill>
         <TrafficPill level={aiFreshness.tone}>{formatAiFreshnessLabel(aiFreshness)}</TrafficPill>
@@ -4116,13 +4142,201 @@ function WarRoomPanel({ topEvents, onSelect, selectedEventId, onClose, marketImp
 // EVENT DETAIL CONTENT (shared between desktop panel and mobile sheet)
 // ═══════════════════════════════════════════════════════════════════════════════
 
+function FusionSection({ title, children, defaultOpen = false }) {
+  return (
+    <details open={defaultOpen} style={{
+      background: "rgba(8,20,36,0.46)",
+      border: "1px solid rgba(94,164,195,0.1)",
+      borderRadius: 14,
+      padding: "10px 11px",
+    }}>
+      <summary style={{
+        color: "rgba(0,200,255,0.38)",
+        fontSize: 9,
+        fontFamily: mono,
+        letterSpacing: "0.15em",
+        textTransform: "uppercase",
+        cursor: "pointer",
+        listStyle: "none",
+      }}>
+        {title}
+      </summary>
+      <div style={{ marginTop: 9 }}>{children}</div>
+    </details>
+  );
+}
+
+function FusionBulletList({ items = [], limit = 6 }) {
+  const safeItems = Array.isArray(items) ? items.filter(Boolean).slice(0, limit) : [];
+  if (safeItems.length === 0) {
+    return <div style={{ color: "rgba(130,185,230,0.58)", fontSize: 11, lineHeight: 1.6 }}>No strong signal yet.</div>;
+  }
+  return (
+    <div style={{ display: "grid", gap: 7 }}>
+      {safeItems.map((item) => (
+        <div key={typeof item === "string" ? item : item.indicator ?? item.title ?? JSON.stringify(item)} style={{ display: "flex", gap: 8, color: "rgba(155,205,250,0.74)", fontSize: 11, lineHeight: 1.55 }}>
+          <span style={{ color: "rgba(0,200,255,0.55)", flexShrink: 0 }}>•</span>
+          <span>{typeof item === "string" ? item : item.indicator ?? item.title ?? item.name}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function NearbyContextRows({ fusion }) {
+  const groups = [
+    ["Chokepoints", fusion.nearbyContext?.nearestChokepoints],
+    ["Ports", fusion.nearbyContext?.nearestPorts],
+    ["Energy", fusion.nearbyContext?.nearestEnergyNodes],
+    ["Public bases", fusion.nearbyContext?.nearestMilitaryBases],
+    ["Cities", fusion.nearbyContext?.nearestCities],
+    ["Airports", fusion.nearbyContext?.nearestAirports],
+  ].filter(([, items]) => Array.isArray(items) && items.length > 0);
+
+  if (groups.length === 0) {
+    return <div style={{ color: "rgba(130,185,230,0.58)", fontSize: 11, lineHeight: 1.6 }}>{fusion.nearbyContext?.summary}</div>;
+  }
+
+  return (
+    <div style={{ display: "grid", gap: 8 }}>
+      <div style={{ color: "rgba(180,220,255,0.74)", fontSize: 11, lineHeight: 1.6 }}>{fusion.nearbyContext?.summary}</div>
+      {groups.slice(0, 5).map(([label, items]) => (
+        <div key={label} style={{ display: "grid", gap: 6 }}>
+          <div style={{ color: "rgba(120,178,214,0.58)", fontSize: 9, fontFamily: mono, letterSpacing: "0.1em", textTransform: "uppercase" }}>{label}</div>
+          {items.slice(0, 3).map((item) => (
+            <div key={item.id} style={{ display: "grid", gap: 4, padding: "8px 9px", borderRadius: 12, background: "rgba(5,14,28,0.72)", border: "1px solid rgba(94,164,195,0.09)" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
+                <span style={{ color: "#d6ebff", fontSize: 11, fontFamily: display, fontWeight: 700 }}>{item.name}</span>
+                <TrafficPill level={item.relevance === "high" ? "amber" : "neutral"}>{item.distanceKm} km</TrafficPill>
+              </div>
+              <div style={{ color: "rgba(150,205,245,0.62)", fontSize: 10, lineHeight: 1.5 }}>{item.whyItMatters}</div>
+            </div>
+          ))}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function ContextFusionPanel({ fusion }) {
+  if (!fusion) return null;
+  const brief = fusion.analystBrief ?? {};
+  return (
+    <div style={{ padding: "13px 18px", borderBottom: "1px solid rgba(0,180,255,0.07)", display: "grid", gap: 10 }}>
+      <div style={{ color: "rgba(0,200,255,0.3)", fontSize: 9, fontFamily: mono, letterSpacing: "0.15em", textTransform: "uppercase" }}>
+        Context Fusion
+      </div>
+
+      <FusionSection title="Analyst Brief" defaultOpen>
+        <div style={{ display: "grid", gap: 9 }}>
+          {[
+            ["Bottom line", brief.bottomLine],
+            ["Why it matters", brief.whyItMatters],
+            ["What changed", brief.whatChanged],
+            ["Working interpretation", brief.workingInterpretation],
+          ].map(([label, value]) => (
+            <div key={label}>
+              <div style={{ color: "rgba(120,178,214,0.58)", fontSize: 9, fontFamily: mono, letterSpacing: "0.1em", textTransform: "uppercase", marginBottom: 3 }}>{label}</div>
+              <div style={{ color: "rgba(180,220,255,0.76)", fontSize: 11, lineHeight: 1.65 }}>{value}</div>
+            </div>
+          ))}
+        </div>
+      </FusionSection>
+
+      <FusionSection title="Why this location matters" defaultOpen>
+        <div style={{ display: "grid", gap: 8 }}>
+          <div style={{ color: "rgba(180,220,255,0.76)", fontSize: 11, lineHeight: 1.65 }}>{fusion.geoContext?.whyLocationMatters}</div>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+            <TrafficPill level={fusion.geoContext?.geoAccuracy?.value === "exact" || fusion.geoContext?.geoAccuracy?.value === "city" ? "green" : "neutral"}>
+              {fusion.geoContext?.geoAccuracy?.label ?? "Approximate"}
+            </TrafficPill>
+            <TrafficPill level="neutral">{fusion.geoContext?.locationLabel}</TrafficPill>
+          </div>
+          <div style={{ color: "rgba(130,185,230,0.62)", fontSize: 10, lineHeight: 1.55, fontFamily: mono }}>{fusion.geoContext?.distanceSummary}</div>
+        </div>
+      </FusionSection>
+
+      <FusionSection title="Nearby strategic context" defaultOpen>
+        <NearbyContextRows fusion={fusion} />
+      </FusionSection>
+
+      <FusionSection title="Watch indicators" defaultOpen>
+        <div style={{ display: "grid", gap: 7 }}>
+          {(fusion.watchIndicators ?? []).slice(0, 6).map((item) => (
+            <div key={item.indicator} style={{ display: "grid", gap: 3, padding: "8px 9px", borderRadius: 12, background: "rgba(5,14,28,0.7)", border: "1px solid rgba(94,164,195,0.08)" }}>
+              <div style={{ color: "#d6ebff", fontSize: 11, fontFamily: display, fontWeight: 700 }}>{item.indicator}</div>
+              <div style={{ color: "rgba(150,205,245,0.62)", fontSize: 10, lineHeight: 1.45 }}>{item.whyItMatters}</div>
+            </div>
+          ))}
+        </div>
+      </FusionSection>
+
+      <FusionSection title="Related signals">
+        <div style={{ color: "rgba(180,220,255,0.72)", fontSize: 11, lineHeight: 1.6, marginBottom: 8 }}>{fusion.relatedSignals?.relationSummary}</div>
+        <div style={{ display: "grid", gap: 8 }}>
+          {(fusion.relatedSignals?.relatedSignals ?? []).slice(0, 5).map((item) => (
+            <div key={item.eventId} style={{ display: "grid", gap: 6, padding: "8px 9px", borderRadius: 12, background: "rgba(5,14,28,0.72)", border: "1px solid rgba(94,164,195,0.09)" }}>
+              <div style={{ color: "#d6ebff", fontSize: 11, fontFamily: display, fontWeight: 700 }}>{item.title}</div>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                {item.relationshipReasons.slice(0, 4).map((reason) => <TrafficPill key={reason} level="neutral">{reason}</TrafficPill>)}
+              </div>
+            </div>
+          ))}
+        </div>
+      </FusionSection>
+
+      <FusionSection title="Historical echo">
+        <div style={{ color: "rgba(180,220,255,0.74)", fontSize: 11, lineHeight: 1.65 }}>{fusion.historicalEcho?.historicalSummary}</div>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 8 }}>
+          <TrafficPill level="neutral">{fusion.historicalEcho?.similarSignalsLast7d ?? 0} last 7d</TrafficPill>
+          <TrafficPill level="neutral">{fusion.historicalEcho?.similarSignalsLast30d ?? 0} last 30d</TrafficPill>
+          <TrafficPill level="neutral">sources {fusion.historicalEcho?.sourceTrend ?? "limited"}</TrafficPill>
+          <TrafficPill level="neutral">confidence {fusion.historicalEcho?.confidenceTrend ?? "limited"}</TrafficPill>
+        </div>
+      </FusionSection>
+
+      <FusionSection title="Second-order effects">
+        <div style={{ display: "grid", gap: 8 }}>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+            {(fusion.secondOrderEffects?.primaryEffects ?? []).map((item) => <TrafficPill key={item} level="amber">Primary: {item}</TrafficPill>)}
+          </div>
+          <FusionBulletList items={fusion.secondOrderEffects?.secondOrderEffects ?? []} limit={7} />
+        </div>
+      </FusionSection>
+
+      <FusionSection title="Pressure map">
+        <div style={{ color: "rgba(180,220,255,0.74)", fontSize: 11, lineHeight: 1.65, marginBottom: 8 }}>{fusion.pressureMap?.pressureSummary}</div>
+        <div style={{ display: "grid", gap: 8 }}>
+          <div>
+            <div style={{ color: "rgba(120,178,214,0.58)", fontSize: 9, fontFamily: mono, letterSpacing: "0.1em", textTransform: "uppercase", marginBottom: 5 }}>Who is pressured</div>
+            <FusionBulletList items={fusion.pressureMap?.pressuredActors ?? []} limit={5} />
+          </div>
+          <div>
+            <div style={{ color: "rgba(120,178,214,0.58)", fontSize: 9, fontFamily: mono, letterSpacing: "0.1em", textTransform: "uppercase", marginBottom: 5 }}>Who may benefit</div>
+            <FusionBulletList items={fusion.pressureMap?.potentialBeneficiaries ?? []} limit={4} />
+          </div>
+        </div>
+      </FusionSection>
+
+      <FusionSection title="Confidence & limitations">
+        <div style={{ color: "rgba(180,220,255,0.74)", fontSize: 11, lineHeight: 1.65, marginBottom: 8 }}>{fusion.confidenceNotes?.rationale}</div>
+        <FusionBulletList items={[...(fusion.confidenceNotes?.couldBeWrongIf ?? []), ...(fusion.limitations ?? [])]} limit={7} />
+      </FusionSection>
+    </div>
+  );
+}
+
 function EventDetailContent({ event, activeScenario, onScenarioChange, allEvents = [], socialSignals = [] }) {
   const cfg = INTENSITY[event.intensity];
   const brief = buildEventBrief(event, allEvents);
   const evidence = buildEvidenceSummary(event, allEvents);
-  const situations = buildStrategicSituations(allEvents);
+  const situations = useMemo(() => buildStrategicSituations(allEvents), [allEvents]);
   const situation = findSituationForEvent(event, situations);
   const relatedSignals = getRelatedSignalEvidence(event, allEvents, 4);
+  const contextFusion = useMemo(
+    () => buildContextFusion(event, allEvents, { situations, marketImpact: brief.marketImpact }),
+    [event, allEvents, situations, brief.marketImpact]
+  );
   const sourceLine = brief.sourceTrace.domains.slice(0, 3).join(", ") || "No named sources";
   const eventStateLabels = getEventStateLabels(event);
   const linkedSignals = socialSignals
@@ -4201,6 +4415,8 @@ function EventDetailContent({ event, activeScenario, onScenarioChange, allEvents
             </div>
           ) : null}
         </div>
+
+        <ContextFusionPanel fusion={contextFusion} />
 
         <div style={{ padding: "13px 18px", borderBottom: "1px solid rgba(0,180,255,0.07)" }}>
           <div style={{ color: "rgba(0,200,255,0.3)", fontSize: 9, fontFamily: mono, letterSpacing: "0.15em", textTransform: "uppercase", marginBottom: 8 }}>
@@ -6529,6 +6745,15 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
     () => buildStrategicSituations(filteredEvents),
     [filteredEvents]
   );
+  const whatChangedSummary = useMemo(
+    () => buildDashboardChangeSummary(filteredEvents, {
+      feedState,
+      refreshState,
+      situations: strategicSituations,
+      lastRefreshAt: systemStatus?.automation?.lastNewsRefreshAt,
+    }),
+    [filteredEvents, feedState, refreshState, strategicSituations, systemStatus?.automation?.lastNewsRefreshAt]
+  );
   const renderedFlights = useMemo(
     () => flights.slice(0, getLayerDensityCap("flights", layerDensity.flights)),
     [flights, layerDensity.flights]
@@ -7553,6 +7778,7 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
                 onSelect={handleBriefingSelect}
                 systemStatus={systemStatus}
                 feedState={feedState}
+                whatChangedSummary={whatChangedSummary}
                 onClose={handleCloseBriefing}
               />
             ) : null}
@@ -7668,6 +7894,7 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
             systemStatus={systemStatus}
             feedState={feedState}
             situations={strategicSituations}
+            whatChangedSummary={whatChangedSummary}
             onOpen={handleOpenBriefing}
             onDismiss={handleDismissBriefingCompact}
             leftOffset={panelVisibility.events && activeLayers.intelBoard ? 302 : 18}
