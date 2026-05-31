@@ -26,7 +26,14 @@ import {
   inferLocationDetails,
   sanitizeEventNarrative,
 } from "./event-insights.js";
-import { CONTEXT_LAYER_DEFS, CONTEXT_LAYER_STORAGE_KEY, getContextItemsForLayer } from "./context-layers.js";
+import {
+  CONTEXT_LAYER_DEFS,
+  CONTEXT_LAYER_STORAGE_KEY,
+  DEFAULT_LAYER_DENSITY,
+  OPERATIONAL_LAYER_STORAGE_KEY,
+  getContextItemsForLayer,
+  getLayerDensityCap,
+} from "./context-layers.js";
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // DATA
@@ -1368,7 +1375,7 @@ function makeObjectMarker(item, type) {
   const colorMap = {
     flight: "#7ad0ff",
     vessel: "#8cf0c9",
-    satellite: "#c68dff",
+    satellite: "#9db7ff",
   };
   const liftMap = {
     flight: 0.1,
@@ -1380,6 +1387,40 @@ function makeObjectMarker(item, type) {
   const color = new THREE.Color(colorMap[type] ?? "#ffffff");
   const group = new THREE.Group();
   group.userData = { objectType: type, objectData: item, surfaceNormal: outward.clone(), markerType: type };
+
+  if (type === "satellite") {
+    const bodyMat = new THREE.MeshBasicMaterial({ color: 0xd9e6ff, transparent: true, opacity: 0.72, depthWrite: false });
+    const panelMat = new THREE.MeshBasicMaterial({ color: 0x7288c8, transparent: true, opacity: 0.46, depthWrite: false });
+    const body = new THREE.Mesh(new THREE.BoxGeometry(0.009, 0.006, 0.003), bodyMat);
+    const leftPanel = new THREE.Mesh(new THREE.BoxGeometry(0.016, 0.004, 0.002), panelMat);
+    const rightPanel = new THREE.Mesh(new THREE.BoxGeometry(0.016, 0.004, 0.002), panelMat);
+    const hit = new THREE.Mesh(
+      new THREE.CircleGeometry(IS_MOBILE ? 0.032 : 0.02, 14),
+      new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.01, depthWrite: false, depthTest: false })
+    );
+    leftPanel.position.x = -0.014;
+    rightPanel.position.x = 0.014;
+    [body, leftPanel, rightPanel, hit].forEach((mesh) => {
+      mesh.userData = { clickable: true, objectType: type, objectData: item, baseOpacity: mesh.material.opacity };
+      mesh.userData.markerGroup = group;
+    });
+    const orbit = new THREE.Mesh(
+      new THREE.RingGeometry(0.017, 0.0185, 24),
+      new THREE.MeshBasicMaterial({
+        color,
+        transparent: true,
+        opacity: 0.16,
+        side: THREE.DoubleSide,
+        depthWrite: false,
+        blending: THREE.AdditiveBlending,
+      })
+    );
+    orbit.userData = { clickable: false, baseOpacity: 0.16 };
+    group.add(hit, orbit, leftPanel, rightPanel, body);
+    group.position.copy(pos);
+    group.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), outward);
+    return group;
+  }
 
   const shape = type === "flight"
     ? new THREE.ConeGeometry(0.01, 0.035, 4)
@@ -1425,19 +1466,34 @@ function makeContextMarker(item) {
     port: "#69e7ff",
     airport: "#9bd6ff",
     energy: "#6ee7b7",
+    city: "#8aa7c7",
+    military_base: "#b7c7d8",
   };
   const color = new THREE.Color(colorMap[item.type] ?? "#69e7ff");
   const pos = geoToVec3(item.lat, item.lng, R + 0.018);
   const outward = geoToVec3(item.lat, item.lng, 1.0).normalize();
   const group = new THREE.Group();
-  group.userData = { objectType: "context", objectData: item, surfaceNormal: outward.clone(), markerType: "context" };
+  const detailThreshold = {
+    chokepoint: 9,
+    port: 3.35,
+    airport: 2.95,
+    energy: 2.95,
+    city: 2.45,
+    military_base: 2.75,
+  }[item.type] ?? 3.0;
+  group.userData = { objectType: "context", objectData: item, surfaceNormal: outward.clone(), markerType: "context", detailThreshold };
 
+  const markerGeometry = item.type === "military_base"
+    ? new THREE.CircleGeometry(0.012, 3)
+    : item.type === "city"
+      ? new THREE.CircleGeometry(0.006, 14)
+      : new THREE.RingGeometry(0.009, 0.013, 18);
   const ring = new THREE.Mesh(
-    new THREE.RingGeometry(0.009, 0.013, 18),
+    markerGeometry,
     new THREE.MeshBasicMaterial({
       color,
       transparent: true,
-      opacity: 0.54,
+      opacity: item.type === "city" ? 0.34 : item.type === "military_base" ? 0.42 : 0.54,
       side: THREE.DoubleSide,
       depthWrite: false,
       depthTest: false,
@@ -1448,7 +1504,7 @@ function makeContextMarker(item) {
     new THREE.CircleGeometry(IS_MOBILE ? 0.034 : 0.022, 18),
     new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.01, depthWrite: false, depthTest: false })
   );
-  ring.userData = { baseOpacity: 0.54 };
+  ring.userData = { baseOpacity: item.type === "city" ? 0.34 : item.type === "military_base" ? 0.42 : 0.54 };
   hit.userData = { clickable: true, objectType: "context", objectData: item, baseOpacity: 0.01 };
   hit.userData.markerGroup = group;
   group.add(hit, ring);
@@ -1956,6 +2012,16 @@ async function fetchSatellitesLive() {
   return {
     ...data,
     data: Array.isArray(data.data) ? data.data.slice(0, MAX_SATELLITES_RENDERED).map(normalizeSatelliteObject) : [],
+  };
+}
+
+async function fetchVesselsLive() {
+  const res = await fetch(resolveBackendUrl("/api/v1/vessels/live"), { signal: AbortSignal.timeout(12000) });
+  if (!res.ok) throw new Error(`vessels ${res.status}`);
+  const data = await res.json();
+  return {
+    ...data,
+    data: Array.isArray(data.data) ? data.data.slice(0, MAX_VESSELS_RENDERED).map(normalizeVesselObject) : [],
   };
 }
 
@@ -2841,6 +2907,7 @@ function LayerStatusMeta({ status, remainingLabel = "remaining" }) {
   const remaining = status.remaining ?? status.remainingMonthlyCalls ?? status.remainingDailyCalls;
   return (
     <div style={{ marginTop: 10, display: "grid", gap: 4, color: "rgba(150,205,245,0.6)", fontSize: 10, fontFamily: mono }}>
+      {status.reason ? <div>Status: {status.reason}</div> : null}
       <div>Last refresh: {formatLayerTime(lastRefresh)}</div>
       <div>Next refresh: {formatLayerTime(nextRefresh)}</div>
       {remaining !== undefined ? <div>{remainingLabel}: {remaining}</div> : null}
@@ -2870,10 +2937,13 @@ function ObjectRowButton({ item, subtitle, onClick }) {
 }
 
 function FlightsPanel({ flights, status, onSelect, onClose }) {
+  const unavailable = !status?.configured;
   return (
-    <FloatingPanel title="Flights" subtitle={`${flights.length} tracked aircraft`} top={FLOATING_TOP} right={348} width={300} onClose={onClose}>
+    <FloatingPanel title="Flights Preview" subtitle={unavailable ? "source not configured" : `${flights.length} tracked aircraft`} top={FLOATING_TOP} right={348} width={300} onClose={onClose}>
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-        {flights.length === 0 ? (
+        {unavailable ? (
+          <div style={{ color: "rgba(130,185,230,0.62)", fontSize: 11, lineHeight: 1.6, fontFamily: mono }}>Flight layer preview · source not configured. Future live data should use limited, cached, policy-compliant provider calls.</div>
+        ) : flights.length === 0 ? (
           <div style={{ color: "rgba(130,185,230,0.62)", fontSize: 11, fontFamily: mono }}>No cached flights available yet.</div>
         ) : flights.map((flight) => (
           <ObjectRowButton
@@ -2890,6 +2960,7 @@ function FlightsPanel({ flights, status, onSelect, onClose }) {
 }
 
 function VesselsPanel({ vessels, status, search, onSearchChange, onSelect, onClose }) {
+  const unavailable = !status?.configured;
   const filtered = vessels.filter((vessel) => {
     if (!search.trim()) return true;
     const needle = search.trim().toLowerCase();
@@ -2897,7 +2968,7 @@ function VesselsPanel({ vessels, status, search, onSearchChange, onSelect, onClo
   });
 
   return (
-    <FloatingPanel title="Vessels" subtitle={`${filtered.length} tracked vessels`} top={FLOATING_TOP} right={348} width={300} onClose={onClose}>
+    <FloatingPanel title="Maritime Preview" subtitle={unavailable ? "AIS source not configured" : `${filtered.length} tracked vessels`} top={FLOATING_TOP} right={348} width={300} onClose={onClose}>
       <input
         value={search}
         onChange={(e) => onSearchChange(e.target.value)}
@@ -2913,7 +2984,9 @@ function VesselsPanel({ vessels, status, search, onSearchChange, onSelect, onClo
         }}
       />
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-        {filtered.length === 0 ? (
+        {unavailable ? (
+          <div style={{ color: "rgba(130,185,230,0.62)", fontSize: 11, lineHeight: 1.6, fontFamily: mono }}>Maritime layer preview · AIS source not configured. Future live queries should stay chokepoint-limited and cached.</div>
+        ) : filtered.length === 0 ? (
           <div style={{ color: "rgba(130,185,230,0.62)", fontSize: 11, fontFamily: mono }}>No vessels match the current search.</div>
         ) : filtered.map((vessel) => (
           <ObjectRowButton
@@ -2932,6 +3005,9 @@ function VesselsPanel({ vessels, status, search, onSearchChange, onSelect, onClo
 function SatellitesPanel({ satellites, status, onSelect, onClose }) {
   return (
     <FloatingPanel title="Satellites" subtitle={`${satellites.length} orbital objects`} top={FLOATING_TOP} right={348} width={300} onClose={onClose}>
+      <div style={{ color: "rgba(130,185,230,0.62)", fontSize: 10, lineHeight: 1.55, fontFamily: mono, marginBottom: 8 }}>
+        TLE-derived public orbital context. Markers are intentionally muted and not active intelligence signals.
+      </div>
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
         {satellites.length === 0 ? (
           <div style={{ color: "rgba(130,185,230,0.62)", fontSize: 11, fontFamily: mono }}>No satellite cache available yet.</div>
@@ -3172,6 +3248,16 @@ function readStoredContextLayers() {
   if (typeof window === "undefined") return {};
   try {
     const parsed = JSON.parse(window.localStorage.getItem(CONTEXT_LAYER_STORAGE_KEY) ?? "{}");
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function readStoredOperationalLayerPrefs() {
+  if (typeof window === "undefined") return {};
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(OPERATIONAL_LAYER_STORAGE_KEY) ?? "{}");
     return parsed && typeof parsed === "object" ? parsed : {};
   } catch {
     return {};
@@ -4498,10 +4584,12 @@ function SelectedObjectCard({ selected, onClose, onZoom, onClearSelection, mobil
     : type === "context"
       ? [
           ["Name", data.name],
-          ["Type", data.type],
+          ["Type", data.category ?? data.type],
+          ["Country", data.country ?? "n/a"],
           ["Region", data.region],
           ["Geo accuracy", data.geoAccuracy ? String(data.geoAccuracy).replace("_", " ") : "approximate"],
           ["Why it matters", data.whyItMatters],
+          ["Source", data.source ?? "Curated public reference"],
           ["Tags", (data.tags ?? []).join(", ") || "n/a"],
         ]
     : type === "vessel"
@@ -4577,10 +4665,11 @@ function SelectedObjectCard({ selected, onClose, onZoom, onClearSelection, mobil
       {type === "context" ? (
         <div style={{ color: "rgba(130,185,230,0.62)", fontSize: 10, lineHeight: 1.6, fontFamily: mono }}>
           External/context layers are situational aids and may be incomplete.
-          {data.externalUrl ? (
+          {data.type === "military_base" ? " Public military base layer uses publicly known facilities only and is not a live targeting or tactical tracking system." : ""}
+          {data.externalUrl || data.sourceUrl ? (
             <>
               {" "}
-              <a href={data.externalUrl} target="_blank" rel="noreferrer" style={{ color: "#89ddff" }}>
+              <a href={data.externalUrl ?? data.sourceUrl} target="_blank" rel="noreferrer" style={{ color: "#89ddff" }}>
                 External public source
               </a>
             </>
@@ -4753,7 +4842,8 @@ const SHEET_STATES = {
 
 function MobileBottomSheet({ events, selectedEvent, activeScenario, onScenarioChange,
                              onSelectEvent, onClose, activeLayers, onLayerToggle, layerEntries,
-                             briefing, marketImpact, flights, satellites, socialSignals, onBriefingSelect,
+                             layerDensity, onDensityChange, layersStatus,
+                             briefing, marketImpact, flights, vessels, satellites, socialSignals, onBriefingSelect,
                              onOpenIntelBoard, refreshState, adminUnlocked, onAdminUnlock,
                              onSelectObject, allEvents = [],
                              onAdminRefresh, systemStatus, selectedLens, onLensChange,
@@ -4983,21 +5073,17 @@ function MobileBottomSheet({ events, selectedEvent, activeScenario, onScenarioCh
             ) : activeTab === "layers" ? (
               <div style={{ display: "grid", gap: 12 }}>
                 <div style={{ display: "grid", gap: 10, background: "rgba(8,20,36,0.78)", border: "1px solid rgba(94,164,195,0.14)", borderRadius: 14, padding: 12 }}>
-                  <div style={{ color: "rgba(103,220,255,0.48)", fontSize: 10, fontFamily: mono, letterSpacing: "0.14em", textTransform: "uppercase" }}>
-                    Context & Display Layers
-                  </div>
-                  <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-                    {layerEntries.map(([key, def]) => (
-                      <LayerToggleChip key={key} layerKey={key} def={def} active={activeLayers[key]} onToggle={onLayerToggle} />
-                    ))}
-                  </div>
-                  <div style={{ color: "rgba(150,200,240,0.56)", fontSize: 10, lineHeight: 1.55, fontFamily: bodyFont }}>
-                    Context layers are static situational aids and may be incomplete.
-                  </div>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, paddingTop: 8, borderTop: "1px solid rgba(94,164,195,0.12)" }}>
-                    <span style={{ color: "rgba(214,235,255,0.84)", fontSize: 12, fontFamily: bodyFont }}>Day/Night lighting</span>
-                    <TopControlButton active={liveSunEnabled} onClick={onToggleLiveSun}>{liveSunEnabled ? "On" : "Off"}</TopControlButton>
-                  </div>
+                  <OperationalLayerPanel
+                    layerEntries={layerEntries}
+                    activeLayers={activeLayers}
+                    onLayerToggle={onLayerToggle}
+                    layerDensity={layerDensity}
+                    onDensityChange={onDensityChange}
+                    layersStatus={layersStatus}
+                    liveSunEnabled={liveSunEnabled}
+                    onToggleLiveSun={onToggleLiveSun}
+                    bordersLoaded={undefined}
+                  />
                 </div>
                 <div style={{ display: "grid", gap: 10, background: "rgba(8,20,36,0.78)", border: "1px solid rgba(94,164,195,0.14)", borderRadius: 14, padding: 12 }}>
                   <div style={{ color: "rgba(103,220,255,0.48)", fontSize: 10, fontFamily: mono, letterSpacing: "0.14em", textTransform: "uppercase" }}>
@@ -5175,13 +5261,22 @@ function MobileBottomSheet({ events, selectedEvent, activeScenario, onScenarioCh
 const LAYER_DEFS = {
   events: { label: "EVENTS", icon: "✦", color: "#ff6b7d", desc: "Event hotspots" },
   conflictZones: { label: "ZONES", icon: "⬡", color: "#8fdfff", desc: "Conflict-zone overlay" },
-  flights: { label: "FLIGHTS", icon: "✈", color: "#7ad0ff", desc: "Live aviation layer" },
-  vessels: { label: "VESSELS", icon: "◫", color: "#8cf0c9", desc: "Live vessel layer" },
-  satellites: { label: "SATELLITES", icon: "◉", color: "#c68dff", desc: "Orbital layer" },
+  flights: { label: "FLIGHTS", icon: "F", color: "#7ad0ff", desc: "Flight layer preview" },
+  vessels: { label: "MARITIME", icon: "M", color: "#8cf0c9", desc: "AIS maritime preview" },
+  satellites: { label: "SATELLITES", icon: "S", color: "#9db7ff", desc: "CelesTrak/TLE-derived orbital layer" },
   social: { label: "SOCIAL", icon: "⌁", color: "#88b9ff", desc: "Early-warning social signals" },
   ...CONTEXT_LAYER_DEFS,
   intelBoard: { label: "INTEL BOARD", icon: "▣", color: "#ffd166", desc: "Intel panels" },
 };
+
+const OPERATIONAL_LAYER_GROUPS = [
+  { title: "Intelligence", keys: ["events", "conflictZones", "intelBoard"] },
+  { title: "Infrastructure", keys: ["contextChokepoints", "contextPorts", "contextAirports", "contextEnergy", "contextCities", "contextMilitaryBases"] },
+  { title: "Live / Preview", keys: ["satellites", "flights", "vessels"] },
+];
+
+const DENSITY_LAYER_KEYS = new Set(["contextPorts", "contextCities", "contextMilitaryBases", "satellites", "flights", "vessels"]);
+const DENSITY_OPTIONS = ["low", "medium", "high"];
 
 function LayerToggleChip({ layerKey, def, active, onToggle }) {
   return (
@@ -5196,6 +5291,123 @@ function LayerToggleChip({ layerKey, def, active, onToggle }) {
       <span style={{ color: active ? def.color : "rgba(150,200,240,0.55)",
         fontSize: 9, fontFamily: mono, letterSpacing: "0.08em" }}>{def.label}</span>
     </button>
+  );
+}
+
+function getLayerStatusLabel(layerKey, layersStatus = {}) {
+  if (layerKey.startsWith("context")) return "static";
+  if (layerKey === "flights") {
+    const status = layersStatus.flights ?? {};
+    if (!status.enabled || !status.configured) return "preview - not configured";
+    return status.lastRefresh ? "preview - cached/live" : "preview";
+  }
+  if (layerKey === "vessels") {
+    const status = layersStatus.vessels ?? {};
+    if (!status.enabled || !status.configured) return "preview - AIS not configured";
+    return status.lastRefresh ? "preview - cached/live" : "preview";
+  }
+  if (layerKey === "satellites") {
+    const status = layersStatus.satellites ?? {};
+    if (!status.enabled) return "disabled";
+    return status.lastRefresh ? "TLE-derived" : "live source";
+  }
+  return "display";
+}
+
+function OperationalLayerPanel({
+  layerEntries,
+  activeLayers,
+  onLayerToggle,
+  layerDensity,
+  onDensityChange,
+  layersStatus,
+  liveSunEnabled,
+  onToggleLiveSun,
+  bordersLoaded,
+}) {
+  const entryMap = new Map(layerEntries);
+
+  return (
+    <div style={{ display: "grid", gap: 12 }}>
+      {OPERATIONAL_LAYER_GROUPS.map((group) => {
+        const entries = group.keys.map((key) => [key, entryMap.get(key)]).filter(([, def]) => Boolean(def));
+        if (entries.length === 0) return null;
+        return (
+          <div key={group.title} style={{ display: "grid", gap: 8 }}>
+            <div style={{ color: "rgba(103, 220, 255, 0.48)", fontSize: 10, fontFamily: mono, letterSpacing: "0.12em", textTransform: "uppercase" }}>{group.title}</div>
+            <div style={{ display: "grid", gap: 7 }}>
+              {entries.map(([key, def]) => (
+                <div key={key} style={{
+                  display: "grid",
+                  gap: 7,
+                  padding: "9px 10px",
+                  borderRadius: 12,
+                  background: activeLayers[key] ? `${def.color}10` : "rgba(8,20,36,0.58)",
+                  border: `1px solid ${activeLayers[key] ? `${def.color}44` : "rgba(94,164,195,0.11)"}`,
+                }}>
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
+                    <button
+                      onClick={() => onLayerToggle(key)}
+                      style={{
+                        border: "none",
+                        background: "transparent",
+                        color: activeLayers[key] ? def.color : "rgba(214,235,255,0.72)",
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 8,
+                        padding: 0,
+                        cursor: "pointer",
+                        minWidth: 0,
+                      }}
+                    >
+                      <span style={{ width: 18, height: 18, borderRadius: 999, border: `1px solid ${def.color}55`, display: "inline-flex", alignItems: "center", justifyContent: "center", fontSize: 10, fontFamily: mono }}>{def.icon}</span>
+                      <span style={{ fontFamily: mono, fontSize: 10, letterSpacing: "0.08em", textTransform: "uppercase", whiteSpace: "nowrap" }}>{def.label}</span>
+                    </button>
+                    <TrafficPill level={activeLayers[key] ? "green" : "neutral"}>{activeLayers[key] ? "On" : "Off"}</TrafficPill>
+                  </div>
+                  <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center" }}>
+                    <span style={{ color: "rgba(150,200,240,0.58)", fontSize: 10, fontFamily: bodyFont, lineHeight: 1.45 }}>{getLayerStatusLabel(key, layersStatus)}</span>
+                    {DENSITY_LAYER_KEYS.has(key) ? (
+                      <select
+                        value={layerDensity[key] ?? "low"}
+                        onChange={(event) => onDensityChange(key, event.target.value)}
+                        style={{
+                          minHeight: 26,
+                          borderRadius: 9,
+                          background: "rgba(6,15,30,0.88)",
+                          border: "1px solid rgba(94,164,195,0.16)",
+                          color: "rgba(214,235,255,0.82)",
+                          fontFamily: mono,
+                          fontSize: 9,
+                          textTransform: "uppercase",
+                        }}
+                      >
+                        {DENSITY_OPTIONS.map((option) => (
+                          <option key={option} value={option}>{option}</option>
+                        ))}
+                      </select>
+                    ) : null}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        );
+      })}
+      <div style={{ color: "rgba(150,200,240,0.56)", fontSize: 10, lineHeight: 1.55, fontFamily: bodyFont }}>
+        Context layers are operational reference aids and may be incomplete. Flight and maritime preview layers depend on configured public/open providers and may be delayed or unavailable. Public bases are publicly known facilities only; Grigori is not a tactical tracking system.
+      </div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, paddingTop: 8, borderTop: "1px solid rgba(94,164,195,0.12)" }}>
+        <span style={{ color: "rgba(214,235,255,0.84)", fontSize: 12, fontFamily: bodyFont }}>Day/Night lighting</span>
+        <TopControlButton active={liveSunEnabled} onClick={onToggleLiveSun}>{liveSunEnabled ? "On" : "Off"}</TopControlButton>
+      </div>
+      {typeof bordersLoaded === "boolean" ? (
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 }}>
+          <span style={{ color: "rgba(214,235,255,0.84)", fontSize: 12, fontFamily: bodyFont }}>Borders</span>
+          <TrafficPill level={bordersLoaded ? "green" : "neutral"}>{bordersLoaded ? "On" : "Loading"}</TrafficPill>
+        </div>
+      ) : null}
+    </div>
   );
 }
 
@@ -5439,7 +5651,7 @@ function buildConnectionLayer() {
 // TOP BAR
 // ═══════════════════════════════════════════════════════════════════════════════
 
-function TopBar({ counts, bordersLoaded, activeLayers, onLayerToggle, isMobile, isTablet, onWarRoom, showWarRoom, marketData, onPersonalize, showPersonalize, onAdminRefresh, refreshState, layerEntries, activeView = "globe", onNavigate, systemStatus, adminUnlocked, onAdminUnlock, selectedLens, onLensChange, demoMode = false, feedState, layersStatus, liveSunEnabled = true, onToggleLiveSun = () => {} }) {
+function TopBar({ counts, bordersLoaded, activeLayers, onLayerToggle, layerDensity, onDensityChange, isMobile, isTablet, onWarRoom, showWarRoom, marketData, onPersonalize, showPersonalize, onAdminRefresh, refreshState, layerEntries, activeView = "globe", onNavigate, systemStatus, adminUnlocked, onAdminUnlock, selectedLens, onLensChange, demoMode = false, feedState, layersStatus, liveSunEnabled = true, onToggleLiveSun = () => {} }) {
   const [time, setTime] = useState(() => new Date().toISOString().slice(11,19));
   const [showLayersMenu, setShowLayersMenu] = useState(false);
   const [showStatusMenu, setShowStatusMenu] = useState(false);
@@ -5605,25 +5817,19 @@ function TopBar({ counts, bordersLoaded, activeLayers, onLayerToggle, isMobile, 
         ) : null}
 
         {showLayersMenu && !compact ? (
-          <HeaderPopover right={demoMode ? 0 : 88} minWidth={252}>
+          <HeaderPopover right={demoMode ? 0 : 88} minWidth={320}>
             <div style={{ padding: "12px", display: "grid", gap: 10 }}>
-              <div style={{ color: "rgba(103, 220, 255, 0.48)", fontSize: 10, fontFamily: mono, letterSpacing: "0.12em", textTransform: "uppercase" }}>Context & Display Layers</div>
-              <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-                {publicLayerEntries.map(([key, def]) => (
-                  <LayerToggleChip key={key} layerKey={key} def={def} active={activeLayers[key]} onToggle={onLayerToggle} />
-                ))}
-              </div>
-              <div style={{ color: "rgba(150,200,240,0.56)", fontSize: 10, lineHeight: 1.55, fontFamily: bodyFont }}>
-                Context layers are static situational aids and may be incomplete.
-              </div>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, paddingTop: 8, borderTop: "1px solid rgba(94,164,195,0.12)" }}>
-                <span style={{ color: "rgba(214,235,255,0.84)", fontSize: 12, fontFamily: bodyFont }}>Day/Night lighting</span>
-                <TopControlButton active={liveSunEnabled} onClick={onToggleLiveSun}>{liveSunEnabled ? "On" : "Off"}</TopControlButton>
-              </div>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 }}>
-                <span style={{ color: "rgba(214,235,255,0.84)", fontSize: 12, fontFamily: bodyFont }}>Borders</span>
-                <TrafficPill level={bordersLoaded ? "green" : "neutral"}>{bordersLoaded ? "On" : "Loading"}</TrafficPill>
-              </div>
+              <OperationalLayerPanel
+                layerEntries={publicLayerEntries}
+                activeLayers={activeLayers}
+                onLayerToggle={onLayerToggle}
+                layerDensity={layerDensity}
+                onDensityChange={onDensityChange}
+                layersStatus={layersStatus}
+                liveSunEnabled={liveSunEnabled}
+                onToggleLiveSun={onToggleLiveSun}
+                bordersLoaded={bordersLoaded}
+              />
               <button onClick={onPersonalize} style={{
                 textAlign: "left",
                 background: "rgba(8,20,36,0.66)",
@@ -5954,20 +6160,33 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
   const [bordersLoaded,  setBordersLoaded]  = useState(false);
   const [ready,          setReady]          = useState(false);
   const [liveSunEnabled, setLiveSunEnabled] = useState(true);
-  const [activeLayers,   setActiveLayers]   = useState(() => ({
-    events: true,
-    conflictZones: false,
-    flights: false,
-    vessels: false,
-    satellites: false,
-    social: false,
-    contextChokepoints: true,
-    contextPorts: false,
-    contextAirports: false,
-    contextEnergy: false,
-    intelBoard: true,
-    ...readStoredContextLayers(),
-  }));
+  const [activeLayers,   setActiveLayers]   = useState(() => {
+    const storedOperational = readStoredOperationalLayerPrefs();
+    return {
+      events: true,
+      conflictZones: false,
+      flights: false,
+      vessels: false,
+      satellites: false,
+      social: false,
+      contextChokepoints: true,
+      contextPorts: false,
+      contextAirports: false,
+      contextEnergy: false,
+      contextCities: false,
+      contextMilitaryBases: false,
+      intelBoard: true,
+      ...readStoredContextLayers(),
+      ...(storedOperational.layers ?? {}),
+    };
+  });
+  const [layerDensity, setLayerDensity] = useState(() => {
+    const storedOperational = readStoredOperationalLayerPrefs();
+    return {
+      ...DEFAULT_LAYER_DENSITY,
+      ...(storedOperational.density ?? {}),
+    };
+  });
   const [panelVisibility, setPanelVisibility] = useState(() => ({
     events: readStoredBoolean(ACTIVE_SIGNALS_STORAGE_KEY, true),
     briefing: readStoredBoolean(BRIEFING_PANEL_STORAGE_KEY, false),
@@ -6142,7 +6361,14 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
       Object.keys(CONTEXT_LAYER_DEFS).map((key) => [key, Boolean(activeLayers[key])])
     );
     window.localStorage.setItem(CONTEXT_LAYER_STORAGE_KEY, JSON.stringify(contextState));
-  }, [activeLayers.contextChokepoints, activeLayers.contextPorts, activeLayers.contextAirports, activeLayers.contextEnergy]);
+    const layerState = Object.fromEntries(
+      Object.keys(LAYER_DEFS).map((key) => [key, Boolean(activeLayers[key])])
+    );
+    window.localStorage.setItem(OPERATIONAL_LAYER_STORAGE_KEY, JSON.stringify({
+      layers: layerState,
+      density: layerDensity,
+    }));
+  }, [activeLayers, layerDensity]);
 
   useEffect(() => {
     let cancelled = false;
@@ -6152,9 +6378,11 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
       .then((result) => {
         if (cancelled) return;
         setFlights(result.data ?? []);
-        setLayersStatus((current) => ({ ...current, flights: result.quota ?? current.flights }));
+        setLayersStatus((current) => ({ ...current, flights: { ...(current.flights ?? {}), ...(result.quota ?? {}), enabled: result.enabled, configured: result.configured, reason: result.reason, source: result.source } }));
       })
-      .catch(() => {});
+      .catch(() => {
+        if (!cancelled) setLayersStatus((current) => ({ ...current, flights: { ...(current.flights ?? {}), reason: "Flight layer unavailable" } }));
+      });
 
     return () => {
       cancelled = true;
@@ -6162,11 +6390,23 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
   }, [activeLayers.flights]);
 
   useEffect(() => {
-    if (!layersStatus.vessels?.enabled || !layersStatus.vessels?.configured) {
-      setActiveLayers((current) => ({ ...current, vessels: false }));
-      setPanelVisibility((current) => ({ ...current, vessels: false }));
-    }
-  }, [layersStatus.vessels]);
+    let cancelled = false;
+    if (!activeLayers.vessels) return undefined;
+
+    fetchVesselsLive()
+      .then((result) => {
+        if (cancelled) return;
+        setVessels(result.data ?? []);
+        setLayersStatus((current) => ({ ...current, vessels: { ...(current.vessels ?? {}), ...(result.quota ?? {}), enabled: result.enabled, configured: result.configured, reason: result.reason, source: result.source } }));
+      })
+      .catch(() => {
+        if (!cancelled) setLayersStatus((current) => ({ ...current, vessels: { ...(current.vessels ?? {}), reason: "Maritime layer unavailable" } }));
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeLayers.vessels]);
 
   useEffect(() => {
     if (!layersStatus.social?.enabled || !layersStatus.social?.configured) {
@@ -6183,9 +6423,11 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
       .then((result) => {
         if (cancelled) return;
         setSatellites(result.data ?? []);
-        setLayersStatus((current) => ({ ...current, satellites: result.quota ?? current.satellites }));
+        setLayersStatus((current) => ({ ...current, satellites: { ...(current.satellites ?? {}), ...(result.quota ?? {}), enabled: result.enabled, configured: result.configured, reason: result.reason, source: result.source } }));
       })
-      .catch(() => {});
+      .catch(() => {
+        if (!cancelled) setLayersStatus((current) => ({ ...current, satellites: { ...(current.satellites ?? {}), reason: "Satellite layer unavailable" } }));
+      });
 
     return () => {
       cancelled = true;
@@ -6287,6 +6529,18 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
     () => buildStrategicSituations(filteredEvents),
     [filteredEvents]
   );
+  const renderedFlights = useMemo(
+    () => flights.slice(0, getLayerDensityCap("flights", layerDensity.flights)),
+    [flights, layerDensity.flights]
+  );
+  const renderedVessels = useMemo(
+    () => vessels.slice(0, getLayerDensityCap("vessels", layerDensity.vessels)),
+    [vessels, layerDensity.vessels]
+  );
+  const renderedSatellites = useMemo(
+    () => satellites.slice(0, getLayerDensityCap("satellites", layerDensity.satellites)),
+    [satellites, layerDensity.satellites]
+  );
   const selectedMarketImpact = selectedMarketKey ? marketImpact[selectedMarketKey] ?? null : null;
 
   const confidenceStats = useMemo(() => {
@@ -6311,9 +6565,7 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
       if (key === "events" || key === "intelBoard") return true;
       if (key === "conflictZones") return true;
       if (key.startsWith("context")) return true;
-      if (key === "flights") return Boolean(layersStatus.flights?.enabled && layersStatus.flights?.configured);
-      if (key === "satellites") return Boolean(layersStatus.satellites?.enabled && layersStatus.satellites?.configured);
-      if (key === "vessels") return Boolean(layersStatus.vessels?.enabled && layersStatus.vessels?.configured);
+      if (key === "flights" || key === "satellites" || key === "vessels") return true;
       if (key === "social") return Boolean(layersStatus.social?.enabled && layersStatus.social?.configured);
       return false;
     });
@@ -6416,7 +6668,7 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
     if (selectedObject.type === "vessel" && !activeLayers.vessels) setSelectedObject(null);
     if (selectedObject.type === "satellite" && !activeLayers.satellites) setSelectedObject(null);
     if (selectedObject.type === "context" && !Object.keys(CONTEXT_LAYER_DEFS).some((key) => activeLayers[key])) setSelectedObject(null);
-  }, [activeLayers.flights, activeLayers.satellites, activeLayers.vessels, activeLayers.contextChokepoints, activeLayers.contextPorts, activeLayers.contextAirports, activeLayers.contextEnergy, selectedObject]);
+  }, [activeLayers.flights, activeLayers.satellites, activeLayers.vessels, activeLayers.contextChokepoints, activeLayers.contextPorts, activeLayers.contextAirports, activeLayers.contextEnergy, activeLayers.contextCities, activeLayers.contextMilitaryBases, selectedObject]);
 
   // ── Toggle a live layer ──────────────────────────────────────────────────────
   const handleLayerToggle = useCallback(key => {
@@ -6449,6 +6701,13 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
       if (layers && layers[key]) layers[key].visible = next[key];
       return next;
     });
+  }, []);
+
+  const handleLayerDensityChange = useCallback((key, value) => {
+    setLayerDensity((current) => ({
+      ...current,
+      [key]: DENSITY_OPTIONS.includes(value) ? value : "low",
+    }));
   }, []);
 
   // ── Three.js scene init ──────────────────────────────────────────────────────
@@ -6708,7 +6967,7 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
       });
     }
 
-    function rebuildContextLayer(layerState = {}) {
+    function rebuildContextLayer(layerState = {}, densityState = {}) {
       while (contextLayer.children.length > 0) {
         const child = contextLayer.children[0];
         contextLayer.remove(child);
@@ -6720,7 +6979,8 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
 
       for (const key of Object.keys(CONTEXT_LAYER_DEFS)) {
         if (!layerState[key]) continue;
-        getContextItemsForLayer(key).forEach((item) => {
+        const density = densityState[key] ?? DEFAULT_LAYER_DENSITY[key] ?? "low";
+        getContextItemsForLayer(key).slice(0, getLayerDensityCap(key, density)).forEach((item) => {
           contextLayer.add(makeContextMarker(item));
         });
       }
@@ -7010,8 +7270,8 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
         if (type === "satellites") rebuildSimpleLayer(satelliteLayer, items, "satellite");
         collectClickableObjects();
       },
-      syncContextLayers: (layerState) => {
-        rebuildContextLayer(layerState);
+      syncContextLayers: (layerState, densityState) => {
+        rebuildContextLayer(layerState, densityState);
         collectClickableObjects();
       },
       rebuildImpact: (event, scenarioIdx) => {
@@ -7023,7 +7283,7 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
       },
     };
 
-    rebuildContextLayer(activeLayers);
+    rebuildContextLayer(activeLayers, layerDensity);
     syncVisibleEvents(filteredEvents, activeLayers.conflictZones ? conflictZones : []);
 
     // ── Animation loop ────────────────────────────────────────────────────────
@@ -7053,11 +7313,13 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
       applyCam();
 
       const cameraDirection = camera.position.clone().normalize();
-      [hotspotLayer, zoneLayer, flightLayer, vesselLayer, satelliteLayer].forEach((layer) => {
+      [hotspotLayer, zoneLayer, flightLayer, vesselLayer, satelliteLayer, contextLayer].forEach((layer) => {
         layer.children.forEach((group) => {
           const surfaceNormal = group.userData.surfaceNormal;
           if (!surfaceNormal) return;
-          const alpha = getMarkerVisibilityAlpha(surfaceNormal, cameraDirection);
+          const detailThreshold = group.userData.detailThreshold ?? 9;
+          const detailAlpha = cam.radius <= detailThreshold ? 1 : Math.max(0, 1 - (cam.radius - detailThreshold) / 0.45);
+          const alpha = getMarkerVisibilityAlpha(surfaceNormal, cameraDirection) * detailAlpha;
           group.userData.visibilityAlpha = alpha;
           group.userData.clickableActive = alpha > 0.16;
           group.traverse((obj) => {
@@ -7181,20 +7443,20 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
   }, [activeLayers.events, activeLayers.conflictZones]);
 
   useEffect(() => {
-    sceneRef.current.syncObjectLayer?.("flights", activeLayers.flights ? flights : []);
-  }, [flights, activeLayers.flights]);
+    sceneRef.current.syncObjectLayer?.("flights", activeLayers.flights ? renderedFlights : []);
+  }, [renderedFlights, activeLayers.flights]);
 
   useEffect(() => {
-    sceneRef.current.syncObjectLayer?.("vessels", activeLayers.vessels ? vessels : []);
-  }, [vessels, activeLayers.vessels]);
+    sceneRef.current.syncObjectLayer?.("vessels", activeLayers.vessels ? renderedVessels : []);
+  }, [renderedVessels, activeLayers.vessels]);
 
   useEffect(() => {
-    sceneRef.current.syncObjectLayer?.("satellites", activeLayers.satellites ? satellites : []);
-  }, [satellites, activeLayers.satellites]);
+    sceneRef.current.syncObjectLayer?.("satellites", activeLayers.satellites ? renderedSatellites : []);
+  }, [renderedSatellites, activeLayers.satellites]);
 
   useEffect(() => {
-    sceneRef.current.syncContextLayers?.(activeLayers);
-  }, [activeLayers.contextChokepoints, activeLayers.contextPorts, activeLayers.contextAirports, activeLayers.contextEnergy]);
+    sceneRef.current.syncContextLayers?.(activeLayers, layerDensity);
+  }, [activeLayers.contextChokepoints, activeLayers.contextPorts, activeLayers.contextAirports, activeLayers.contextEnergy, activeLayers.contextCities, activeLayers.contextMilitaryBases, layerDensity.contextPorts, layerDensity.contextCities, layerDensity.contextMilitaryBases]);
 
   // Focus camera from sidebar click
   const focusEvent = useCallback(ev => {
@@ -7244,6 +7506,8 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
         {/* TOP BAR — fixed height, no flex shrink */}
         <TopBar counts={counts} bordersLoaded={bordersLoaded}
           activeLayers={activeLayers} onLayerToggle={handleLayerToggle}
+          layerDensity={layerDensity}
+          onDensityChange={handleLayerDensityChange}
           isMobile={isMobile}
           isTablet={isTablet}
           onWarRoom={() => setShowWarRoom(v => !v)}
@@ -7318,7 +7582,7 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
             ) : null}
             {panelVisibility.flights && activeLayers.flights ? (
               <FlightsPanel
-                flights={flights}
+                flights={renderedFlights}
                 status={layersStatus.flights}
                 onSelect={focusExternalObject}
                 onClose={() => setPanelVisibility((current) => ({ ...current, flights: false }))}
@@ -7326,7 +7590,7 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
             ) : null}
             {panelVisibility.vessels && activeLayers.vessels ? (
               <VesselsPanel
-                vessels={vessels}
+                vessels={renderedVessels}
                 status={layersStatus.vessels}
                 search={vesselSearch}
                 onSearchChange={setVesselSearch}
@@ -7336,7 +7600,7 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
             ) : null}
             {panelVisibility.satellites && activeLayers.satellites ? (
               <SatellitesPanel
-                satellites={satellites}
+                satellites={renderedSatellites}
                 status={layersStatus.satellites}
                 onSelect={focusExternalObject}
                 onClose={() => setPanelVisibility((current) => ({ ...current, satellites: false }))}
@@ -7553,10 +7817,14 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
             activeLayers={activeLayers}
             onLayerToggle={handleLayerToggle}
             layerEntries={visibleLayerEntries}
+            layerDensity={layerDensity}
+            onDensityChange={handleLayerDensityChange}
+            layersStatus={layersStatus}
             briefing={briefing}
             marketImpact={marketImpact}
-            flights={flights}
-            satellites={satellites}
+            flights={renderedFlights}
+            vessels={renderedVessels}
+            satellites={renderedSatellites}
             socialSignals={socialSignals}
             onBriefingSelect={handleBriefingSelect}
             onOpenIntelBoard={() => onNavigate?.("classic")}
