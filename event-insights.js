@@ -22,6 +22,15 @@ const STRATEGIC_REGIONS = [
   { label: "Kashmir", lat: 34.5, lng: 74.3, keywords: ["kashmir", "loc", "india", "pakistan", "srinagar"] },
 ];
 
+const GEO_ACCURACY_LABELS = {
+  exact: "Exact",
+  city: "City-level",
+  region: "Region-level",
+  country: "Country-level",
+  approximate: "Approximate",
+  unresolved: "Unresolved",
+};
+
 const WHY_THIS_MATTERS_RULES = [
   { pattern: /\b(hormuz|strait of hormuz)\b/i, text: "This matters because the Strait of Hormuz is a key oil transit chokepoint." },
   { pattern: /\b(taiwan|tsmc|semiconductor|chip)\b/i, text: "This matters because Taiwan-related instability can affect semiconductor supply chains and technology markets." },
@@ -501,6 +510,44 @@ export function inferLocationDetails(input, articles = []) {
   };
 }
 
+export function computeGeoAccuracy(event = {}) {
+  const location = inferLocationDetails(event);
+  const label = String(location.label ?? "").trim();
+  const corpus = buildCorpus(event);
+  const hasCoordinates = Number.isFinite(location.lat) && Number.isFinite(location.lng);
+  const existingConfidence = String(location.confidence ?? event.location?.confidence ?? "").toLowerCase();
+  const explicitCoordinateHint = /\b(gps|coordinates?|geo(?:located)?|latitude|longitude|at\s+\d{1,2}\.\d+)/i.test(corpus);
+  const cityHint = /\b(airport|port of|city of|capital|downtown|near [a-z][a-z\s-]{2,30})\b/i.test(corpus);
+  const countryOnlyHint = /\b(countrywide|nationwide|government|parliament|capital markets|central bank|ministry)\b/i.test(corpus);
+  const strategicRegion = STRATEGIC_REGIONS.find((region) => region.label.toLowerCase() === label.toLowerCase());
+
+  let value = "approximate";
+  let reason = "Location inferred from broad source context.";
+
+  if (!hasCoordinates || !label || UNKNOWN_LABELS.has(label.toLowerCase()) || label === REGION_UNDER_REVIEW) {
+    value = "unresolved";
+    reason = "No reliable public location match is available.";
+  } else if (explicitCoordinateHint && existingConfidence === "high") {
+    value = "exact";
+    reason = "Specific coordinates or high-confidence geolocation metadata were available.";
+  } else if (strategicRegion) {
+    value = "region";
+    reason = "Location inferred from regional, theater, or chokepoint match.";
+  } else if (cityHint || existingConfidence === "high") {
+    value = "city";
+    reason = "Location is precise enough for city-level situational awareness.";
+  } else if (countryOnlyHint || existingConfidence === "medium") {
+    value = "country";
+    reason = "Location appears country-level rather than pinpoint-specific.";
+  }
+
+  return {
+    value,
+    label: GEO_ACCURACY_LABELS[value] ?? "Approximate",
+    reason,
+  };
+}
+
 export function getLocationDisplay(location) {
   const inferred = inferLocationDetails({ location });
   return {
@@ -837,6 +884,168 @@ export function getRelatedEvents(event, events, limit = 3) {
     .filter((candidate) => candidate._relatedScore > 0)
     .sort((a, b) => b._relatedScore - a._relatedScore)
     .slice(0, limit);
+}
+
+function relationReasons(event, candidate) {
+  const reasons = [];
+  const eventRegion = String(event.location?.label ?? "").toLowerCase();
+  const candidateRegion = String(candidate.location?.label ?? "").toLowerCase();
+  if (eventRegion && eventRegion === candidateRegion) reasons.push(`same region: ${candidate.location?.label}`);
+  const eventTags = new Set(getMarketImpactTags(event).map((item) => item.toLowerCase()));
+  const sharedSectors = getMarketImpactTags(candidate).filter((tag) => eventTags.has(tag.toLowerCase()));
+  if (sharedSectors.length > 0) reasons.push(`same sector: ${sharedSectors.slice(0, 2).join(", ")}`);
+  const eventKeywords = new Set((event.keywords ?? []).map((keyword) => String(keyword).toLowerCase()));
+  const sharedKeywords = (candidate.keywords ?? []).filter((keyword) => eventKeywords.has(String(keyword).toLowerCase()));
+  if (sharedKeywords.length > 0) reasons.push(`shared keywords: ${sharedKeywords.slice(0, 3).join(", ")}`);
+  if ((event.clusterSignature ?? event.cluster_signature) && (event.clusterSignature ?? event.cluster_signature) === (candidate.clusterSignature ?? candidate.cluster_signature)) {
+    reasons.push("same source cluster");
+  }
+  return reasons;
+}
+
+export function getRelatedSignalEvidence(event, events = [], limit = 4) {
+  return getRelatedEvents(event, events, limit).map((candidate) => ({
+    event: candidate,
+    reasons: relationReasons(event, candidate),
+  }));
+}
+
+export function buildEvidenceSummary(event = {}, allEvents = []) {
+  const signals = getEventSourceSignals(event);
+  const geoAccuracy = computeGeoAccuracy(event);
+  const sourceAssessment = event.sourceAssessment ?? event.source_assessment ?? {};
+  const contentTypes = Array.isArray(sourceAssessment.contentTypes) ? sourceAssessment.contentTypes : [];
+  const sourceQuality = sourceAssessment.sourceQuality ?? sourceAssessment.sourceMix ?? null;
+  const latestSourceTime = event.newestSourceAt ?? event.newest_source_at ?? event.refreshedAt ?? event.refreshed_at ?? event.lastSeenAt ?? event.last_seen_at ?? event.updatedAt ?? event.updated_at ?? event.timestamp ?? null;
+  const relatedGrouped = Number(event.relatedSignalCount ?? event.related_signal_count ?? 0);
+  const aiStatus = event.aiStatus ?? event.ai_status ?? "fallback";
+  const related = getRelatedSignalEvidence(event, allEvents, 4);
+
+  return {
+    sourceCount: signals.sourceCount,
+    domainCount: signals.independentDomainCount,
+    sourceMix: sourceQuality || (signals.trustLabel === "Low" ? "limited classification" : `${signals.trustLabel.toLowerCase()} source quality`),
+    contentTypeMix: contentTypes.length ? unique(contentTypes).join(", ") : "limited classification",
+    confidence: event.confidence ?? "Low",
+    geoAccuracy,
+    latestSourceTime,
+    relatedGrouped,
+    aiStatus,
+    aiLabel: aiStatus === "enriched" || aiStatus === "cached" ? "AI Enriched" : aiStatus === "budget_exhausted" ? "AI budget exhausted" : "Rule-based",
+    providerCoverageCaveat: event.providerCoverageStatus ?? event.provider_coverage_status ?? null,
+    related,
+  };
+}
+
+function situationTemplateFor(corpus) {
+  if (/\b(hormuz|gulf|iran|tanker|oil|shipping)\b/i.test(corpus)) {
+    return {
+      title: "Hormuz Shipping and Energy Pressure",
+      underlyingPattern: "Coercive pressure around energy and shipping routes.",
+      possibleMotives: ["Negotiation leverage", "Maritime enforcement escalation", "Domestic or alliance signalling"],
+      competingHypotheses: ["Contained signalling cycle", "Maritime enforcement escalation", "Broader regional pressure campaign"],
+      watchIndicators: ["Tanker rerouting", "War-risk insurance changes", "Naval deployments", "Official Gulf, Iranian, and US statements"],
+    };
+  }
+  if (/\b(black sea|ukraine|russia|odesa|grain)\b/i.test(corpus)) {
+    return {
+      title: "Black Sea Maritime and Infrastructure Pressure",
+      underlyingPattern: "Maritime and infrastructure pressure cycle around Black Sea access.",
+      possibleMotives: ["Supply-route disruption", "Military pressure", "Negotiation leverage"],
+      competingHypotheses: ["Localized disruption", "Sustained maritime pressure", "Escalation around export infrastructure"],
+      watchIndicators: ["Port closures", "Grain/export disruption", "Naval warnings", "Infrastructure strikes"],
+    };
+  }
+  if (/\b(election|protest|coalition|balkans|eu|parliament)\b/i.test(corpus)) {
+    return {
+      title: "Political Stability Pressure",
+      underlyingPattern: "Political legitimacy, coalition, or alignment pressure.",
+      possibleMotives: ["Domestic instability", "Coalition bargaining", "External alignment pressure"],
+      competingHypotheses: ["Contained political dispute", "Wider legitimacy crisis", "External pressure amplifying domestic friction"],
+      watchIndicators: ["Protest scale", "EU/NATO statements", "Coalition breakdown", "Court or election decisions"],
+    };
+  }
+  if (/\b(cyber|infrastructure|outage|pipeline|sabotage)\b/i.test(corpus)) {
+    return {
+      title: "Cyber and Infrastructure Pressure",
+      underlyingPattern: "Disruption, coercion, or pre-positioning pressure against infrastructure.",
+      possibleMotives: ["Disruption/coercion", "Espionage or pre-positioning", "Deterrence signalling"],
+      competingHypotheses: ["Criminal disruption", "State-linked pressure", "Operational pre-positioning"],
+      watchIndicators: ["Cyber advisories", "Outage reports", "Attribution claims", "Sectoral spread"],
+    };
+  }
+  return {
+    title: "Emerging Strategic Situation",
+    underlyingPattern: "Related signals indicate a broader situation may be forming.",
+    possibleMotives: ["Signalling", "Operational pressure", "Negotiation leverage"],
+    competingHypotheses: ["Contained incident pattern", "Wider strategic pressure", "Unrelated coincident reporting"],
+    watchIndicators: ["Additional source corroboration", "Official statements", "Operational movement", "Market or infrastructure effects"],
+  };
+}
+
+export function buildStrategicSituations(events = [], limit = 5) {
+  const candidates = Array.isArray(events) ? events.filter(Boolean) : [];
+  const groups = new Map();
+
+  for (const event of candidates) {
+    const region = inferLocationDetails(event).label ?? "Region under review";
+    const corpus = buildCorpus(event);
+    const template = situationTemplateFor(corpus);
+    const key = `${region.toLowerCase()}::${template.title.toLowerCase()}`;
+    const current = groups.get(key) ?? { region, template, events: [] };
+    current.events.push(event);
+    groups.set(key, current);
+  }
+
+  return [...groups.values()]
+    .map(({ region, template, events: linkedEvents }) => {
+      const sorted = [...linkedEvents].sort((a, b) => new Date(b.timestamp ?? 0) - new Date(a.timestamp ?? 0));
+      const sourceCount = sorted.reduce((sum, event) => sum + getEventSourceSignals(event).sourceCount, 0);
+      const keywords = unique(sorted.flatMap((event) => event.keywords ?? [])).slice(0, 12);
+      const sectors = unique(sorted.flatMap(getMarketImpactTags)).slice(0, 8);
+      const impactScore = Math.round(sorted.reduce((sum, event) => sum + Number(event.impactScore ?? event.importanceScore ?? 0), 0) / Math.max(1, sorted.length));
+      const confidenceScore = Math.round(sorted.reduce((sum, event) => sum + Number(event.confidenceScore ?? 0), 0) / Math.max(1, sorted.length));
+      const firstSeenAt = sorted.map((event) => event.timestamp).filter(Boolean).sort()[0] ?? null;
+      const lastSeenAt = sorted.map((event) => event.refreshedAt ?? event.updatedAt ?? event.timestamp).filter(Boolean).sort().at(-1) ?? null;
+      const confidence = sorted.length >= 3 && sourceCount >= 6 ? "Medium" : sorted.length >= 2 ? "Low-Medium" : "Low";
+
+      return {
+        id: `situation-${region.toLowerCase().replace(/[^a-z0-9]+/g, "-")}-${template.title.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`,
+        title: `${region}: ${template.title}`,
+        region,
+        primaryCategory: sorted[0]?.category ?? "Strategic risk",
+        linkedEventIds: sorted.map((event) => event.id),
+        linkedSignalCount: sorted.length,
+        sourceCount,
+        firstSeenAt,
+        lastSeenAt,
+        trend: deriveRecentTrend(sorted[0] ?? {}, sorted),
+        impactScore,
+        confidenceScore,
+        sectors,
+        actors: keywords.filter((keyword) => /iran|us|gulf|russia|ukraine|china|taiwan|eu|nato|houthi/i.test(keyword)).slice(0, 8),
+        keywords,
+        strategicInference: {
+          summary: `${region} signals point to ${template.underlyingPattern.toLowerCase()} This is a working interpretation, not confirmation of intent.`,
+          underlyingPattern: template.underlyingPattern,
+          possibleMotives: template.possibleMotives,
+          competingHypotheses: template.competingHypotheses,
+          supportingSignals: sorted.slice(0, 4).map((event) => event.title),
+          contradictingSignals: ["Open-source reporting may be duplicated, delayed, or incomplete."],
+          watchIndicators: template.watchIndicators,
+          confidence,
+          confidenceRationale: `${sorted.length} linked signal${sorted.length === 1 ? "" : "s"} and ${sourceCount} source signal${sourceCount === 1 ? "" : "s"} support this cautious grouping.`,
+          limitations: ["Rule-based inference only.", "Does not confirm motive or intent.", "Requires continued source corroboration."],
+        },
+      };
+    })
+    .filter((situation) => situation.linkedSignalCount >= 2 || situation.impactScore >= 65)
+    .sort((a, b) => b.linkedSignalCount - a.linkedSignalCount || b.impactScore - a.impactScore)
+    .slice(0, limit);
+}
+
+export function findSituationForEvent(event, situations = []) {
+  return (situations ?? []).find((situation) => (situation.linkedEventIds ?? []).includes(event?.id)) ?? null;
 }
 
 function accumulateEventImpact(event) {

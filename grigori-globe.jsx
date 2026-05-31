@@ -7,6 +7,9 @@ import {
   buildEventBrief,
   buildBriefing,
   buildStrategicBrief,
+  buildEvidenceSummary,
+  buildStrategicSituations,
+  computeGeoAccuracy,
   DECISION_LENSES,
   deriveEventClassification,
   deriveImportance,
@@ -18,9 +21,12 @@ import {
   getEventSourceSignals,
   getMarketImpactTags,
   getOneLineSummary,
+  getRelatedSignalEvidence,
+  findSituationForEvent,
   inferLocationDetails,
   sanitizeEventNarrative,
 } from "./event-insights.js";
+import { CONTEXT_LAYER_DEFS, CONTEXT_LAYER_STORAGE_KEY, getContextItemsForLayer } from "./context-layers.js";
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // DATA
@@ -1022,7 +1028,9 @@ function makeHotspot(ev) {
 
   const scored     = SCORED_EVENTS.find(s => s.id === ev.id) || ev;
   const pLevel     = scored.priorityLevel || "LOW";
-  const sizeScale  = ({ CRITICAL: 1.26, HIGH: 1.12, WATCH: 0.92, LOW: 0.82 }[pLevel] ?? 0.9) * (ev.lensMatched ? 1.04 : 1);
+  const geoAccuracyValue = ev.geoAccuracy?.value ?? ev.geoAccuracy ?? "approximate";
+  const geoSoftness = ["country", "approximate", "unresolved"].includes(geoAccuracyValue) ? 0.78 : geoAccuracyValue === "region" ? 0.9 : 1;
+  const sizeScale  = ({ CRITICAL: 1.26, HIGH: 1.12, WATCH: 0.92, LOW: 0.82 }[pLevel] ?? 0.9) * (ev.lensMatched ? 1.04 : 1) * geoSoftness;
   const markerLat = Number.isFinite(ev.displayLat) ? ev.displayLat : ev.lat;
   const markerLng = Number.isFinite(ev.displayLng) ? ev.displayLng : ev.lng;
   const surfacePos = geoToVec3(markerLat, markerLng, R + 0.014);
@@ -1077,7 +1085,8 @@ function makeHotspot(ev) {
   groundGlow.userData.baseOpacity = highVisibility ? 0.16 : 0.1;
 
   const hexFill = makeHex(0.0085, 0.12, true, { depthTest: true });
-  const hexOutline = makeHex(highVisibility ? 0.0118 : 0.0105, highVisibility ? 0.94 : 0.82, false);
+  const accuracyOpacity = geoSoftness < 0.8 ? 0.72 : geoSoftness < 1 ? 0.84 : 1;
+  const hexOutline = makeHex(highVisibility ? 0.0118 : 0.0105, (highVisibility ? 0.94 : 0.82) * accuracyOpacity, false);
   const core = makeDisc(0.0028, 0xffffff, 0.92);
   core.userData = { clickable: true, eventId: ev.id, objectType: "event", objectData: ev };
   core.userData.markerGroup = group;
@@ -1410,6 +1419,44 @@ function makeObjectMarker(item, type) {
   return group;
 }
 
+function makeContextMarker(item) {
+  const colorMap = {
+    chokepoint: "#f7b84b",
+    port: "#69e7ff",
+    airport: "#9bd6ff",
+    energy: "#6ee7b7",
+  };
+  const color = new THREE.Color(colorMap[item.type] ?? "#69e7ff");
+  const pos = geoToVec3(item.lat, item.lng, R + 0.018);
+  const outward = geoToVec3(item.lat, item.lng, 1.0).normalize();
+  const group = new THREE.Group();
+  group.userData = { objectType: "context", objectData: item, surfaceNormal: outward.clone(), markerType: "context" };
+
+  const ring = new THREE.Mesh(
+    new THREE.RingGeometry(0.009, 0.013, 18),
+    new THREE.MeshBasicMaterial({
+      color,
+      transparent: true,
+      opacity: 0.54,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+      depthTest: false,
+      blending: THREE.AdditiveBlending,
+    })
+  );
+  const hit = new THREE.Mesh(
+    new THREE.CircleGeometry(IS_MOBILE ? 0.034 : 0.022, 18),
+    new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.01, depthWrite: false, depthTest: false })
+  );
+  ring.userData = { baseOpacity: 0.54 };
+  hit.userData = { clickable: true, objectType: "context", objectData: item, baseOpacity: 0.01 };
+  hit.userData.markerGroup = group;
+  group.add(hit, ring);
+  group.position.copy(pos);
+  group.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), outward);
+  return group;
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 
 
@@ -1592,6 +1639,7 @@ function decorateEventForUi(event) {
   const sourceSignals = getEventSourceSignals(event);
   const importanceScore = Number(event.importanceScore ?? event.priorityScore ?? deriveImportance(event));
   const location = inferLocationDetails(event);
+  const geoAccuracy = computeGeoAccuracy({ ...event, location });
   const classification = deriveEventClassification({ ...event, location });
 
   return {
@@ -1599,6 +1647,7 @@ function decorateEventForUi(event) {
     lat: Number.isFinite(location.lat) ? location.lat : (Number.isFinite(event.lat) ? event.lat : null),
     lng: Number.isFinite(location.lng) ? location.lng : (Number.isFinite(event.lng) ? event.lng : null),
     location,
+    geoAccuracy,
     hasRenderableLocation: Number.isFinite(location.lat) && Number.isFinite(location.lng),
     importanceScore,
     category: event.category ?? classification.category,
@@ -2238,7 +2287,7 @@ function BriefingPanel({ briefing, strategicBrief, selectedLens, onLensChange, o
   );
 }
 
-function BriefingCompactCard({ briefing, strategicBrief, systemStatus, feedState, onOpen, onDismiss, leftOffset = 304 }) {
+function BriefingCompactCard({ briefing, strategicBrief, systemStatus, feedState, situations = [], onOpen, onDismiss, leftOffset = 304 }) {
   const firstItem = briefing?.items?.[0] ?? null;
   const newsFreshness = getDataFreshness(systemStatus?.automation?.lastNewsRefreshAt);
   const aiFreshness = getDataFreshness(systemStatus?.automation?.lastAiRefreshAt);
@@ -2327,6 +2376,7 @@ function BriefingCompactCard({ briefing, strategicBrief, systemStatus, feedState
       <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
         <TrafficPill level={newsFreshness.tone}>News {newsFreshness.label}</TrafficPill>
         <TrafficPill level={aiFreshness.tone}>{formatAiFreshnessLabel(aiFreshness)}</TrafficPill>
+        {situations.length > 0 ? <TrafficPill level="amber">{situations.length} situations forming</TrafficPill> : null}
       </div>
     </div>
   );
@@ -3116,6 +3166,16 @@ function readStoredBoolean(key, fallback) {
   if (value === "true") return true;
   if (value === "false") return false;
   return fallback;
+}
+
+function readStoredContextLayers() {
+  if (typeof window === "undefined") return {};
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(CONTEXT_LAYER_STORAGE_KEY) ?? "{}");
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
 }
 
 const ACTIVE_SIGNAL_SORT_OPTIONS = [
@@ -3973,6 +4033,10 @@ function WarRoomPanel({ topEvents, onSelect, selectedEventId, onClose, marketImp
 function EventDetailContent({ event, activeScenario, onScenarioChange, allEvents = [], socialSignals = [] }) {
   const cfg = INTENSITY[event.intensity];
   const brief = buildEventBrief(event, allEvents);
+  const evidence = buildEvidenceSummary(event, allEvents);
+  const situations = buildStrategicSituations(allEvents);
+  const situation = findSituationForEvent(event, situations);
+  const relatedSignals = getRelatedSignalEvidence(event, allEvents, 4);
   const sourceLine = brief.sourceTrace.domains.slice(0, 3).join(", ") || "No named sources";
   const eventStateLabels = getEventStateLabels(event);
   const linkedSignals = socialSignals
@@ -4009,6 +4073,9 @@ function EventDetailContent({ event, activeScenario, onScenarioChange, allEvents
           <span style={{ color: "rgba(0,180,255,0.38)", fontSize: 9, fontFamily: mono }}>
             {event.location?.lat != null && event.location?.lng != null ? `${event.location.lat.toFixed(2)}°, ${event.location.lng.toFixed(2)}°` : brief.whereItHappened}
           </span>
+          <TrafficPill level={event.geoAccuracy?.value === "exact" || event.geoAccuracy?.value === "city" ? "green" : event.geoAccuracy?.value === "unresolved" ? "red" : "neutral"}>
+            Geo: {event.geoAccuracy?.label ?? evidence.geoAccuracy.label}
+          </TrafficPill>
           {eventStateLabels.map((item) => (
             <TrafficPill key={`${event.id}-${item.text}`} level={item.level}>{item.text}</TrafficPill>
           ))}
@@ -4048,6 +4115,65 @@ function EventDetailContent({ event, activeScenario, onScenarioChange, allEvents
             </div>
           ) : null}
         </div>
+
+        <div style={{ padding: "13px 18px", borderBottom: "1px solid rgba(0,180,255,0.07)" }}>
+          <div style={{ color: "rgba(0,200,255,0.3)", fontSize: 9, fontFamily: mono, letterSpacing: "0.15em", textTransform: "uppercase", marginBottom: 8 }}>
+            Evidence
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+            {[
+              ["Sources", `${evidence.sourceCount} signals / ${evidence.domainCount} domains`],
+              ["Source mix", evidence.sourceMix],
+              ["Geo accuracy", `${evidence.geoAccuracy.label} · ${evidence.geoAccuracy.reason}`],
+              ["Confidence", evidence.confidence],
+              ["Latest source", formatShortAge(evidence.latestSourceTime)],
+              ["AI enrichment", evidence.aiLabel],
+              ["Related grouped", String(evidence.relatedGrouped)],
+              ["Content type", evidence.contentTypeMix],
+            ].map(([label, value]) => (
+              <div key={label} style={{ background: "rgba(8,20,36,0.58)", border: "1px solid rgba(94,164,195,0.1)", borderRadius: 12, padding: "8px 10px" }}>
+                <div style={{ color: "rgba(120,178,214,0.52)", fontSize: 9, fontFamily: mono, letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 4 }}>{label}</div>
+                <div style={{ color: "rgba(214,235,255,0.84)", fontSize: 11, lineHeight: 1.45, fontFamily: bodyFont }}>{value || "limited classification"}</div>
+              </div>
+            ))}
+          </div>
+          {evidence.providerCoverageCaveat ? (
+            <div style={{ marginTop: 8, color: "rgba(255,191,71,0.78)", fontSize: 10, lineHeight: 1.55, fontFamily: mono }}>
+              Provider coverage caveat: {evidence.providerCoverageCaveat}
+            </div>
+          ) : null}
+        </div>
+
+        {situation ? (
+          <div style={{ padding: "13px 18px", borderBottom: "1px solid rgba(0,180,255,0.07)" }}>
+            <div style={{ color: "rgba(0,200,255,0.3)", fontSize: 9, fontFamily: mono, letterSpacing: "0.15em", textTransform: "uppercase", marginBottom: 8 }}>
+              Strategic Inference
+            </div>
+            <div style={{ color: "#d6ebff", fontSize: 13, fontFamily: display, fontWeight: 700, marginBottom: 6 }}>{situation.title}</div>
+            <div style={{ color: "rgba(180,220,255,0.74)", fontSize: 12, lineHeight: 1.65, marginBottom: 10 }}>
+              {situation.strategicInference.summary}
+            </div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 10 }}>
+              <TrafficPill level="neutral">{situation.linkedSignalCount} linked signals</TrafficPill>
+              <TrafficPill level={situation.strategicInference.confidence === "Medium" ? "amber" : "neutral"}>{situation.strategicInference.confidence} confidence</TrafficPill>
+              <TrafficPill level="neutral">{situation.trend}</TrafficPill>
+            </div>
+            <div style={{ color: "rgba(130,185,230,0.68)", fontSize: 10, lineHeight: 1.6, fontFamily: mono, marginBottom: 8 }}>
+              Working hypotheses: {situation.strategicInference.competingHypotheses.join(" · ")}
+            </div>
+            <div style={{ display: "grid", gap: 6 }}>
+              {situation.strategicInference.watchIndicators.slice(0, 4).map((indicator) => (
+                <div key={indicator} style={{ display: "flex", gap: 8, color: "rgba(155,205,250,0.72)", fontSize: 11, lineHeight: 1.5 }}>
+                  <span style={{ color: "rgba(0,200,255,0.55)" }}>•</span>
+                  <span>{indicator}</span>
+                </div>
+              ))}
+            </div>
+            <div style={{ marginTop: 8, color: "rgba(130,185,230,0.58)", fontSize: 10, lineHeight: 1.55, fontFamily: mono }}>
+              Limitation: {situation.strategicInference.limitations.join(" ")}
+            </div>
+          </div>
+        ) : null}
 
         <div style={{ padding: "13px 18px", borderBottom: "1px solid rgba(0,180,255,0.07)", display: "grid", gap: 12 }}>
           <div>
@@ -4269,12 +4395,17 @@ function EventDetailContent({ event, activeScenario, onScenarioChange, allEvents
           <div style={{ color: "rgba(0,200,255,0.3)", fontSize: 9, fontFamily: mono, letterSpacing: "0.15em", textTransform: "uppercase", marginBottom: 7 }}>
             Related Events
           </div>
-          {brief.relatedEvents.length > 0 ? (
+          {relatedSignals.length > 0 ? (
             <div style={{ display: "grid", gap: 8 }}>
-              {brief.relatedEvents.map((related) => (
+              {relatedSignals.map(({ event: related, reasons }) => (
                 <div key={related.id} style={{ background: "rgba(8,20,36,0.64)", border: "1px solid rgba(94,164,195,0.12)", borderRadius: 12, padding: "10px 11px" }}>
                   <div style={{ color: "#d6ebff", fontSize: 12, fontFamily: display, fontWeight: 700, marginBottom: 4 }}>{related.title}</div>
-                  <div style={{ color: "rgba(150,205,245,0.68)", fontSize: 11, lineHeight: 1.55 }}>{getOneLineSummary(related)}</div>
+                  <div style={{ color: "rgba(150,205,245,0.68)", fontSize: 11, lineHeight: 1.55, marginBottom: 7 }}>{getOneLineSummary(related)}</div>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                    {(reasons.length ? reasons : ["related by signal pattern"]).slice(0, 3).map((reason) => (
+                      <TrafficPill key={reason} level="neutral">{reason}</TrafficPill>
+                    ))}
+                  </div>
                 </div>
               ))}
             </div>
@@ -4364,6 +4495,15 @@ function SelectedObjectCard({ selected, onClose, onZoom, onClearSelection, mobil
         ["Status", data.status],
         ["Updated", formatLayerTime(data.updatedAt)],
       ]
+    : type === "context"
+      ? [
+          ["Name", data.name],
+          ["Type", data.type],
+          ["Region", data.region],
+          ["Geo accuracy", data.geoAccuracy ? String(data.geoAccuracy).replace("_", " ") : "approximate"],
+          ["Why it matters", data.whyItMatters],
+          ["Tags", (data.tags ?? []).join(", ") || "n/a"],
+        ]
     : type === "vessel"
       ? [
           ["Ship", data.name],
@@ -4434,6 +4574,19 @@ function SelectedObjectCard({ selected, onClose, onZoom, onClearSelection, mobil
           </div>
         ))}
       </div>
+      {type === "context" ? (
+        <div style={{ color: "rgba(130,185,230,0.62)", fontSize: 10, lineHeight: 1.6, fontFamily: mono }}>
+          External/context layers are situational aids and may be incomplete.
+          {data.externalUrl ? (
+            <>
+              {" "}
+              <a href={data.externalUrl} target="_blank" rel="noreferrer" style={{ color: "#89ddff" }}>
+                External public source
+              </a>
+            </>
+          ) : null}
+        </div>
+      ) : null}
       <div style={{ display: "flex", gap: 8 }}>
         <button onClick={onZoom} style={{ flex: 1, padding: "10px 12px", borderRadius: 14, border: "1px solid rgba(87,216,255,0.18)", background: "rgba(10,31,52,0.76)", color: "#d6ebff", fontFamily: mono, letterSpacing: "0.1em", textTransform: "uppercase" }}>Zoom to object</button>
         <button onClick={onClearSelection} style={{ flex: 1, padding: "10px 12px", borderRadius: 14, border: "1px solid rgba(255,90,120,0.18)", background: "rgba(42,15,23,0.72)", color: "#ffd6df", fontFamily: mono, letterSpacing: "0.1em", textTransform: "uppercase" }}>Clear selection</button>
@@ -4831,12 +4984,15 @@ function MobileBottomSheet({ events, selectedEvent, activeScenario, onScenarioCh
               <div style={{ display: "grid", gap: 12 }}>
                 <div style={{ display: "grid", gap: 10, background: "rgba(8,20,36,0.78)", border: "1px solid rgba(94,164,195,0.14)", borderRadius: 14, padding: 12 }}>
                   <div style={{ color: "rgba(103,220,255,0.48)", fontSize: 10, fontFamily: mono, letterSpacing: "0.14em", textTransform: "uppercase" }}>
-                    Display Layers
+                    Context & Display Layers
                   </div>
                   <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
                     {layerEntries.map(([key, def]) => (
                       <LayerToggleChip key={key} layerKey={key} def={def} active={activeLayers[key]} onToggle={onLayerToggle} />
                     ))}
+                  </div>
+                  <div style={{ color: "rgba(150,200,240,0.56)", fontSize: 10, lineHeight: 1.55, fontFamily: bodyFont }}>
+                    Context layers are static situational aids and may be incomplete.
                   </div>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, paddingTop: 8, borderTop: "1px solid rgba(94,164,195,0.12)" }}>
                     <span style={{ color: "rgba(214,235,255,0.84)", fontSize: 12, fontFamily: bodyFont }}>Day/Night lighting</span>
@@ -5023,6 +5179,7 @@ const LAYER_DEFS = {
   vessels: { label: "VESSELS", icon: "◫", color: "#8cf0c9", desc: "Live vessel layer" },
   satellites: { label: "SATELLITES", icon: "◉", color: "#c68dff", desc: "Orbital layer" },
   social: { label: "SOCIAL", icon: "⌁", color: "#88b9ff", desc: "Early-warning social signals" },
+  ...CONTEXT_LAYER_DEFS,
   intelBoard: { label: "INTEL BOARD", icon: "▣", color: "#ffd166", desc: "Intel panels" },
 };
 
@@ -5450,11 +5607,14 @@ function TopBar({ counts, bordersLoaded, activeLayers, onLayerToggle, isMobile, 
         {showLayersMenu && !compact ? (
           <HeaderPopover right={demoMode ? 0 : 88} minWidth={252}>
             <div style={{ padding: "12px", display: "grid", gap: 10 }}>
-              <div style={{ color: "rgba(103, 220, 255, 0.48)", fontSize: 10, fontFamily: mono, letterSpacing: "0.12em", textTransform: "uppercase" }}>Layers</div>
+              <div style={{ color: "rgba(103, 220, 255, 0.48)", fontSize: 10, fontFamily: mono, letterSpacing: "0.12em", textTransform: "uppercase" }}>Context & Display Layers</div>
               <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
                 {publicLayerEntries.map(([key, def]) => (
                   <LayerToggleChip key={key} layerKey={key} def={def} active={activeLayers[key]} onToggle={onLayerToggle} />
                 ))}
+              </div>
+              <div style={{ color: "rgba(150,200,240,0.56)", fontSize: 10, lineHeight: 1.55, fontFamily: bodyFont }}>
+                Context layers are static situational aids and may be incomplete.
               </div>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, paddingTop: 8, borderTop: "1px solid rgba(94,164,195,0.12)" }}>
                 <span style={{ color: "rgba(214,235,255,0.84)", fontSize: 12, fontFamily: bodyFont }}>Day/Night lighting</span>
@@ -5794,9 +5954,20 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
   const [bordersLoaded,  setBordersLoaded]  = useState(false);
   const [ready,          setReady]          = useState(false);
   const [liveSunEnabled, setLiveSunEnabled] = useState(true);
-  const [activeLayers,   setActiveLayers]   = useState({
-    events: true, conflictZones: false, flights: false, vessels: false, satellites: false, social: false, intelBoard: true,
-  });
+  const [activeLayers,   setActiveLayers]   = useState(() => ({
+    events: true,
+    conflictZones: false,
+    flights: false,
+    vessels: false,
+    satellites: false,
+    social: false,
+    contextChokepoints: true,
+    contextPorts: false,
+    contextAirports: false,
+    contextEnergy: false,
+    intelBoard: true,
+    ...readStoredContextLayers(),
+  }));
   const [panelVisibility, setPanelVisibility] = useState(() => ({
     events: readStoredBoolean(ACTIVE_SIGNALS_STORAGE_KEY, true),
     briefing: readStoredBoolean(BRIEFING_PANEL_STORAGE_KEY, false),
@@ -5966,6 +6137,14 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
   }, [introDismissed]);
 
   useEffect(() => {
+    if (typeof window === "undefined") return;
+    const contextState = Object.fromEntries(
+      Object.keys(CONTEXT_LAYER_DEFS).map((key) => [key, Boolean(activeLayers[key])])
+    );
+    window.localStorage.setItem(CONTEXT_LAYER_STORAGE_KEY, JSON.stringify(contextState));
+  }, [activeLayers.contextChokepoints, activeLayers.contextPorts, activeLayers.contextAirports, activeLayers.contextEnergy]);
+
+  useEffect(() => {
     let cancelled = false;
     if (!activeLayers.flights) return undefined;
 
@@ -6104,6 +6283,10 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
     () => buildStrategicBrief(filteredEvents, { ...systemStatus, marketSummary: marketData?.summary ?? null }, selectedLens),
     [filteredEvents, systemStatus, selectedLens, marketData]
   );
+  const strategicSituations = useMemo(
+    () => buildStrategicSituations(filteredEvents),
+    [filteredEvents]
+  );
   const selectedMarketImpact = selectedMarketKey ? marketImpact[selectedMarketKey] ?? null : null;
 
   const confidenceStats = useMemo(() => {
@@ -6127,6 +6310,7 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
     return Object.entries(LAYER_DEFS).filter(([key]) => {
       if (key === "events" || key === "intelBoard") return true;
       if (key === "conflictZones") return true;
+      if (key.startsWith("context")) return true;
       if (key === "flights") return Boolean(layersStatus.flights?.enabled && layersStatus.flights?.configured);
       if (key === "satellites") return Boolean(layersStatus.satellites?.enabled && layersStatus.satellites?.configured);
       if (key === "vessels") return Boolean(layersStatus.vessels?.enabled && layersStatus.vessels?.configured);
@@ -6231,7 +6415,8 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
     if (selectedObject.type === "flight" && !activeLayers.flights) setSelectedObject(null);
     if (selectedObject.type === "vessel" && !activeLayers.vessels) setSelectedObject(null);
     if (selectedObject.type === "satellite" && !activeLayers.satellites) setSelectedObject(null);
-  }, [activeLayers.flights, activeLayers.satellites, activeLayers.vessels, selectedObject]);
+    if (selectedObject.type === "context" && !Object.keys(CONTEXT_LAYER_DEFS).some((key) => activeLayers[key])) setSelectedObject(null);
+  }, [activeLayers.flights, activeLayers.satellites, activeLayers.vessels, activeLayers.contextChokepoints, activeLayers.contextPorts, activeLayers.contextAirports, activeLayers.contextEnergy, selectedObject]);
 
   // ── Toggle a live layer ──────────────────────────────────────────────────────
   const handleLayerToggle = useCallback(key => {
@@ -6501,10 +6686,12 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
     const flightLayer = new THREE.Group();
     const vesselLayer = new THREE.Group();
     const satelliteLayer = new THREE.Group();
+    const contextLayer = new THREE.Group();
     flightLayer.visible = false;
     vesselLayer.visible = false;
     satelliteLayer.visible = false;
-    scene.add(flightLayer, vesselLayer, satelliteLayer);
+    contextLayer.visible = true;
+    scene.add(flightLayer, vesselLayer, satelliteLayer, contextLayer);
 
     function rebuildSimpleLayer(layer, items, type) {
       while (layer.children.length > 0) {
@@ -6521,9 +6708,27 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
       });
     }
 
+    function rebuildContextLayer(layerState = {}) {
+      while (contextLayer.children.length > 0) {
+        const child = contextLayer.children[0];
+        contextLayer.remove(child);
+        child.traverse((obj) => {
+          obj.geometry?.dispose?.();
+          obj.material?.dispose?.();
+        });
+      }
+
+      for (const key of Object.keys(CONTEXT_LAYER_DEFS)) {
+        if (!layerState[key]) continue;
+        getContextItemsForLayer(key).forEach((item) => {
+          contextLayer.add(makeContextMarker(item));
+        });
+      }
+    }
+
     function collectClickableObjects() {
       clickableObjects = [];
-      [hotspotLayer, zoneLayer, flightLayer, vesselLayer, satelliteLayer].forEach((layer) => {
+      [hotspotLayer, zoneLayer, flightLayer, vesselLayer, satelliteLayer, contextLayer].forEach((layer) => {
         layer.traverse((obj) => {
           if (obj.userData.clickable) clickableObjects.push(obj);
         });
@@ -6644,13 +6849,15 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
         let tooltipText = null;
         if (hit.objectType === "event") {
           const ev2 = interactiveEvents.find(ev => ev.id === hit.eventId);
-          tooltipText = ev2 ? `${ev2.title}\n${ev2.location?.label ?? "Location under review"} · ${ev2.category ?? "Political"} · ${ev2.tone}\nImpact ${ev2.impactScore ?? ev2.importanceScore ?? 0} · Severity ${ev2.severityScore ?? 0}` : null;
+          tooltipText = ev2 ? `${ev2.title}\n${ev2.location?.label ?? "Location under review"} · Geo accuracy: ${ev2.geoAccuracy?.label ?? "Approximate"}\n${ev2.category ?? "Political"} · ${ev2.tone} · Impact ${ev2.impactScore ?? ev2.importanceScore ?? 0}` : null;
         } else if (hit.objectType === "zone") {
           const zone = hit.objectData;
           tooltipText = zone ? `${zone.label}\n${zone.eventCount} events · ${zone.sourcesCount} sources` : null;
         } else {
           const obj = hit.objectData;
-          tooltipText = obj?.title ?? obj?.name ?? obj?.flightNumber ?? null;
+          tooltipText = hit.objectType === "context" && obj
+            ? `${obj.name}\n${obj.type} · ${obj.region}\nContext layer · ${String(obj.geoAccuracy ?? "approximate").replace("_", " ")}`
+            : obj?.title ?? obj?.name ?? obj?.flightNumber ?? null;
         }
         setTooltip({ text: tooltipText, x: e.clientX, y: e.clientY });
         container.style.cursor = "pointer";
@@ -6788,7 +6995,7 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
         sunLive = enabled !== false;
         updateSunLighting(true);
       },
-      liveLayers: { flights: flightLayer, vessels: vesselLayer, satellites: satelliteLayer },
+      liveLayers: { flights: flightLayer, vessels: vesselLayer, satellites: satelliteLayer, context: contextLayer },
       setSelectedEventHighlight: (selectedId) => {
         hotspotLayer.children.forEach((group) => {
           const isSelected = group.userData.eventId === selectedId;
@@ -6803,6 +7010,10 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
         if (type === "satellites") rebuildSimpleLayer(satelliteLayer, items, "satellite");
         collectClickableObjects();
       },
+      syncContextLayers: (layerState) => {
+        rebuildContextLayer(layerState);
+        collectClickableObjects();
+      },
       rebuildImpact: (event, scenarioIdx) => {
         scene.remove(impactLayer);
         impactLayer.traverse(o => { o.geometry?.dispose(); o.material?.dispose(); });
@@ -6812,6 +7023,7 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
       },
     };
 
+    rebuildContextLayer(activeLayers);
     syncVisibleEvents(filteredEvents, activeLayers.conflictZones ? conflictZones : []);
 
     // ── Animation loop ────────────────────────────────────────────────────────
@@ -6979,6 +7191,10 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
   useEffect(() => {
     sceneRef.current.syncObjectLayer?.("satellites", activeLayers.satellites ? satellites : []);
   }, [satellites, activeLayers.satellites]);
+
+  useEffect(() => {
+    sceneRef.current.syncContextLayers?.(activeLayers);
+  }, [activeLayers.contextChokepoints, activeLayers.contextPorts, activeLayers.contextAirports, activeLayers.contextEnergy]);
 
   // Focus camera from sidebar click
   const focusEvent = useCallback(ev => {
@@ -7187,6 +7403,7 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
             strategicBrief={strategicBrief}
             systemStatus={systemStatus}
             feedState={feedState}
+            situations={strategicSituations}
             onOpen={handleOpenBriefing}
             onDismiss={handleDismissBriefingCompact}
             leftOffset={panelVisibility.events && activeLayers.intelBoard ? 302 : 18}
