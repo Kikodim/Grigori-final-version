@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createClient } from "@supabase/supabase-js";
 import { BRAND, PREMIUM_PLANS, REPORT_INPUT_OPTIONS, REPORT_OUTPUT_SECTIONS, REPORT_STATUS_BADGE, REPORTS_WIP_COPY } from "../premium-config.js";
 
@@ -26,6 +26,107 @@ const WAITLIST_TIER_OPTIONS = [
 ];
 const BRAND_WORDMARK = "/assets/brand/grigori-wordmark.svg";
 const BRAND_REPORT_LOCKUP = "/assets/brand/grigori-report-lockup.svg";
+
+const SAMPLE_REPORT = {
+  id: "sample-energy-shipping-morning-brief",
+  title: "Energy & Shipping Morning Brief",
+  sample_report: true,
+  generated_at: "2026-06-04T06:30:00.000Z",
+  region: "Strait of Hormuz",
+  focus_area: "Energy / Shipping",
+  confidence_level: "Medium",
+  content: {
+    sampleReport: true,
+    title: "Energy & Shipping Morning Brief",
+    region: "Strait of Hormuz",
+    focusArea: "Energy / Shipping",
+    timeHorizon: "72 hours",
+    audienceType: "Executive / Analyst",
+    riskFraming: "Balanced",
+    generatedAt: "2026-06-04T06:30:00.000Z",
+    aiStatus: "sample",
+    executiveSummary: "Sample report · generated example · not live advice. Hormuz-linked energy and shipping signals remain the highest-attention cluster in this example brief, with market sensitivity concentrated around tanker movement, war-risk insurance, naval posture, and official statements. Grigori would treat this as a monitoring and decision-support product rather than a prediction.",
+    keyJudgments: [
+      "The signal environment would merit executive attention if fresh reporting links military pressure, maritime warnings, and oil-market sensitivity in the same window.",
+      "Operational exposure is concentrated around Gulf export routes, regional ports, tanker routing, and energy-price volatility.",
+      "Confidence remains medium in this sample because source mix, corroboration, and precise location would still need continuous review.",
+    ],
+    topSignals: [
+      "Strait of Hormuz shipping and naval posture cluster",
+      "Gulf energy-export route sensitivity",
+      "Insurance and rerouting watch indicators around nearby ports",
+    ],
+    currentSituation: "This sample illustrates how a paid Grigori report could turn clustered OSINT signals into an analyst-style morning brief. The report separates what is known, what is inferred, what would change the assessment, and which operational indicators deserve follow-up.",
+    contextFusion: "Context Fusion would combine signal freshness, source reliability, nearby chokepoints, major ports such as Fujairah and Jebel Ali, energy infrastructure exposure, related stored signals, and market context. The location should be read as region/chokepoint-level unless source metadata provides exact coordinates.",
+    whatChanged: [
+      "A fresh cluster would be promoted if higher-tier reporting or official statements confirmed maritime pressure.",
+      "Related source clusters would be grouped under the strongest eligible signal instead of repeated as duplicate cards.",
+      "A weak single-source claim would remain in Signal Watch until credible corroboration arrives.",
+    ],
+    trendAnalysis: "The working interpretation in this sample is cautious: pressure around a strategic chokepoint could affect shipping and energy risk, but the report would avoid claiming motive or forecasting escalation. Watch indicators are used to validate or challenge the assessment.",
+    scenarioMatrix: [
+      {
+        name: "Contained Pressure",
+        probability: 45,
+        summary: "Rhetoric and posture remain elevated, but shipping continues with limited disruption.",
+        implications: "Market sensitivity persists but does not become a sustained operational shock.",
+        triggers: ["No confirmed port closures", "Official statements remain calibrated", "Tanker movement continues"],
+        affectedSectors: ["Oil", "Shipping"],
+      },
+      {
+        name: "Maritime Enforcement Escalation",
+        probability: 35,
+        summary: "Additional inspections, warnings, or naval incidents increase route and insurance pressure.",
+        implications: "Shipping operators and energy-sensitive markets would monitor rerouting, premiums, and military posture.",
+        triggers: ["Naval escort announcements", "War-risk insurance pressure", "Tanker delays or rerouting"],
+        affectedSectors: ["Energy", "Insurance", "Logistics"],
+      },
+      {
+        name: "Diplomatic De-escalation",
+        probability: 20,
+        summary: "Official channels reduce immediate pressure while monitoring continues.",
+        implications: "Risk premium may ease, but the chokepoint remains a recurring watch area.",
+        triggers: ["Back-channel talks", "Lower official rhetoric", "Normalized port/tanker flow"],
+        affectedSectors: ["Oil", "Equities"],
+      },
+    ],
+    marketImpact: {
+      oil: "Potential upside volatility if route risk or official warnings intensify.",
+      shipping: "Possible rerouting, delay, insurance, and port-congestion sensitivity.",
+      equities: "Risk-off pressure may appear if the signal broadens into a sustained regional escalation.",
+      defense: "Security and escort posture may receive attention in an escalation scenario.",
+      tech: "Indirect exposure through broader risk sentiment and energy input sensitivity.",
+      summary: "Directional context only. This sample is not financial advice.",
+    },
+    watchIndicators: [
+      "Tanker rerouting or unusual dwell time near Gulf ports",
+      "War-risk insurance premium changes",
+      "Naval escort, inspection, or warning announcements",
+      "Official statements from Iran, Gulf states, the US, or shipping authorities",
+      "Oil-price volatility and shipping-rate sensitivity",
+    ],
+    confidenceAssessment: {
+      level: "Medium",
+      rationale: "The sample assumes region-level geolocation, plausible sector exposure, and a mixed source environment. Confidence would rise with independent T1/T2 confirmation, official statements, clearer location, and persistent operational indicators.",
+    },
+    sourceAssessment: {
+      sourceCount: 14,
+      sourceDiversity: "8 independent domains",
+      corroborationLevel: "Mixed corroboration",
+    },
+    limitations: [
+      "Sample report only; it is not live advice or a current market recommendation.",
+      "Open-source signals can be incomplete, delayed, duplicated, or wrong.",
+      "Scenario weights are directional estimates, not forecasts.",
+      "Grigori does not provide financial, legal, security, or investment advice.",
+    ],
+    sources: [
+      { domain: "Reuters", title: "Example high-trust wire signal placeholder", url: "" },
+      { domain: "Official maritime authority", title: "Example official-source placeholder", url: "" },
+      { domain: "Regional business press", title: "Example regional corroboration placeholder", url: "" },
+    ],
+  },
+};
 
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || "";
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY || "";
@@ -155,7 +256,7 @@ function HeaderNav({ activeView, onNavigate }) {
   );
 }
 
-function PlanCard({ plan, emphasized = false, actionLabel = "Coming Soon" }) {
+function PlanCard({ plan, emphasized = false, actionLabel = "Coming Soon", onAction }) {
   return (
     <div style={{
       border: `1px solid ${emphasized ? "rgba(125, 211, 252, 0.38)" : "rgba(51,65,85,0.92)"}`,
@@ -183,7 +284,7 @@ function PlanCard({ plan, emphasized = false, actionLabel = "Coming Soon" }) {
           </div>
         ))}
       </div>
-      <button style={{
+      <button onClick={onAction} style={{
         marginTop: "auto",
         border: "1px solid rgba(125,211,252,0.28)",
         borderRadius: 999,
@@ -201,7 +302,7 @@ function PlanCard({ plan, emphasized = false, actionLabel = "Coming Soon" }) {
   );
 }
 
-function SampleReportsSection({ isMobile = false }) {
+function SampleReportsSection({ isMobile = false, onOpenSample }) {
   const samples = [
     {
       title: "Energy & Shipping Morning Brief",
@@ -223,9 +324,51 @@ function SampleReportsSection({ isMobile = false }) {
     },
   ];
   return (
-    <ShellCard title="Preview Reports" eyebrow="Coming soon">
+    <ShellCard title="Sample & Preview Reports" eyebrow="Private Preview">
       <div style={{ color: "#cbd5e1", lineHeight: 1.8, marginBottom: 18 }}>
         Personalized reports will use your selected watchlists to generate morning briefs, scenario updates, and PDF exports. Sample formats show how paid briefings will package Grigori signals into structured, source-aware intelligence products.
+      </div>
+      <div style={{
+        border: "1px solid rgba(125,211,252,0.28)",
+        background: "linear-gradient(135deg, rgba(8,21,39,0.98), rgba(4,10,22,0.94))",
+        borderRadius: 20,
+        padding: isMobile ? 16 : 20,
+        display: "grid",
+        gridTemplateColumns: isMobile ? "1fr" : "1.1fr auto",
+        gap: 16,
+        alignItems: "center",
+        marginBottom: 16,
+      }}>
+        <div style={{ display: "grid", gap: 10 }}>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <PremiumBadge tone="success">Sample Report</PremiumBadge>
+            <PremiumBadge>Generated Example</PremiumBadge>
+            <PremiumBadge tone="warning">Not live advice</PremiumBadge>
+          </div>
+          <div style={{ color: "#f8fafc", fontSize: isMobile ? 21 : 26, fontFamily: DISPLAY_FONT, fontWeight: 800, letterSpacing: "0.02em" }}>
+            Energy & Shipping Morning Brief
+          </div>
+          <div style={{ color: "#cbd5e1", lineHeight: 1.7, maxWidth: 760 }}>
+            A polished example of the paid-report format: executive summary, key judgments, top signals, Context Fusion, scenario matrix, market impact, watch indicators, confidence, sources, and limitations.
+          </div>
+        </div>
+        <button
+          onClick={onOpenSample}
+          style={{
+            border: "1px solid rgba(125,211,252,0.34)",
+            borderRadius: 999,
+            background: "rgba(56,189,248,0.18)",
+            color: "#f8fafc",
+            padding: "12px 16px",
+            cursor: "pointer",
+            fontFamily: MONO_FONT,
+            letterSpacing: "0.1em",
+            textTransform: "uppercase",
+            whiteSpace: "nowrap",
+          }}
+        >
+          Open Sample Report
+        </button>
       </div>
       <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "repeat(3, minmax(0, 1fr))", gap: 14 }}>
         {samples.map((sample) => (
@@ -295,7 +438,7 @@ function InterestForm({ form, setForm, onSubmit, status, compact = false }) {
       <div style={{ display: "grid", gridTemplateColumns: compact ? "1fr" : "1.2fr 1fr", gap: 12 }}>
         <AuthField label="Email" type="email" value={form.email} onChange={(value) => setForm((current) => ({ ...current, email: value }))} placeholder="you@company.com" />
         <label style={{ display: "grid", gap: 8 }}>
-          <FieldLabel>Interested Tier</FieldLabel>
+          <FieldLabel>Access Interest</FieldLabel>
           <select
             value={form.interestTier}
             onChange={(event) => setForm((current) => ({ ...current, interestTier: event.target.value }))}
@@ -322,7 +465,7 @@ function InterestForm({ form, setForm, onSubmit, status, compact = false }) {
         />
       </div>
       <div style={{ display: "grid", gridTemplateColumns: compact ? "1fr" : "1fr 1fr", gap: 12 }}>
-        <AuthField label="Intended Use Case" value={form.intendedUseCase} onChange={(value) => setForm((current) => ({ ...current, intendedUseCase: value }))} placeholder="Board briefings, investing, security" />
+        <AuthField label="Role / Use Case" value={form.intendedUseCase} onChange={(value) => setForm((current) => ({ ...current, intendedUseCase: value }))} placeholder="Board briefings, investing, security" />
         <AuthField label="LinkedIn Profile (Optional)" value={form.linkedinProfile} onChange={(value) => setForm((current) => ({ ...current, linkedinProfile: value }))} placeholder="https://linkedin.com/in/..." />
       </div>
       <div style={{ display: "grid", gap: 8 }}>
@@ -345,7 +488,7 @@ function InterestForm({ form, setForm, onSubmit, status, compact = false }) {
       </div>
       <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
         <button type="submit" style={{ border: "1px solid rgba(125,211,252,0.28)", borderRadius: 999, background: "rgba(56,189,248,0.16)", color: "#f8fafc", padding: "11px 16px", cursor: "pointer", fontFamily: MONO_FONT, letterSpacing: compact ? "0.08em" : "0.12em", textTransform: "uppercase", width: compact ? "100%" : "auto" }}>
-          Request Early Access
+          Request Private Beta Access
         </button>
         {status ? (
           <span style={{ color: status.type === "error" ? "#fda4af" : "#93c5fd", fontSize: 12, fontFamily: MONO_FONT }}>
@@ -599,18 +742,20 @@ function ReportViewer({ report, onCopy, copied, isMobile }) {
   if (!report) return null;
   const content = report.content ?? report;
   const sourceCount = content.sources?.length ?? 0;
+  const isSample = Boolean(report.sample_report || content.sampleReport);
   return (
     <ShellCard
       title={content.title}
-      eyebrow="Generated strategic briefing"
+      eyebrow={isSample ? "Sample report · generated example · not live advice" : "Generated strategic briefing"}
       actions={
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
           <PremiumBadge tone="info">{content.region}</PremiumBadge>
           <PremiumBadge>{content.focusArea}</PremiumBadge>
           <PremiumBadge tone="success">{content.confidenceAssessment?.level ?? report.confidence_level ?? "Medium"} confidence</PremiumBadge>
           <PremiumBadge>{sourceCount} sources</PremiumBadge>
+          {isSample ? <PremiumBadge tone="warning">Sample only</PremiumBadge> : null}
           <PremiumBadge tone={content.aiStatus === "enriched" ? "success" : "warning"}>
-            {content.aiStatus === "enriched" ? "Gemini Report" : "Rule-based Preview"}
+            {content.aiStatus === "enriched" ? "Gemini Report" : isSample ? "Static Sample" : "Rule-based Preview"}
           </PremiumBadge>
           <button
             onClick={onCopy}
@@ -639,7 +784,7 @@ function ReportViewer({ report, onCopy, copied, isMobile }) {
             <PremiumBadge tone="info">Strategic Intelligence Dashboard</PremiumBadge>
             <PremiumBadge>{sourceCount} sources</PremiumBadge>
             <PremiumBadge tone={content.aiStatus === "enriched" ? "success" : "warning"}>
-              {content.aiStatus === "enriched" ? "AI-assisted" : "Rule-based"}
+              {content.aiStatus === "enriched" ? "AI-assisted" : isSample ? "Generated example" : "Rule-based"}
             </PremiumBadge>
             <PremiumBadge>Not financial advice</PremiumBadge>
           </div>
@@ -665,10 +810,31 @@ function ReportViewer({ report, onCopy, copied, isMobile }) {
           </div>
         </div>
 
+        {content.topSignals?.length ? (
+          <div style={{ display: "grid", gap: 12 }}>
+            <FieldLabel>Top Signals</FieldLabel>
+            <div style={{ display: "grid", gap: 8 }}>
+              {content.topSignals.map((item) => (
+                <div key={item} style={{ color: "#d9e5f4", lineHeight: 1.7, display: "flex", gap: 10 }}>
+                  <span style={{ color: "#5eead4" }}>•</span>
+                  <span>{item}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : null}
+
         <div style={{ display: "grid", gap: 12 }}>
-          <FieldLabel>Current Situation</FieldLabel>
+          <FieldLabel>{isSample ? "Situation Overview" : "Current Situation"}</FieldLabel>
           <div style={{ color: "#dce7f4", lineHeight: 1.85, whiteSpace: "pre-wrap" }}>{content.currentSituation}</div>
         </div>
+
+        {content.contextFusion ? (
+          <div style={{ display: "grid", gap: 12 }}>
+            <FieldLabel>Context Fusion</FieldLabel>
+            <div style={{ color: "#dce7f4", lineHeight: 1.85 }}>{content.contextFusion}</div>
+          </div>
+        ) : null}
 
         <div style={{ display: "grid", gap: 12 }}>
           <FieldLabel>What Changed</FieldLabel>
@@ -900,6 +1066,7 @@ const INITIAL_REPORT_FORM = {
 
 export default function ReportsApp({ activeView = "reports", onNavigate }) {
   const supabase = useMemo(() => getSupabaseBrowserClient(), []);
+  const waitlistRef = useRef(null);
   const authConfigured = Boolean(supabase);
   const [viewportWidth, setViewportWidth] = useState(() => (typeof window === "undefined" ? 1280 : window.innerWidth));
   const [session, setSession] = useState(null);
@@ -917,7 +1084,7 @@ export default function ReportsApp({ activeView = "reports", onNavigate }) {
   const [copyStatus, setCopyStatus] = useState(false);
   const [waitlistForm, setWaitlistForm] = useState({
     email: "",
-    interestTier: "confidential",
+    interestTier: "analyst",
     requestedRegion: "Global",
     focusArea: "General Geopolitics",
     intendedUseCase: "",
@@ -1051,11 +1218,11 @@ export default function ReportsApp({ activeView = "reports", onNavigate }) {
     event.preventDefault();
     setWaitlistStatus(null);
     try {
-      const data = await authedFetch("/api/v1/reports/waitlist", null, {
+      await authedFetch("/api/v1/reports/waitlist", null, {
         method: "POST",
         body: JSON.stringify(waitlistForm),
       });
-      setWaitlistStatus({ type: "success", message: data.message || "Waitlist saved." });
+      setWaitlistStatus({ type: "success", message: "Thanks. I’m using early feedback to shape Grigori’s private beta." });
       setWaitlistForm((current) => ({
         ...current,
         email: "",
@@ -1067,6 +1234,17 @@ export default function ReportsApp({ activeView = "reports", onNavigate }) {
       setWaitlistStatus({ type: "error", message: "We couldn't save your request just now. Please try again shortly." });
     }
   }, [waitlistForm]);
+
+  const scrollToWaitlist = useCallback(() => {
+    waitlistRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }, []);
+
+  const openSampleReport = useCallback(() => {
+    setGeneratedReport(SAMPLE_REPORT);
+    window.setTimeout(() => {
+      document.getElementById("report-viewer")?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }, 40);
+  }, []);
 
   const handleLoadWaitlist = useCallback(async () => {
     const secret = adminToken || window.prompt("Enter operator secret to load waitlist entries.");
@@ -1162,6 +1340,26 @@ export default function ReportsApp({ activeView = "reports", onNavigate }) {
               <PremiumBadge tone="warning">Reports Preview</PremiumBadge>
               <PremiumBadge>Private Preview</PremiumBadge>
               <PremiumBadge tone="success">Operational</PremiumBadge>
+              <a
+                href="/osint-dashboard"
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  minHeight: 28,
+                  padding: "6px 10px",
+                  borderRadius: 999,
+                  border: "1px solid rgba(147,197,253,0.22)",
+                  background: "rgba(15,23,42,0.74)",
+                  color: "#cfe4ff",
+                  fontFamily: MONO_FONT,
+                  fontSize: 10,
+                  letterSpacing: "0.1em",
+                  textTransform: "uppercase",
+                  textDecoration: "none",
+                }}
+              >
+                How Grigori Works
+              </a>
             </div>
           </div>
         </div>
@@ -1184,14 +1382,14 @@ export default function ReportsApp({ activeView = "reports", onNavigate }) {
               </p>
             </div>
             <div style={{ display: "grid", gap: 10, width: isMobile ? "100%" : "auto", minWidth: isMobile ? 0 : 260 }}>
-              <button style={{ border: "1px solid rgba(125,211,252,0.28)", borderRadius: 999, background: "rgba(56,189,248,0.16)", color: "#f8fafc", padding: "11px 16px", cursor: "pointer", fontFamily: MONO_FONT, textTransform: "uppercase", letterSpacing: isMobile ? "0.08em" : "0.12em", width: "100%" }}>
-                Upgrade to Analyst
+              <button onClick={scrollToWaitlist} style={{ border: "1px solid rgba(125,211,252,0.28)", borderRadius: 999, background: "rgba(56,189,248,0.16)", color: "#f8fafc", padding: "11px 16px", cursor: "pointer", fontFamily: MONO_FONT, textTransform: "uppercase", letterSpacing: isMobile ? "0.08em" : "0.12em", width: "100%" }}>
+                Request Private Beta Access
               </button>
-              <button style={{ border: "1px solid rgba(196,181,253,0.28)", borderRadius: 999, background: "rgba(76,29,149,0.16)", color: "#f8fafc", padding: "11px 16px", cursor: "pointer", fontFamily: MONO_FONT, textTransform: "uppercase", letterSpacing: isMobile ? "0.08em" : "0.12em", width: "100%" }}>
-                Upgrade to Strategic
+              <button onClick={openSampleReport} style={{ border: "1px solid rgba(196,181,253,0.28)", borderRadius: 999, background: "rgba(76,29,149,0.16)", color: "#f8fafc", padding: "11px 16px", cursor: "pointer", fontFamily: MONO_FONT, textTransform: "uppercase", letterSpacing: isMobile ? "0.08em" : "0.12em", width: "100%" }}>
+                Open Sample Report
               </button>
               <button onClick={() => setAuthMode(authConfigured ? "login" : "signup")} style={{ border: "1px solid rgba(71,85,105,0.82)", borderRadius: 999, background: "rgba(15,23,42,0.82)", color: "#f8fafc", padding: "11px 16px", cursor: "pointer", fontFamily: MONO_FONT, textTransform: "uppercase", letterSpacing: isMobile ? "0.08em" : "0.12em", width: "100%" }}>
-                {authConfigured ? "Sign In" : "Join Early Access"}
+                {authConfigured ? "Sign In" : "Join Private Preview"}
               </button>
             </div>
           </div>
@@ -1224,12 +1422,14 @@ export default function ReportsApp({ activeView = "reports", onNavigate }) {
         </div>
 
         {generatedReport ? (
+          <div id="report-viewer">
           <ReportViewer
             report={generatedReport}
             onCopy={handleCopy}
             copied={copyStatus}
             isMobile={isMobile}
           />
+          </div>
         ) : (
           <ShellCard title="Briefing Output" eyebrow="Document viewer">
             <div style={{ color: "#cbd5e1", lineHeight: 1.8, marginBottom: 18 }}>
@@ -1273,12 +1473,14 @@ export default function ReportsApp({ activeView = "reports", onNavigate }) {
             authMessage={authMessage}
           />
 
-          <ShellCard title="Early Access Waitlist" eyebrow="Stay in the loop">
+          <div ref={waitlistRef} id="private-beta-request">
+          <ShellCard title="Request Private Beta Access" eyebrow="Reports Preview">
             <div style={{ color: "#cbd5e1", lineHeight: 1.8, marginBottom: 18 }}>
-              Share your focus area, region of interest, and intended use case. We’ll use this to shape the early-access rollout for Grigori Reports.
+              Share your role, focus area, region of interest, and intended use. We’ll use this to shape the private beta rollout for Grigori Reports.
             </div>
             <InterestForm form={waitlistForm} setForm={setWaitlistForm} onSubmit={handleWaitlist} status={waitlistStatus} compact={isMobile} />
           </ShellCard>
+          </div>
         </div>
 
         <div style={{ display: "grid", gridTemplateColumns: lowerGrid, gap: 22 }}>
@@ -1310,13 +1512,37 @@ export default function ReportsApp({ activeView = "reports", onNavigate }) {
           </ShellCard>
         </div>
 
-        <SampleReportsSection isMobile={isMobile} />
+        <SampleReportsSection isMobile={isMobile} onOpenSample={openSampleReport} />
 
         <div style={{ display: "grid", gridTemplateColumns: planGrid, gap: 18 }}>
           {PREMIUM_PLANS.map((plan, index) => (
-            <PlanCard key={plan.tier} plan={plan} emphasized={index === 1} actionLabel={plan.tier === "strategic" ? "Join Reports Preview" : "Request Early Access"} />
+            <PlanCard key={plan.tier} plan={plan} emphasized={index === 1} actionLabel={plan.tier === "strategic" ? "Join Reports Preview" : "Request Private Beta Access"} onAction={scrollToWaitlist} />
           ))}
         </div>
+
+        <ShellCard title="How to read Grigori" eyebrow="Methodology">
+          <div style={{ color: "#cbd5e1", lineHeight: 1.8, marginBottom: 16 }}>
+            Review how Grigori treats source reliability, confidence, scenario weights, Context Fusion, AI-assisted analysis, and limitations before relying on a briefing.
+          </div>
+          <a
+            href="/osint-dashboard"
+            style={{
+              display: "inline-flex",
+              width: "fit-content",
+              border: "1px solid rgba(125,211,252,0.28)",
+              borderRadius: 999,
+              background: "rgba(15,23,42,0.82)",
+              color: "#f8fafc",
+              padding: "11px 16px",
+              fontFamily: MONO_FONT,
+              letterSpacing: "0.1em",
+              textTransform: "uppercase",
+              textDecoration: "none",
+            }}
+          >
+            How Grigori Works
+          </a>
+        </ShellCard>
 
         {adminUnlocked ? (
         <div style={{ display: "grid", gap: 12, justifyItems: "start" }}>

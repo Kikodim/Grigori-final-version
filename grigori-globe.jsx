@@ -2666,6 +2666,110 @@ function IntroTrustCard({ onDismiss, onMethodology, leftOffset = 304, topOffset 
   );
 }
 
+function OnboardingTourCard({ step = 0, onStepChange, onDismiss, onMethodology, onReports, leftOffset = 304, topOffset = 76 }) {
+  const steps = [
+    {
+      title: "Choose an Analyst Lens",
+      body: "Start with Global High Impact, then switch to Energy, Cyber, Middle East, or another lens when your workflow needs a sharper filter.",
+      action: null,
+    },
+    {
+      title: "Review Top Attention",
+      body: "Use the top-ranked credible signals to avoid scanning every card first. Weak or low-reliability claims should stay out of this list.",
+      action: null,
+    },
+    {
+      title: "Open a Signal",
+      body: "Click a signal on the globe or in the Active Signals panel to focus the map and open the intelligence detail view.",
+      action: null,
+    },
+    {
+      title: "Read Context Fusion",
+      body: "Context Fusion connects location accuracy, nearby infrastructure, related signals, second-order effects, watch indicators, and limitations.",
+      action: null,
+    },
+    {
+      title: "Check Evidence",
+      body: "Evidence and source reliability explain why a signal exists, how strong the source mix is, and whether scenario modeling is justified.",
+      action: "methodology",
+    },
+    {
+      title: "Use Reports Preview",
+      body: "Reports Preview shows how selected watchlists become analyst-style morning briefs and early-access report products.",
+      action: "reports",
+    },
+  ];
+  const safeStep = Math.max(0, Math.min(steps.length - 1, Number(step) || 0));
+  const current = steps[safeStep];
+  const isLast = safeStep >= steps.length - 1;
+  return (
+    <div style={{
+      position: "absolute",
+      left: leftOffset,
+      top: topOffset,
+      width: 356,
+      maxWidth: "calc(100vw - 620px)",
+      zIndex: 36,
+      padding: "13px 14px",
+      borderRadius: 16,
+      border: "1px solid rgba(125,211,252,0.18)",
+      background: "linear-gradient(180deg, rgba(5,12,24,0.78), rgba(5,11,22,0.88))",
+      boxShadow: "0 18px 42px rgba(0,0,0,0.32)",
+      backdropFilter: "blur(15px)",
+      WebkitBackdropFilter: "blur(15px)",
+    }}>
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "flex-start", marginBottom: 8 }}>
+        <div>
+          <div style={{ color: "rgba(103,220,255,0.54)", fontSize: 10, fontFamily: mono, letterSpacing: "0.14em", textTransform: "uppercase" }}>
+            Private beta tour
+          </div>
+          <div style={{ color: "#d6ebff", fontFamily: display, fontSize: 16, fontWeight: 800, marginTop: 4 }}>
+            {current.title}
+          </div>
+        </div>
+        <TrafficPill level="neutral">{safeStep + 1}/{steps.length}</TrafficPill>
+      </div>
+      <div style={{ color: "rgba(214,235,255,0.84)", fontSize: 12, lineHeight: 1.58, fontFamily: bodyFont }}>
+        {current.body}
+      </div>
+      <div style={{ display: "flex", gap: 6, marginTop: 12 }}>
+        {steps.map((item, index) => (
+          <span key={item.title} style={{
+            height: 3,
+            flex: 1,
+            borderRadius: 999,
+            background: index <= safeStep ? "rgba(103,220,255,0.62)" : "rgba(94,164,195,0.14)",
+          }} />
+        ))}
+      </div>
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 13 }}>
+        {current.action === "methodology" ? (
+          <button onClick={onMethodology} style={{ minHeight: 32, padding: "7px 11px", borderRadius: 999, border: "1px solid rgba(87,216,255,0.18)", background: "rgba(10,31,52,0.76)", color: "#d6ebff", fontFamily: mono, fontSize: 9, letterSpacing: "0.1em", textTransform: "uppercase", cursor: "pointer" }}>
+            Methodology
+          </button>
+        ) : null}
+        {current.action === "reports" ? (
+          <button onClick={onReports} style={{ minHeight: 32, padding: "7px 11px", borderRadius: 999, border: "1px solid rgba(87,216,255,0.18)", background: "rgba(10,31,52,0.76)", color: "#d6ebff", fontFamily: mono, fontSize: 9, letterSpacing: "0.1em", textTransform: "uppercase", cursor: "pointer" }}>
+            Reports Preview
+          </button>
+        ) : null}
+        <button onClick={onDismiss} style={{ minHeight: 32, padding: "7px 11px", borderRadius: 999, border: "1px solid rgba(94,164,195,0.14)", background: "rgba(6,15,30,0.58)", color: "rgba(214,235,255,0.72)", fontFamily: mono, fontSize: 9, letterSpacing: "0.1em", textTransform: "uppercase", cursor: "pointer" }}>
+          Skip
+        </button>
+        <button
+          onClick={() => {
+            if (isLast) onDismiss?.();
+            else onStepChange?.(safeStep + 1);
+          }}
+          style={{ minHeight: 32, padding: "7px 11px", borderRadius: 999, border: "1px solid rgba(87,216,255,0.2)", background: "rgba(56,189,248,0.14)", color: "#d6ebff", fontFamily: mono, fontSize: 9, letterSpacing: "0.1em", textTransform: "uppercase", cursor: "pointer", marginLeft: "auto" }}
+        >
+          {isLast ? "Done" : "Next"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function MethodologyPanel({ onClose }) {
   const sections = [
     ["What Grigori is", "Grigori is an OSINT signal aggregation and analysis layer. It does not produce classified intelligence and does not replace analysts. It helps reduce the time from noisy public information to structured situational awareness."],
@@ -3181,6 +3285,8 @@ const BRIEFING_COMPACT_STORAGE_KEY = "grigori:briefing-compact-dismissed";
 const ACTIVE_SIGNALS_STORAGE_KEY = "grigori:active-signals-open";
 const MARKET_PANEL_STORAGE_KEY = "grigori:market-impact-expanded";
 const INTRO_STORAGE_KEY = "grigori:intro-dismissed";
+const ONBOARDING_STORAGE_KEY = "grigori:onboarding-dismissed";
+const DEMO_MODE_STORAGE_KEY = "grigori:demo-mode";
 const APP_VIEWS = [
   { key: "globe", label: "Globe" },
   { key: "classic", label: "Intel Board" },
@@ -6096,7 +6202,7 @@ function buildConnectionLayer() {
 // TOP BAR
 // ═══════════════════════════════════════════════════════════════════════════════
 
-function TopBar({ counts, bordersLoaded, activeLayers, onLayerToggle, layerDensity, onDensityChange, isMobile, isTablet, onWarRoom, showWarRoom, marketData, onPersonalize, showPersonalize, onAdminRefresh, refreshState, layerEntries, activeView = "globe", onNavigate, systemStatus, adminUnlocked, onAdminUnlock, selectedLens, onLensChange, demoMode = false, feedState, layersStatus, liveSunEnabled = true, onToggleLiveSun = () => {} }) {
+function TopBar({ counts, bordersLoaded, activeLayers, onLayerToggle, layerDensity, onDensityChange, isMobile, isTablet, onWarRoom, showWarRoom, marketData, onPersonalize, showPersonalize, onAdminRefresh, refreshState, layerEntries, activeView = "globe", onNavigate, systemStatus, adminUnlocked, onAdminUnlock, selectedLens, onLensChange, demoMode = false, onToggleDemoMode, feedState, layersStatus, liveSunEnabled = true, onToggleLiveSun = () => {} }) {
   const [time, setTime] = useState(() => new Date().toISOString().slice(11,19));
   const [showLayersMenu, setShowLayersMenu] = useState(false);
   const [showStatusMenu, setShowStatusMenu] = useState(false);
@@ -6250,6 +6356,11 @@ function TopBar({ counts, bordersLoaded, activeLayers, onLayerToggle, layerDensi
 
         {!compact ? <TopControlButton onClick={() => { setShowLayersMenu((value) => !value); setShowStatusMenu(false); setShowAdminMenu(false); }} active={showLayersMenu}>Layers</TopControlButton> : null}
         {!compact ? <TopControlButton onClick={onWarRoom} active={showWarRoom}>Priority View</TopControlButton> : null}
+        {!compact ? (
+          <TopControlButton onClick={onToggleDemoMode} active={demoMode} subtle title={demoMode ? "Exit clean recording view" : "Start a clean demo view using current live data"}>
+            {demoMode ? "Exit Demo" : "Demo"}
+          </TopControlButton>
+        ) : null}
         {!compact ? (
           <TopControlButton onClick={() => { setShowStatusMenu((value) => !value); setShowLayersMenu(false); setShowAdminMenu(false); }} subtle>
             Operational · {aiRemaining}
@@ -6899,6 +7010,9 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
   const [briefing,        setBriefing]        = useState(buildBriefing(SCORED_EVENTS));
   const [briefingCompactDismissed, setBriefingCompactDismissed] = useState(() => readStoredBoolean(BRIEFING_COMPACT_STORAGE_KEY, false));
   const [introDismissed, setIntroDismissed] = useState(() => readStoredBoolean(INTRO_STORAGE_KEY, false));
+  const [onboardingDismissed, setOnboardingDismissed] = useState(() => readStoredBoolean(ONBOARDING_STORAGE_KEY, false));
+  const [onboardingStep, setOnboardingStep] = useState(0);
+  const [demoMode, setDemoMode] = useState(() => readStoredBoolean(DEMO_MODE_STORAGE_KEY, DEMO_MODE));
   const [showMethodology, setShowMethodology] = useState(false);
   const [selectedMarketKey, setSelectedMarketKey] = useState(null);
   const [timelineHours,   setTimelineHours]   = useState(24 * 7);
@@ -6936,7 +7050,7 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
   const resizeStateRef = useRef({ active: false, startX: 0, startWidth: LEFT_PANEL_DEFAULT_WIDTH });
 
   const refreshData = useCallback(async (forceFresh = false) => {
-    if (!DEMO_MODE) {
+    if (!demoMode) {
       try {
         const md = await fetchMarketContext();
         setMarketData(md);
@@ -7016,7 +7130,7 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
         message: "Data feed temporarily unavailable. Last cached intelligence shown.",
       });
     }
-  }, [selectedLens]);
+  }, [selectedLens, demoMode]);
 
   // ── Live data fetching — runs once on mount, then every 15 min ───────────────
   useEffect(() => {
@@ -7057,6 +7171,16 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
     if (typeof window === "undefined") return;
     window.localStorage.setItem(INTRO_STORAGE_KEY, String(Boolean(introDismissed)));
   }, [introDismissed]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem(ONBOARDING_STORAGE_KEY, String(Boolean(onboardingDismissed)));
+  }, [onboardingDismissed]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem(DEMO_MODE_STORAGE_KEY, String(Boolean(demoMode)));
+  }, [demoMode]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -7368,6 +7492,14 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
     setIntroDismissed(true);
     setShowMethodology(true);
     setPanelVisibility((current) => ({ ...current, briefing: false, marketImpact: false, dataConfidence: false }));
+  }, []);
+
+  const handleDismissOnboarding = useCallback(() => {
+    setOnboardingDismissed(true);
+  }, []);
+
+  const handleToggleDemoMode = useCallback(() => {
+    setDemoMode((current) => !current);
   }, []);
 
   const handleExpandMarketImpact = useCallback(() => {
@@ -8264,6 +8396,32 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
     setActiveScenario(0);
   }, []);
 
+  useEffect(() => {
+    if (!demoMode || isMobile) return;
+    const candidate = topAttentionSignals[0] ?? filteredEvents[0] ?? null;
+    setIntroDismissed(true);
+    setOnboardingDismissed(true);
+    setBriefingCompactDismissed(true);
+    setShowMethodology(false);
+    setShowWarRoom(false);
+    setPanelVisibility((current) => ({
+      ...current,
+      events: true,
+      briefing: false,
+      marketImpact: false,
+      dataConfidence: false,
+      flights: false,
+      vessels: false,
+      satellites: false,
+      social: false,
+      selectedObjectDetail: Boolean(candidate),
+    }));
+    setLeftPanelSections((current) => ({ ...current, morningBrief: true, alertPreview: false }));
+    if (candidate && selectedEvent?.id !== candidate.id) {
+      focusEvent(candidate);
+    }
+  }, [demoMode, filteredEvents, focusEvent, isMobile, selectedEvent?.id, topAttentionSignals]);
+
   const selectedDetail = selectedZone
     ? { type: "zone", data: selectedZone }
     : selectedObject ?? (selectedEvent ? { type: "event", data: selectedEvent } : null);
@@ -8321,7 +8479,8 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
           onAdminUnlock={handleAdminUnlock}
           selectedLens={selectedLens}
           onLensChange={setSelectedLens}
-          demoMode={DEMO_MODE}
+          demoMode={demoMode}
+          onToggleDemoMode={handleToggleDemoMode}
           feedState={feedState}
           layersStatus={layersStatus}
           liveSunEnabled={liveSunEnabled}
@@ -8455,6 +8614,42 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
             onMethodology={handleOpenMethodology}
           />
         ) : null}
+        {!isMobile && activeLayers.intelBoard && introDismissed && !onboardingDismissed && !selectedDetail && !showMethodology && !panelVisibility.briefing ? (
+          <OnboardingTourCard
+            step={onboardingStep}
+            onStepChange={setOnboardingStep}
+            onDismiss={handleDismissOnboarding}
+            onMethodology={handleOpenMethodology}
+            onReports={() => onNavigate?.("reports")}
+            leftOffset={leftPanelOffset}
+            topOffset={headerHeight + 16}
+          />
+        ) : null}
+        {!isMobile && demoMode ? (
+          <button
+            onClick={handleToggleDemoMode}
+            style={{
+              position: "absolute",
+              top: headerHeight + 14,
+              right: selectedDetail && panelVisibility.selectedObjectDetail ? 438 : 18,
+              zIndex: 50,
+              minHeight: 34,
+              padding: "8px 12px",
+              borderRadius: 999,
+              border: "1px solid rgba(125,211,252,0.26)",
+              background: "rgba(6,15,30,0.82)",
+              color: "#dff7ff",
+              fontFamily: mono,
+              fontSize: 10,
+              letterSpacing: "0.1em",
+              textTransform: "uppercase",
+              cursor: "pointer",
+              boxShadow: "0 14px 32px rgba(0,0,0,0.28)",
+            }}
+          >
+            Exit Demo Mode
+          </button>
+        ) : null}
         {!isMobile && activeLayers.intelBoard && introDismissed && !showMethodology ? (
           <HowToReadChip onOpen={handleOpenMethodology} />
         ) : null}
@@ -8532,7 +8727,7 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
             onAdminRefresh={handleAdminRefresh}
             onOpenIntelBoard={() => onNavigate?.("classic")}
             refreshState={refreshState}
-            demoMode={DEMO_MODE}
+            demoMode={demoMode}
           />
         )}
 
@@ -8550,7 +8745,7 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
             onOpenIntelBoard={() => { setShowWarRoom(false); onNavigate?.("classic"); }}
             refreshState={refreshState}
             mobile
-            demoMode={DEMO_MODE}
+            demoMode={demoMode}
           />
         )}
 
@@ -8648,7 +8843,7 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
             selectedLens={selectedLens}
             onLensChange={setSelectedLens}
             strategicBrief={strategicBrief}
-            demoMode={DEMO_MODE}
+            demoMode={demoMode}
             topEvents={liveTopEvents}
             sortMode={activeSignalSort}
             onSortChange={setActiveSignalSort}
