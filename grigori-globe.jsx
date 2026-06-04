@@ -35,6 +35,12 @@ import {
   getLayerDensityCap,
 } from "./context-layers.js";
 import { buildContextFusion, buildDashboardChangeSummary } from "./context-fusion.js";
+import {
+  SOURCE_FLAGS,
+  evaluateScenarioEligibility,
+  formatSourceReliability,
+  summarizeSourceReliability,
+} from "./source-reliability.js";
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // DATA
@@ -1694,6 +1700,7 @@ function normalizeBackendEvent(event) {
 
 function decorateEventForUi(event) {
   const sourceSignals = getEventSourceSignals(event);
+  const scenarioEligibility = evaluateScenarioEligibility({ ...event, sourceSignals });
   const importanceScore = Number(event.importanceScore ?? event.priorityScore ?? deriveImportance(event));
   const location = inferLocationDetails(event);
   const geoAccuracy = computeGeoAccuracy({ ...event, location });
@@ -1712,6 +1719,9 @@ function decorateEventForUi(event) {
     impactScore: Number(event.impactScore ?? classification.impactScore),
     confidenceScore: Number(event.confidenceScore ?? classification.confidenceScore),
     sourceSignals,
+    scenarioEligibility,
+    sourceReliability: sourceSignals.reliabilitySummary,
+    displayConfidence: scenarioEligibility.displayConfidence ?? event.confidence ?? "Low",
     riskLevel: deriveRiskLevel({ ...event, importanceScore }),
     marketImpactTags: getMarketImpactTags(event),
     confidenceExplanation: explainConfidence(event),
@@ -1728,14 +1738,14 @@ function isPublicSignalDisplayable(event) {
   const locationLabel = String(event.location?.label ?? "").trim().toLowerCase();
   const unresolvedRegion = !locationLabel || locationLabel === "region under review" || locationLabel === "unknown region";
   const sourceSignals = getEventSourceSignals(event);
-  const sourceQuality = String(event.sourceAssessment?.sourceQuality ?? "").toLowerCase();
+  const sourceQuality = String(event.sourceAssessment?.sourceQuality ?? sourceSignals.reliabilitySummary?.sourceQualityLabel ?? "").toLowerCase();
   const contentTypes = event.sourceAssessment?.contentTypes ?? event.contentTypes ?? [];
   const looksOpinion = /\b(opinion|op-ed|editorial|letter to the editor|commentary|thoughts on|i think|i was shocked|i wondered|our young men)\b/i.test(corpus) ||
     contentTypes.some((type) => /opinion|editorial|letter/i.test(String(type)));
   const ambiguousDraft = /\bdraft\b/i.test(corpus) &&
     !/\b(conscription|mobilization|mobilisation|military draft|selective service|call-up)\b/i.test(corpus) &&
     /\b(nfl|nba|sports|mock draft|draft pick|thoughts on|pittsburgh|triblive)\b/i.test(corpus);
-  const weakSingleSource = sourceSignals.sourceCount <= 1 && (event.confidence === "Low" || sourceQuality === "low");
+  const weakSingleSource = sourceSignals.sourceCount <= 1 && (event.confidence === "Low" || /low|restricted|unknown|mixed/i.test(sourceQuality));
 
   if (looksOpinion || ambiguousDraft) return false;
   if (unresolvedRegion && weakSingleSource) return false;
@@ -2650,19 +2660,30 @@ function IntroTrustCard({ onDismiss, onMethodology, leftOffset = 304, topOffset 
 
 function MethodologyPanel({ onClose }) {
   const sections = [
-    ["What Grigori is", "Grigori is an experimental OSINT-driven strategic intelligence dashboard. It helps turn open-source geopolitical reporting into structured situational awareness."],
-    ["Source collection", "Grigori uses configured public news and open-source data providers. Provider availability, quota limits, and latency may affect coverage."],
-    ["Signal clustering", "Articles are grouped into signals based on topic, region, timing, source quality, and keyword similarity. Opinion, letter, and low-signal local commentary are filtered before public publication."],
-    ["Freshness", "Freshness reflects when a signal was created, updated, or reconfirmed by the news pipeline."],
-    ["AI enrichment", "AI enrichment structures summaries, scenarios, watch indicators, and context. It does not replace human judgment."],
-    ["Confidence scoring", "Confidence reflects source count, independent domains, corroboration, freshness, source tier, location match, and category match. It is not a guarantee of truth."],
-    ["Market-impact context", "Market-impact labels are directional context only and are not financial advice."],
-    ["Limitations", "Open-source intelligence can be incomplete, delayed, duplicated, or wrong. Grigori should be used as an aid for monitoring, not as a sole source of truth."],
-    ["Disclaimer", "Grigori does not provide financial, legal, security, or investment advice."],
+    ["What Grigori is", "Grigori is an OSINT signal aggregation and analysis layer. It does not produce classified intelligence and does not replace analysts. It helps reduce the time from noisy public information to structured situational awareness."],
+    ["Signal collection", "Grigori uses configured public/open sources and provider feeds. Provider limits, quotas, latency, and outages can affect coverage. Fresh, Recent, Stored, 24h, 7d, and 30d labels describe when Grigori last saw or retained a signal."],
+    ["Source reliability", "Sources are classified T1-T5: T1 verified primary/wire/official; T2 reliable secondary; T3 mixed or biased; T4 low reliability; T5 raw unverified. Bias flags such as State Media, Aggregator, Escalation-framing risk, and Requires corroboration are domain-level aids, not article-by-article fact checks."],
+    ["Confidence scoring", "Confidence reflects source count, independent domains, source reliability, freshness, location match, category relevance, and corroboration. Confidence reflects source quality and corroboration. It does not prove the event occurred."],
+    ["Quality gates", "Opinion, letters, editorials, local commentary, ambiguous non-geopolitical items, unresolved low-confidence geography, and weak low-tier single-source claims are filtered, held, or downgraded. Weak but potentially relevant items may become Signal Watch instead of public scenario modeling."],
+    ["Scenario modeling", "Scenario cards require sufficient independent corroboration, source reliability, freshness, and location/category clarity. Scenario weights are directional analytical estimates, not predictions or actuarial probabilities. If the signal is weak, Grigori withholds scenarios and explains what would improve confidence."],
+    ["Context Fusion", "Context Fusion combines event metadata, stored memory, operational layers, related signals, historical echo, market context, and rule-based inference. It separates working interpretation from fact and should be read as structured analytical support."],
+    ["Geo accuracy", "Geo accuracy ranges from Exact and City-level to Region-level, Country-level, Approximate, and Unresolved. Inferred locations and source-provided locations can differ, so country or regional events should not be treated as pinpoint incidents."],
+    ["AI enrichment", "AI enrichment structures summaries, hypotheses, scenarios, watch indicators, and context. AI does not verify source truth, does not replace human judgment, and does not override source reliability or scenario eligibility gates."],
+    ["Limitations", "Grigori is open-source only. Signals may be false, incomplete, duplicated, delayed, or contradicted later. Confidence is not truth, source flags are domain-level, scenario probabilities are directional estimates, and Grigori is not financial, legal, security, or investment advice."],
   ];
   return (
     <FloatingPanel title="How Grigori Works" subtitle="Methodology and limitations" top={FLOATING_TOP + 8} right={16} width={390} onClose={onClose}>
       <div style={{ display: "grid", gap: 12 }}>
+        <div style={{ padding: "11px 12px", borderRadius: 14, border: "1px solid rgba(255,191,71,0.14)", background: "rgba(36,24,8,0.32)" }}>
+          <div style={{ color: "#ffd890", fontFamily: display, fontSize: 13, fontWeight: 700, marginBottom: 5 }}>Reliability Tiers</div>
+          <div style={{ display: "grid", gap: 5, color: "rgba(220,235,250,0.76)", fontSize: 10, lineHeight: 1.5, fontFamily: mono }}>
+            <div>T1 Verified Primary: official, wire, high editorial standards</div>
+            <div>T2 Reliable Secondary: established press and specialist sources</div>
+            <div>T3 Mixed/Biased: partisan, state, aggregator, escalation-framing risk</div>
+            <div>T4 Low Reliability: conspiracy-adjacent or weak editorial standards</div>
+            <div>T5 Raw Unverified: social, forums, anonymous or unverified posts</div>
+          </div>
+        </div>
         {sections.map(([title, body]) => (
           <div key={title} style={{ padding: "11px 12px", borderRadius: 14, border: "1px solid rgba(94,164,195,0.12)", background: "rgba(8,20,36,0.68)" }}>
             <div style={{ color: "#d6ebff", fontFamily: display, fontSize: 13, fontWeight: 700, marginBottom: 5 }}>{title}</div>
@@ -3564,6 +3585,65 @@ function getEventStateLabels(event) {
   return labels.slice(0, 3);
 }
 
+function getTrustBadgeLevel(label) {
+  if (/high/i.test(label)) return "green";
+  if (/medium|mixed/i.test(label)) return "amber";
+  if (/restricted|low|very low/i.test(label)) return "red";
+  return "neutral";
+}
+
+function aiBadgeTooltip(text = "") {
+  if (/AI Enriched/i.test(text)) {
+    return "Enhanced with AI-assisted analysis to structure summaries, hypotheses, scenarios, watch indicators, and context. AI enrichment does not verify source truth and should not replace human judgment.";
+  }
+  if (/AI Checked/i.test(text)) {
+    return "AI review/check ran, but no new enrichment was required.";
+  }
+  if (/Rule-based/i.test(text)) {
+    return "Generated by deterministic Grigori logic using event metadata, source count, confidence, category, region, sector exposure, and stored memory. No language-model interpretation was used for this briefing.";
+  }
+  return undefined;
+}
+
+function sourceReliabilityTitle(source) {
+  const formatted = formatSourceReliability(source);
+  const flags = formatted.flags.length ? ` · ${formatted.flags.join(", ")}` : "";
+  return `${formatted.domain} · ${formatted.label} · ${formatted.sourceType}${flags}`;
+}
+
+function computeTopAttentionSignals(events = []) {
+  return events
+    .map((event) => {
+      const eligibility = event.scenarioEligibility ?? evaluateScenarioEligibility(event);
+      const source = eligibility.sourceSummary ?? summarizeSourceReliability(event.sourceSignals?.uniqueSources ?? []);
+      const updatedAt = event.refreshedAt ?? event.refreshed_at ?? event.lastSeenAt ?? event.last_seen_at ?? event.updatedAt ?? event.updated_at ?? event.timestamp;
+      const ageHours = updatedAt ? Math.max(0, (Date.now() - new Date(updatedAt).getTime()) / 3600_000) : 999;
+      const sourceCount = Number(event.sourceSignals?.sourceCount ?? source.independentSourceCount ?? 0);
+      const impact = Math.min(100, Number(event.impactScore ?? event.importanceScore ?? 0));
+      const escalation = /escalating|high/i.test(`${event.tone} ${event.intensity}`) ? 100 : /medium|aging/i.test(`${event.intensity} ${event.freshnessStatus}`) ? 58 : 32;
+      const freshness = ageHours <= 6 ? 100 : ageHours <= 24 ? 72 : ageHours <= 72 ? 42 : 10;
+      const sourceQualityScore = source.sourceQualityLabel === "High" ? 100 : source.sourceQualityLabel === "Medium" ? 78 : source.sourceQualityLabel === "Mixed" ? 52 : 18;
+      const clusterScore = Math.min(100, sourceCount * 18);
+      const score = impact * 0.25 + escalation * 0.2 + freshness * 0.2 + sourceQualityScore * 0.2 + clusterScore * 0.15;
+      return { event, eligibility, source, score, ageHours, sourceCount };
+    })
+    .filter(({ event, eligibility, source, ageHours }) => {
+      if (source.lowReliabilityCount > 0) return false;
+      if (source.independentSourceCount <= 1 && source.t1t2Count < 1) return false;
+      if (eligibility.displayConfidence === "Very Low") return false;
+      if (ageHours > 72 && !/stored|ongoing|recent/i.test(`${event.memoryState} ${event.freshnessStatus} ${event.eventState}`)) return false;
+      if (event.duplicateSuppressed || event.state === "duplicate_grouped") return false;
+      return true;
+    })
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 3)
+    .map(({ event, source, sourceCount }) => ({
+      ...event,
+      attentionWhy: `${/escalating/i.test(event.tone ?? "") ? "escalating cluster" : "high-priority signal"}, ${sourceCount} source signal${sourceCount === 1 ? "" : "s"}, ${source.sourceQualityLabel.toLowerCase()} source quality, impact ${Math.round(event.impactScore ?? 0)}.`,
+      attentionSourceQuality: source.sourceQualityLabel,
+    }));
+}
+
 // ── Reusable atoms ────────────────────────────────────────────────────────────
 
 function SectorPill({ name }) {
@@ -3588,9 +3668,9 @@ function ImpactRow({ label, value, color }) {
   );
 }
 
-function Badge({ children, color }) {
+function Badge({ children, color, title }) {
   return (
-    <span style={{ background: `${color}12`, color, border: `1px solid ${color}38`,
+    <span title={title} style={{ background: `${color}12`, color, border: `1px solid ${color}38`,
       borderRadius: 999, padding: "4px 9px", fontSize: 9, letterSpacing: "0.13em",
       textTransform: "uppercase", fontFamily: mono, whiteSpace: "nowrap" }}>
       {children}
@@ -3598,7 +3678,7 @@ function Badge({ children, color }) {
   );
 }
 
-function TrafficPill({ level, children }) {
+function TrafficPill({ level, children, title }) {
   const palette = {
     red: { color: "#ff6677", bg: "rgba(255,80,110,0.14)", border: "rgba(255,80,110,0.38)" },
     amber: { color: "#ffbf47", bg: "rgba(255,191,71,0.12)", border: "rgba(255,191,71,0.34)" },
@@ -3607,7 +3687,7 @@ function TrafficPill({ level, children }) {
   };
   const cfg = palette[level] ?? palette.neutral;
   return (
-    <span style={{
+    <span title={title} style={{
       background: cfg.bg,
       color: cfg.color,
       border: `1px solid ${cfg.border}`,
@@ -3648,10 +3728,11 @@ function SegmentedFilterChip({ active = false, onClick, children, compact = fals
   );
 }
 
-function TopControlButton({ active = false, subtle = false, children, onClick }) {
+function TopControlButton({ active = false, subtle = false, children, onClick, title }) {
   return (
     <button
       onClick={onClick}
+      title={title}
       style={{
         display: "inline-flex",
         alignItems: "center",
@@ -3876,6 +3957,64 @@ function ScenarioCard({ sc, active, onClick }) {
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+function ScenarioProbabilityNote({ mode, aiStatus }) {
+  const isAi = aiStatus === "enriched" || aiStatus === "cached";
+  return (
+    <div style={{ marginTop: 10, display: "grid", gap: 8 }}>
+      <div style={{ color: "rgba(130,185,230,0.68)", fontSize: 10, lineHeight: 1.6, fontFamily: mono }}>
+        Scenario weights are directional estimates based on signal count, source reliability, confidence, historical echo, sector exposure, and escalation indicators. They are not predictions.
+      </div>
+      <details style={{ border: "1px solid rgba(94,164,195,0.1)", borderRadius: 12, padding: "8px 9px", background: "rgba(5,14,28,0.58)" }}>
+        <summary style={{ cursor: "pointer", color: "rgba(103,220,255,0.6)", fontSize: 9, fontFamily: mono, letterSpacing: "0.12em", textTransform: "uppercase" }}>
+          How scenario weights are derived
+        </summary>
+        <div style={{ marginTop: 8, color: "rgba(160,198,225,0.74)", fontSize: 10, lineHeight: 1.6, fontFamily: bodyFont }}>
+          Grigori estimates relative scenario plausibility from structured signal metadata: source count, independent domains, source reliability, freshness, confidence, historical recurrence, sector exposure, escalation language, and market context. These weights are working analytical estimates, not actuarial probabilities or forecasts.
+          {mode === "limited" ? " This is a limited scenario model because the signal is high-impact but has narrow high-trust sourcing." : ""}
+          {isAi ? " AI-assisted scenario text may be used, but source quality and eligibility gates still apply." : " Rule-based scenario weighting uses deterministic scoring logic."}
+        </div>
+      </details>
+    </div>
+  );
+}
+
+function SignalWatchPanel({ eligibility, event }) {
+  const watch = eligibility?.signalWatch ?? {};
+  const improve = watch.improveConfidence ?? [];
+  return (
+    <div style={{ padding: "13px 18px", borderBottom: "1px solid rgba(0,180,255,0.07)" }}>
+      <div style={{ color: "rgba(255,191,71,0.72)", fontSize: 9, fontFamily: mono, letterSpacing: "0.15em", textTransform: "uppercase", marginBottom: 6 }}>
+        Signal Watch
+      </div>
+      <div style={{ color: "rgba(214,235,255,0.82)", fontSize: 12, lineHeight: 1.65, marginBottom: 10 }}>
+        This signal does not currently meet Grigori's threshold for scenario modeling.
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 10 }}>
+        {[
+          ["Reason", watch.reason ?? eligibility?.explanation ?? "Requires corroboration"],
+          ["Sources", `${watch.sourceCount ?? event.sourceSignals?.sourceCount ?? 0} signals / ${watch.independentSources ?? event.sourceSignals?.independentDomainCount ?? 0} domains`],
+          ["Source quality", watch.sourceQuality ?? "Unknown"],
+          ["Confidence", eligibility?.displayConfidence ?? event.confidence ?? "Low"],
+        ].map(([label, value]) => (
+          <div key={label} style={{ background: "rgba(8,20,36,0.58)", border: "1px solid rgba(255,191,71,0.12)", borderRadius: 12, padding: "8px 10px" }}>
+            <div style={{ color: "rgba(255,191,71,0.52)", fontSize: 9, fontFamily: mono, letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 4 }}>{label}</div>
+            <div style={{ color: "rgba(214,235,255,0.84)", fontSize: 11, lineHeight: 1.45, fontFamily: bodyFont }}>{value}</div>
+          </div>
+        ))}
+      </div>
+      <div style={{ color: "rgba(180,220,255,0.72)", fontSize: 11, lineHeight: 1.65, marginBottom: 10 }}>
+        What we know: {watch.whatWeKnow ?? event.briefSummary ?? event.summary ?? "Grigori is tracking this signal for corroboration."}
+      </div>
+      <div style={{ color: "rgba(130,185,230,0.68)", fontSize: 10, lineHeight: 1.6, fontFamily: mono, marginBottom: 8 }}>
+        Monitoring: Grigori is tracking this signal for corroboration. Scenario modeling will activate if additional credible sources confirm the signal.
+      </div>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+        {improve.map((item) => <TrafficPill key={item} level="neutral">{item}</TrafficPill>)}
+      </div>
     </div>
   );
 }
@@ -4250,7 +4389,12 @@ function ContextFusionPanel({ fusion }) {
             <TrafficPill level={fusion.geoContext?.geoAccuracy?.value === "exact" || fusion.geoContext?.geoAccuracy?.value === "city" ? "green" : "neutral"}>
               {fusion.geoContext?.geoAccuracy?.label ?? "Approximate"}
             </TrafficPill>
-            <TrafficPill level="neutral">{fusion.geoContext?.locationLabel}</TrafficPill>
+            <TrafficPill level="neutral">Event: {fusion.geoContext?.eventLocation ?? fusion.geoContext?.locationLabel}</TrafficPill>
+            <TrafficPill level="neutral">Context: {fusion.geoContext?.situationContext ?? "Regional situation"}</TrafficPill>
+            {fusion.geoContext?.relatedChokepoint ? <TrafficPill level="amber">Chokepoint: {fusion.geoContext.relatedChokepoint}</TrafficPill> : null}
+          </div>
+          <div style={{ color: "rgba(130,185,230,0.58)", fontSize: 10, lineHeight: 1.55, fontFamily: mono }}>
+            Event location and situation context may differ when Grigori links related regional signals.
           </div>
           <div style={{ color: "rgba(130,185,230,0.62)", fontSize: 10, lineHeight: 1.55, fontFamily: mono }}>{fusion.geoContext?.distanceSummary}</div>
         </div>
@@ -4330,6 +4474,8 @@ function EventDetailContent({ event, activeScenario, onScenarioChange, allEvents
   const cfg = INTENSITY[event.intensity];
   const brief = buildEventBrief(event, allEvents);
   const evidence = buildEvidenceSummary(event, allEvents);
+  const scenarioEligibility = event.scenarioEligibility ?? brief.scenarioEligibility ?? evidence.scenarioEligibility ?? evaluateScenarioEligibility(event);
+  const reliabilitySummary = evidence.sourceReliability ?? scenarioEligibility.sourceSummary ?? event.sourceReliability ?? summarizeSourceReliability(brief.sourceTrace.domains);
   const situations = useMemo(() => buildStrategicSituations(allEvents), [allEvents]);
   const situation = findSituationForEvent(event, situations);
   const relatedSignals = getRelatedSignalEvidence(event, allEvents, 4);
@@ -4362,13 +4508,15 @@ function EventDetailContent({ event, activeScenario, onScenarioChange, allEvents
           fontFamily: display, margin: "0 0 10px", letterSpacing: "0.03em" }}>{event.title}</h2>
         <div style={{ display: "flex", gap: 7, flexWrap: "wrap", alignItems: "center" }}>
           <Badge color={TONE_COLOR[event.tone]}>{event.tone}</Badge>
-          <Badge color={CONF_COLOR[event.confidence]}>CONF: {event.confidence}</Badge>
+          <Badge color={CONF_COLOR[scenarioEligibility.displayConfidence ?? event.confidence] ?? "#7fb8dd"} title={`Confidence capped by source reliability where needed. Raw event confidence: ${event.confidence ?? "Low"}.`}>
+            CONF: {scenarioEligibility.displayConfidence ?? event.confidence}
+          </Badge>
           <Badge color="#9bd6ff">{brief.category}</Badge>
           <Badge color="#7dd3fc">RISK: {event.riskLevel}</Badge>
           <Badge color="#f7c96a">IMP: {brief.impactScore}</Badge>
           <Badge color="#f79d6a">SEV: {brief.severityScore}</Badge>
-          <Badge color={event.sourceSignals?.trustLabel === "High" ? "#58e38f" : event.sourceSignals?.trustLabel === "Medium" ? "#ffbf47" : "#7fb8dd"}>
-            TRUST: {event.sourceSignals?.trustLabel ?? "Low"}
+          <Badge color={getTrustBadgeLevel(reliabilitySummary.sourceQualityLabel) === "green" ? "#58e38f" : getTrustBadgeLevel(reliabilitySummary.sourceQualityLabel) === "amber" ? "#ffbf47" : getTrustBadgeLevel(reliabilitySummary.sourceQualityLabel) === "red" ? "#ff6677" : "#7fb8dd"} title={`Source quality: ${reliabilitySummary.sourceQualityLabel}. ${reliabilitySummary.flags.map((flag) => SOURCE_FLAGS[flag] ?? flag).join(", ") || "No elevated reliability flags."}`}>
+            TRUST: {reliabilitySummary.sourceQualityLabel ?? "Unknown"}
           </Badge>
           <span style={{ color: "rgba(0,180,255,0.38)", fontSize: 9, fontFamily: mono }}>
             {event.location?.lat != null && event.location?.lng != null ? `${event.location.lat.toFixed(2)}°, ${event.location.lng.toFixed(2)}°` : brief.whereItHappened}
@@ -4377,7 +4525,7 @@ function EventDetailContent({ event, activeScenario, onScenarioChange, allEvents
             Geo: {event.geoAccuracy?.label ?? evidence.geoAccuracy.label}
           </TrafficPill>
           {eventStateLabels.map((item) => (
-            <TrafficPill key={`${event.id}-${item.text}`} level={item.level}>{item.text}</TrafficPill>
+            <TrafficPill key={`${event.id}-${item.text}`} level={item.level} title={aiBadgeTooltip(item.text)}>{item.text}</TrafficPill>
           ))}
         </div>
       </div>
@@ -4401,8 +4549,11 @@ function EventDetailContent({ event, activeScenario, onScenarioChange, allEvents
           </div>
           <div style={{ marginTop: 10, display: "flex", flexWrap: "wrap", gap: 6 }}>
             <TrafficPill level="neutral">Sources: {sourceLine}</TrafficPill>
-            <TrafficPill level={event.sourceSignals?.trustLabel === "High" ? "green" : event.sourceSignals?.trustLabel === "Medium" ? "amber" : "neutral"}>
+            <TrafficPill level={getTrustBadgeLevel(reliabilitySummary.sourceQualityLabel)}>
               {brief.sourceTrace.corroborationLabel}
+            </TrafficPill>
+            <TrafficPill level={getTrustBadgeLevel(reliabilitySummary.sourceQualityLabel)}>
+              Source quality: {reliabilitySummary.sourceQualityLabel}
             </TrafficPill>
           </div>
           {event.marketImpactTags?.length > 0 ? (
@@ -4426,8 +4577,10 @@ function EventDetailContent({ event, activeScenario, onScenarioChange, allEvents
             {[
               ["Sources", `${evidence.sourceCount} signals / ${evidence.domainCount} domains`],
               ["Source mix", evidence.sourceMix],
+              ["Source quality", reliabilitySummary.sourceQualityLabel],
               ["Geo accuracy", `${evidence.geoAccuracy.label} · ${evidence.geoAccuracy.reason}`],
               ["Confidence", evidence.confidence],
+              ["Scenario model", scenarioEligibility.eligible ? (scenarioEligibility.mode === "limited" ? "Limited model" : "Full model") : "Signal Watch"],
               ["Latest source", formatShortAge(evidence.latestSourceTime)],
               ["AI enrichment", evidence.aiLabel],
               ["Related grouped", String(evidence.relatedGrouped)],
@@ -4442,6 +4595,13 @@ function EventDetailContent({ event, activeScenario, onScenarioChange, allEvents
           {evidence.providerCoverageCaveat ? (
             <div style={{ marginTop: 8, color: "rgba(255,191,71,0.78)", fontSize: 10, lineHeight: 1.55, fontFamily: mono }}>
               Provider coverage caveat: {evidence.providerCoverageCaveat}
+            </div>
+          ) : null}
+          {reliabilitySummary.flags.length > 0 ? (
+            <div style={{ marginTop: 8, display: "flex", flexWrap: "wrap", gap: 6 }}>
+              {reliabilitySummary.flags.map((flag) => (
+                <TrafficPill key={flag} level="amber">{SOURCE_FLAGS[flag] ?? flag}</TrafficPill>
+              ))}
             </div>
           ) : null}
         </div>
@@ -4575,16 +4735,21 @@ function EventDetailContent({ event, activeScenario, onScenarioChange, allEvents
         )}
 
         {/* Scenarios */}
-        <div style={{ padding: "13px 18px", borderBottom: "1px solid rgba(0,180,255,0.07)" }}>
-          <div style={{ color: "rgba(0,200,255,0.3)", fontSize: 9, fontFamily: mono,
-            letterSpacing: "0.15em", textTransform: "uppercase", marginBottom: 4 }}>SCENARIO ENGINE</div>
-          <div style={{ color: "rgba(0,180,255,0.28)", fontSize: 9, fontFamily: mono,
-            marginBottom: 12 }}>Tap a scenario to update globe visualisation</div>
-          {brief.scenarios.map((sc, i) => (
-            <ScenarioCard key={i} sc={sc} active={activeScenario === i}
-              onClick={() => onScenarioChange(i)} />
-          ))}
-        </div>
+        {scenarioEligibility.eligible ? (
+          <div style={{ padding: "13px 18px", borderBottom: "1px solid rgba(0,180,255,0.07)" }}>
+            <div style={{ color: "rgba(0,200,255,0.3)", fontSize: 9, fontFamily: mono,
+              letterSpacing: "0.15em", textTransform: "uppercase", marginBottom: 4 }}>SCENARIO ENGINE</div>
+            <div style={{ color: "rgba(0,180,255,0.28)", fontSize: 9, fontFamily: mono,
+              marginBottom: 12 }}>{scenarioEligibility.mode === "limited" ? "Limited scenario model · single high-trust source" : "Tap a scenario to update globe visualisation"}</div>
+            {brief.scenarios.map((sc, i) => (
+              <ScenarioCard key={i} sc={sc} active={activeScenario === i}
+                onClick={() => onScenarioChange(i)} />
+            ))}
+            <ScenarioProbabilityNote mode={scenarioEligibility.mode} aiStatus={event.aiStatus ?? event.ai_status} />
+          </div>
+        ) : (
+          <SignalWatchPanel eligibility={scenarioEligibility} event={event} />
+        )}
 
         <div style={{ padding: "13px 18px", borderBottom: "1px solid rgba(0,180,255,0.07)" }}>
           <div style={{ color: "rgba(0,200,255,0.3)", fontSize: 9, fontFamily: mono, letterSpacing: "0.15em", textTransform: "uppercase", marginBottom: 7 }}>
@@ -4632,11 +4797,16 @@ function EventDetailContent({ event, activeScenario, onScenarioChange, allEvents
             {brief.sourceTrace.sourceCount} sources · {brief.sourceTrace.independentDomainCount} independent domains · {brief.sourceTrace.corroborationLabel}
           </div>
           <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 10 }}>
-            {brief.sourceTrace.domains.map((domain) => (
-              <TrafficPill key={domain} level={brief.sourceTrace.trustLabel === "High" ? "green" : brief.sourceTrace.trustLabel === "Medium" ? "amber" : "neutral"}>
-                {domain}
+            {brief.sourceTrace.domains.map((domain) => {
+              const source = formatSourceReliability(domain);
+              const level = getTrustBadgeLevel(source.label);
+              const flagText = source.flags.length ? ` · ${source.flags[0]}` : "";
+              return (
+              <TrafficPill key={domain} level={level} title={sourceReliabilityTitle(domain)}>
+                {source.domain} · {source.label}{flagText}
               </TrafficPill>
-            ))}
+              );
+            })}
           </div>
           <div style={{ display: "grid", gap: 8 }}>
             {brief.sourceTrace.links.length > 0 ? brief.sourceTrace.links.map((link) => (
@@ -5610,6 +5780,20 @@ function OperationalLayerPanel({
           </div>
         );
       })}
+      <div style={{ padding: "10px 11px", borderRadius: 13, border: "1px solid rgba(94,164,195,0.12)", background: "rgba(8,20,36,0.52)", display: "grid", gap: 7 }}>
+        <div style={{ color: "rgba(103,220,255,0.52)", fontSize: 10, fontFamily: mono, letterSpacing: "0.12em", textTransform: "uppercase" }}>Layer preset guidance</div>
+        {[
+          ["Global Risk", "Active signals + chokepoints + selected signal context."],
+          ["Shipping Risk", "Chokepoints, ports, and Maritime Preview if configured."],
+          ["Energy Risk", "Chokepoints, energy infrastructure, ports."],
+          ["Military/Security", "Public military bases, airports, chokepoints, satellites if enabled."],
+          ["Political Stability", "Cities and regional centers for orientation."],
+        ].map(([label, body]) => (
+          <div key={label} style={{ color: "rgba(180,220,255,0.72)", fontSize: 10, lineHeight: 1.45, fontFamily: bodyFont }}>
+            <strong style={{ color: "rgba(214,235,255,0.86)" }}>{label}:</strong> {body}
+          </div>
+        ))}
+      </div>
       <div style={{ color: "rgba(150,200,240,0.56)", fontSize: 10, lineHeight: 1.55, fontFamily: bodyFont }}>
         Context layers are operational reference aids and may be incomplete. Flight and maritime preview layers depend on configured public/open providers and may be delayed or unavailable. Public bases are publicly known facilities only; Grigori is not a tactical tracking system.
       </div>
@@ -6027,7 +6211,7 @@ function TopBar({ counts, bordersLoaded, activeLayers, onLayerToggle, layerDensi
           </TopControlButton>
         ) : null}
         {!compact && !demoMode ? (
-          <TopControlButton onClick={() => { setShowAdminMenu((value) => !value); setShowLayersMenu(false); setShowStatusMenu(false); }} subtle>
+          <TopControlButton onClick={() => { setShowAdminMenu((value) => !value); setShowLayersMenu(false); setShowStatusMenu(false); }} subtle title="Unlock operator controls / private preview features">
             {adminUnlocked ? "Operator" : "Unlock"}
           </TopControlButton>
         ) : null}
@@ -6119,7 +6303,12 @@ function TopBar({ counts, bordersLoaded, activeLayers, onLayerToggle, layerDensi
                   {feedState?.message ? <div style={{ color: "rgba(148,175,198,0.76)", fontFamily: mono, fontSize: 10 }}>{feedState.message}</div> : null}
                 </>
               ) : (
-                <TopControlButton onClick={onAdminUnlock}>Unlock Operator Mode</TopControlButton>
+                <>
+                  <div style={{ color: "rgba(160,198,225,0.74)", fontSize: 11, lineHeight: 1.55, fontFamily: bodyFont }}>
+                    Unlock operator controls for private preview refresh and diagnostics. Public users do not need this.
+                  </div>
+                  <TopControlButton onClick={onAdminUnlock} title="Unlock operator controls / private preview features">Unlock Operator Mode</TopControlButton>
+                </>
               )}
             </div>
           </HeaderPopover>
@@ -6134,7 +6323,7 @@ function TopBar({ counts, bordersLoaded, activeLayers, onLayerToggle, layerDensi
 // DESKTOP LEFT SIDEBAR
 // ═══════════════════════════════════════════════════════════════════════════════
 
-function DesktopSidebar({ events, selectedEvent, onSelect, modeHours, onModeChange, topOffset = TOP_BAR_HEIGHT, sortMode = "priority", onSortChange, systemStatus, refreshState, adminUnlocked = false, feedState, onCollapse }) {
+function DesktopSidebar({ events, selectedEvent, onSelect, modeHours, onModeChange, topOffset = TOP_BAR_HEIGHT, sortMode = "priority", onSortChange, systemStatus, refreshState, adminUnlocked = false, feedState, onCollapse, topAttentionSignals = [] }) {
   const options = [
     { label: "24h", value: 24 },
     { label: "7d", value: 24 * 7 },
@@ -6242,6 +6431,38 @@ function DesktopSidebar({ events, selectedEvent, onSelect, modeHours, onModeChan
         </div>
       </div>
       <div style={sharedPanelBodyStyle({ flex: 1 })}>
+        {topAttentionSignals.length > 0 ? (
+          <div style={{ padding: "14px 16px", borderBottom: "1px solid rgba(87,216,255,0.08)", display: "grid", gap: 9 }}>
+            <div style={{ color: "rgba(103,220,255,0.48)", fontSize: 10, fontFamily: mono, letterSpacing: "0.14em", textTransform: "uppercase" }}>
+              Top Attention
+            </div>
+            {topAttentionSignals.map((item, index) => (
+              <button
+                key={item.id}
+                onClick={() => onSelect(item)}
+                style={{
+                  textAlign: "left",
+                  border: "1px solid rgba(255,191,71,0.14)",
+                  background: selectedEvent?.id === item.id ? "rgba(56,189,248,0.12)" : "rgba(8,20,36,0.62)",
+                  borderRadius: 13,
+                  padding: "9px 10px",
+                  cursor: "pointer",
+                }}
+              >
+                <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "center", marginBottom: 5 }}>
+                  <span style={{ color: "rgba(255,191,71,0.86)", fontSize: 9, fontFamily: mono, letterSpacing: "0.12em", textTransform: "uppercase" }}>#{index + 1}</span>
+                  <TrafficPill level={getTrustBadgeLevel(item.attentionSourceQuality)}>{item.attentionSourceQuality}</TrafficPill>
+                </div>
+                <div style={{ color: "#d6ebff", fontSize: 12, fontFamily: display, fontWeight: 700, lineHeight: 1.35, marginBottom: 5 }}>
+                  {item.title}
+                </div>
+                <div style={{ color: "rgba(150,205,245,0.68)", fontSize: 10, lineHeight: 1.5, fontFamily: bodyFont }}>
+                  Why attention: {item.attentionWhy}
+                </div>
+              </button>
+            ))}
+          </div>
+        ) : null}
         {events.length === 0 ? (
           <div style={{ padding: "18px 18px", color: "rgba(150,200,240,0.55)", fontSize: 10, fontFamily: mono, lineHeight: 1.6 }}>
             {feedState?.message || (refreshMessage ? "Board checked. No newer high-relevance signals found." : "No fresh signals in this filter. Showing stored high-impact signals when available.")}
@@ -6725,6 +6946,11 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
 
   const conflictZones = useMemo(
     () => deriveConflictZones(filteredEvents),
+    [filteredEvents]
+  );
+
+  const topAttentionSignals = useMemo(
+    () => computeTopAttentionSignals(filteredEvents),
     [filteredEvents]
   );
 
@@ -7925,6 +8151,7 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
             refreshState={refreshState}
             adminUnlocked={adminSession.unlocked}
             feedState={feedState}
+            topAttentionSignals={topAttentionSignals}
             onCollapse={() => setPanelVisibility((current) => ({ ...current, events: false }))}
           />
         )}

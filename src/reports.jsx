@@ -562,7 +562,7 @@ function UsageCard({ status, session, adminUnlocked, onAdminUnlock }) {
         </div>
         <div style={{ display: "grid", gap: 10, color: "#cbd5e1", lineHeight: 1.7 }}>
           <div>{summary?.totalSignals ?? 0} stored signals available across live and historical context.</div>
-          <div>{status?.aiProvider ? `${status.aiProvider} is the only AI provider enabled for reports.` : "AI provider unavailable."}</div>
+          <div>{adminUnlocked && status?.aiProvider ? `AI provider: ${String(status.aiProvider).replace(/^gemini$/i, "Gemini")}.` : "Reports use manual AI-assisted generation during private preview."}</div>
           <div>{summary?.matchingSignals ?? 0} signals currently match the selected lens and horizon.</div>
         </div>
       </div>
@@ -1090,7 +1090,7 @@ export default function ReportsApp({ activeView = "reports", onNavigate }) {
     setHistoryState({ status: "running", message: "Generating strategic briefing..." });
     try {
       if (!accessToken) {
-        throw new Error("Sign in or unlock admin mode to generate reports.");
+        throw new Error("Sign in or unlock operator mode to generate reports.");
       }
       const data = await authedFetch("/api/v1/reports/generate", accessToken, {
         method: "POST",
@@ -1318,6 +1318,7 @@ export default function ReportsApp({ activeView = "reports", onNavigate }) {
           ))}
         </div>
 
+        {adminUnlocked ? (
         <div style={{ display: "grid", gap: 12, justifyItems: "start" }}>
           <button
             onClick={() => setShowAdminWaitlist((current) => !current)}
@@ -1344,6 +1345,7 @@ export default function ReportsApp({ activeView = "reports", onNavigate }) {
             />
           ) : null}
         </div>
+        ) : null}
       </div>
     </div>
   );

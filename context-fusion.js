@@ -217,6 +217,9 @@ function buildGeoContext(event) {
     ? "Relevant chokepoint or maritime corridor is present in the signal context."
     : "No explicit chokepoint match detected.";
   return {
+    eventLocation: location.label ?? "Location under review",
+    situationContext: event.situationContext ?? event.situation_context ?? location.contextLabel ?? location.label ?? "Regional situation under review",
+    relatedChokepoint: extractRelatedChokepoint(corpus),
     locationLabel: location.label ?? "Location under review",
     geoAccuracy,
     inferredFrom: geoAccuracy.reason ?? location.reason ?? "Available event metadata and source context.",
@@ -227,6 +230,49 @@ function buildGeoContext(event) {
       ? "Distance-based context is approximate because the event location is broad."
       : "Distance-based context uses the current event coordinates.",
   };
+}
+
+function extractRelatedChokepoint(corpus) {
+  const checkpoints = [
+    ["Strait of Hormuz", /\b(hormuz|persian gulf|gulf of oman)\b/i],
+    ["Bab el-Mandeb / Red Sea", /\b(bab el-mandeb|red sea|houthi|yemen)\b/i],
+    ["Suez Canal", /\b(suez)\b/i],
+    ["Bosporus / Black Sea", /\b(bosporus|black sea|odesa|odessa)\b/i],
+    ["Taiwan Strait", /\b(taiwan strait|taiwan)\b/i],
+    ["Strait of Malacca", /\b(malacca)\b/i],
+  ];
+  return checkpoints.find(([, pattern]) => pattern.test(corpus))?.[0] ?? null;
+}
+
+function makeSignalSpecificLocationText(event, geoContext, nearbyContext, related, historicalEcho) {
+  const sourceSignals = getEventSourceSignals(event);
+  const sectors = unique([...getMarketImpactTags(event), ...list(event.marketImpactTags)]).slice(0, 3);
+  const category = event.category ? `${event.category} signal` : "selected signal";
+  const location = geoContext.locationLabel ?? "this location";
+  const relatedCount = related.relatedSignals?.length ?? 0;
+  const historicalCount = historicalEcho.similarSignalsLast30d ?? 0;
+  const nearbyAssets = [
+    ...(nearbyContext.nearestChokepoints ?? []),
+    ...(nearbyContext.nearestPorts ?? []),
+    ...(nearbyContext.nearestEnergyNodes ?? []),
+    ...(nearbyContext.nearestMilitaryBases ?? []),
+  ].slice(0, 3);
+  const assetText = nearbyAssets.length
+    ? `Nearby context includes ${nearbyAssets.map((item) => item.name).join(", ")}, which makes the location operationally relevant.`
+    : "Grigori has limited nearby infrastructure context for this location.";
+  const sectorText = sectors.length ? ` with ${sectors.join(", ")} exposure` : "";
+  const relatedText = relatedCount
+    ? ` ${relatedCount} related signal${relatedCount === 1 ? "" : "s"} are linked by geography, sectors, or keywords.`
+    : " No strong related signals are visible under the current lens.";
+  const historyText = historicalCount
+    ? ` Stored memory shows ${historicalCount} similar signal${historicalCount === 1 ? "" : "s"} in the last 30 days.`
+    : " Stored-memory comparison is limited.";
+
+  if (["country", "approximate", "unresolved"].includes(geoContext.geoAccuracy?.value)) {
+    return `For this ${category}, ${location} should be treated as ${geoContext.geoAccuracy.label.toLowerCase()} context rather than a pinpoint incident. The cluster has ${sourceSignals.sourceCount} source signal${sourceSignals.sourceCount === 1 ? "" : "s"}${sectorText}.${relatedText}${historyText} ${assetText}`;
+  }
+
+  return `For this ${category}, ${location} matters because the active cluster links ${sourceSignals.sourceCount} source signal${sourceSignals.sourceCount === 1 ? "" : "s"}${sectorText} to the mapped location.${relatedText}${historyText} ${assetText}`;
 }
 
 function relationScore(event, candidate, situation) {
@@ -473,6 +519,7 @@ export function buildContextFusion(event = {}, allEvents = [], options = {}) {
     const nearbyContext = mapNearbyItems(event);
     const related = buildRelatedSignals(event, events, situation);
     const historicalEcho = buildHistoricalEcho(event, events);
+    geoContext.whyLocationMatters = makeSignalSpecificLocationText(event, geoContext, nearbyContext, related, historicalEcho);
     const secondOrder = getEffectTemplate(event);
     const pressureMap = buildPressureMap(event, secondOrder);
     const watchIndicators = buildWatchIndicators(event, secondOrder, nearbyContext, situation);

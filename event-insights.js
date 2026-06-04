@@ -1,3 +1,9 @@
+import {
+  evaluateScenarioEligibility,
+  getSourceReliability,
+  summarizeSourceReliability,
+} from "./source-reliability.js";
+
 const SOURCE_TRUST_RULES = [
   { pattern: /reuters|apnews|associated press|bbc|financial times|wsj|wall street journal|bloomberg/i, score: 0.95 },
   { pattern: /aljazeera|economist|guardian|ft\.com|nytimes|washington post|dw|france24/i, score: 0.85 },
@@ -397,9 +403,15 @@ export function normalizeSourceName(source) {
 }
 
 export function getSourceTrustScore(source) {
+  const reliability = getSourceReliability(source);
+  if (reliability.tier === "T1_VERIFIED_PRIMARY") return 0.95;
+  if (reliability.tier === "T2_RELIABLE_SECONDARY") return 0.82;
+  if (reliability.tier === "T3_MIXED_OR_BIASED") return 0.45;
+  if (reliability.tier === "T4_LOW_RELIABILITY") return 0.18;
+  if (reliability.tier === "T5_RAW_UNVERIFIED") return 0.12;
   const name = normalizeSourceName(source);
   const match = SOURCE_TRUST_RULES.find((rule) => rule.pattern.test(name));
-  return match?.score ?? 0.58;
+  return match?.score ?? 0.5;
 }
 
 export function getSourceDomains(event) {
@@ -423,12 +435,13 @@ export function getSourceDomains(event) {
 export function getEventSourceSignals(event) {
   const uniqueSources = getSourceDomains(event);
   const sourceCount = uniqueSources.length || Math.max(1, (event.articleIds ?? []).length || 0);
+  const reliabilitySummary = summarizeSourceReliability(uniqueSources);
   const trustScores = uniqueSources.map(getSourceTrustScore);
-  const corroboratedCount = trustScores.filter((score) => score >= 0.75).length || Math.min(1, sourceCount);
+  const corroboratedCount = reliabilitySummary.t1t2Count || trustScores.filter((score) => score >= 0.75).length || Math.min(1, sourceCount);
   const averageTrust = trustScores.length > 0
     ? trustScores.reduce((sum, score) => sum + score, 0) / trustScores.length
-    : 0.58;
-  const corroborationLabel = sourceCount >= 4 && corroboratedCount >= 3
+    : 0.5;
+  const corroborationLabel = sourceCount >= 4 && corroboratedCount >= 3 && reliabilitySummary.lowReliabilityCount === 0
     ? "High corroboration"
     : sourceCount >= 2
       ? "Mixed corroboration"
@@ -438,10 +451,17 @@ export function getEventSourceSignals(event) {
     uniqueSources,
     sourceCount,
     corroboratedCount,
-    independentDomainCount: uniqueSources.length,
+    independentDomainCount: reliabilitySummary.independentSourceCount || uniqueSources.length,
     averageTrust,
-    trustLabel: averageTrust >= 0.85 ? "High" : averageTrust >= 0.7 ? "Medium" : "Low",
+    trustLabel: reliabilitySummary.sourceQualityLabel === "High"
+      ? "High"
+      : reliabilitySummary.sourceQualityLabel === "Medium"
+        ? "Medium"
+        : reliabilitySummary.sourceQualityLabel === "Restricted"
+          ? "Restricted"
+          : averageTrust >= 0.7 ? "Medium" : "Low",
     corroborationLabel,
+    reliabilitySummary,
   };
 }
 
@@ -862,6 +882,7 @@ export function getSourceTrace(event) {
     independentDomainCount: signals.independentDomainCount,
     corroborationLabel: signals.corroborationLabel,
     trustLabel: signals.trustLabel,
+    reliabilitySummary: signals.reliabilitySummary,
   };
 }
 
@@ -912,6 +933,7 @@ export function getRelatedSignalEvidence(event, events = [], limit = 4) {
 
 export function buildEvidenceSummary(event = {}, allEvents = []) {
   const signals = getEventSourceSignals(event);
+  const scenarioEligibility = evaluateScenarioEligibility({ ...event, sourceSignals: signals });
   const geoAccuracy = computeGeoAccuracy(event);
   const sourceAssessment = event.sourceAssessment ?? event.source_assessment ?? {};
   const contentTypes = Array.isArray(sourceAssessment.contentTypes) ? sourceAssessment.contentTypes : [];
@@ -924,9 +946,11 @@ export function buildEvidenceSummary(event = {}, allEvents = []) {
   return {
     sourceCount: signals.sourceCount,
     domainCount: signals.independentDomainCount,
-    sourceMix: sourceQuality || (signals.trustLabel === "Low" ? "limited classification" : `${signals.trustLabel.toLowerCase()} source quality`),
+    sourceMix: sourceQuality || `${signals.reliabilitySummary.sourceQualityLabel.toLowerCase()} source quality`,
+    sourceReliability: signals.reliabilitySummary,
+    scenarioEligibility,
     contentTypeMix: contentTypes.length ? unique(contentTypes).join(", ") : "limited classification",
-    confidence: event.confidence ?? "Low",
+    confidence: scenarioEligibility.displayConfidence ?? event.confidence ?? "Low",
     geoAccuracy,
     latestSourceTime,
     relatedGrouped,
@@ -1218,6 +1242,7 @@ export function aggregateMarketImpact(events, marketContext = null) {
 export function buildEventBrief(event, allEvents = []) {
   const sanitized = sanitizeEventNarrative(event).cleaned;
   const sourceTrace = getSourceTrace(event);
+  const scenarioEligibility = evaluateScenarioEligibility({ ...sanitized, sourceSignals: getEventSourceSignals(sanitized) });
   const location = inferLocationDetails(sanitized);
   const executiveSummary = getOneLineSummary(sanitized);
   const developments = (sanitized.developments ?? []).slice(0, 5);
@@ -1249,6 +1274,7 @@ export function buildEventBrief(event, allEvents = []) {
     marketImpact: sanitized.marketImpact ?? {},
     sectorImpact: unique(scenarios.flatMap((scenario) => scenario.impact?.sectors ?? [])).slice(0, 6),
     sourceTrace,
+    scenarioEligibility,
     confidenceDrivers: buildConfidenceDrivers(sanitized),
     confidenceExplanation: explainConfidence(sanitized),
     confidenceRationale: sanitized.confidenceRationale ?? explainConfidence(sanitized),
@@ -1264,7 +1290,7 @@ export function buildEventBrief(event, allEvents = []) {
     sourceAssessment: sanitized.sourceAssessment ?? {
       sourceCount: sourceTrace.sourceCount,
       corroborationLevel: sourceTrace.corroborationLabel,
-      limitations: "Open-source reporting can remain incomplete or lag operational developments.",
+      limitations: `Open-source reporting can remain incomplete or lag operational developments. Source quality: ${sourceTrace.reliabilitySummary?.sourceQualityLabel ?? "Unknown"}.`,
     },
     aiStatusLabel:
       (sanitized.aiStatus ?? sanitized.ai_status) === "enriched"
