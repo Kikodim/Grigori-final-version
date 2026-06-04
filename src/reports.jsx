@@ -204,28 +204,28 @@ function PlanCard({ plan, emphasized = false, actionLabel = "Coming Soon" }) {
 function SampleReportsSection({ isMobile = false }) {
   const samples = [
     {
-      title: "Strait of Hormuz Situation Report",
+      title: "Energy & Shipping Morning Brief",
       region: "Strait of Hormuz",
       focus: "Energy / Shipping",
-      includes: "source confidence, tanker risk, oil context, escalation triggers",
+      includes: "watchlist-ranked source confidence, tanker risk, oil context, escalation triggers",
     },
     {
-      title: "Black Sea Security Brief",
-      region: "Black Sea",
-      focus: "Military / Shipping",
-      includes: "port disruption watch, grain corridor exposure, NATO signaling",
+      title: "Middle East Escalation Brief",
+      region: "Gulf / Red Sea",
+      focus: "Military / Energy",
+      includes: "operator watch indicators, chokepoint exposure, source-quality caveats",
     },
     {
-      title: "Europe / Balkans Political Risk Snapshot",
-      region: "Europe / Balkans",
-      focus: "Political Risk",
-      includes: "elections, protests, EU pressure, energy-security implications",
+      title: "Cyber & Infrastructure Watch",
+      region: "Global",
+      focus: "Cyber / Infrastructure",
+      includes: "outage signals, sector exposure, escalation thresholds, monitoring triggers",
     },
   ];
   return (
     <ShellCard title="Preview Reports" eyebrow="Coming soon">
       <div style={{ color: "#cbd5e1", lineHeight: 1.8, marginBottom: 18 }}>
-        Sample report formats show how paid briefings will package Grigori signals into structured, source-aware intelligence products.
+        Personalized reports will use your selected watchlists to generate morning briefs, scenario updates, and PDF exports. Sample formats show how paid briefings will package Grigori signals into structured, source-aware intelligence products.
       </div>
       <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "repeat(3, minmax(0, 1fr))", gap: 14 }}>
         {samples.map((sample) => (

@@ -41,6 +41,14 @@ import {
   formatSourceReliability,
   summarizeSourceReliability,
 } from "./source-reliability.js";
+import {
+  SELECTED_WATCHLIST_STORAGE_KEY,
+  WATCHLIST_PRESETS,
+  buildAlertPreview,
+  buildMorningBrief,
+  getWatchlistById,
+  rankSignalsForWatchlist,
+} from "./watchlist-intelligence.js";
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // DATA
@@ -3355,7 +3363,7 @@ function computeActiveSignalPriority(event) {
   const confidenceScore = Number(event.confidenceScore ?? 0);
   const toneBoost = event.tone === "Escalating" ? 4 : event.tone === "Volatile" ? 2 : 0;
 
-  return (
+  const base = (
     impactScore * 0.35 +
     severityScore * 0.25 +
     importanceScore * 0.2 +
@@ -3364,6 +3372,7 @@ function computeActiveSignalPriority(event) {
     confidenceScore * 0.02 +
     toneBoost
   );
+  return base + Number(event.watchlistPriorityScore ?? 0) * 0.18;
 }
 
 function getSignalFreshnessMeta(event) {
@@ -3438,8 +3447,8 @@ function getSignalFreshnessMeta(event) {
 function sortActiveSignals(events, sortMode = "priority") {
   const ranked = [...events];
   ranked.sort((left, right) => {
-    const leftPriority = computeActiveSignalPriority(left);
-    const rightPriority = computeActiveSignalPriority(right);
+    const leftPriority = Number(left.watchlistPriorityScore ?? computeActiveSignalPriority(left));
+    const rightPriority = Number(right.watchlistPriorityScore ?? computeActiveSignalPriority(right));
     const leftUpdated = new Date(getBestEventTimestamp(left).value ?? left.timestamp ?? 0).getTime();
     const rightUpdated = new Date(getBestEventTimestamp(right).value ?? right.timestamp ?? 0).getTime();
     const leftNewest = new Date(left.timestamp ?? left.created_at ?? 0).getTime();
@@ -3611,7 +3620,7 @@ function sourceReliabilityTitle(source) {
   return `${formatted.domain} · ${formatted.label} · ${formatted.sourceType}${flags}`;
 }
 
-function computeTopAttentionSignals(events = []) {
+function computeTopAttentionSignals(events = [], selectedWatchlist = null) {
   return events
     .map((event) => {
       const eligibility = event.scenarioEligibility ?? evaluateScenarioEligibility(event);
@@ -3624,10 +3633,12 @@ function computeTopAttentionSignals(events = []) {
       const freshness = ageHours <= 6 ? 100 : ageHours <= 24 ? 72 : ageHours <= 72 ? 42 : 10;
       const sourceQualityScore = source.sourceQualityLabel === "High" ? 100 : source.sourceQualityLabel === "Medium" ? 78 : source.sourceQualityLabel === "Mixed" ? 52 : 18;
       const clusterScore = Math.min(100, sourceCount * 18);
-      const score = impact * 0.25 + escalation * 0.2 + freshness * 0.2 + sourceQualityScore * 0.2 + clusterScore * 0.15;
+      const lensMatchScore = Number(event.analystLensMatch?.score ?? 0);
+      const score = impact * 0.25 + escalation * 0.2 + freshness * 0.2 + sourceQualityScore * 0.2 + clusterScore * 0.15 + lensMatchScore * 0.35;
       return { event, eligibility, source, score, ageHours, sourceCount };
     })
     .filter(({ event, eligibility, source, ageHours }) => {
+      if (selectedWatchlist && selectedWatchlist.id !== "global_high_impact" && !event.analystLensMatch?.matched) return false;
       if (source.lowReliabilityCount > 0) return false;
       if (source.independentSourceCount <= 1 && source.t1t2Count < 1) return false;
       if (eligibility.displayConfidence === "Very Low") return false;
@@ -6323,7 +6334,7 @@ function TopBar({ counts, bordersLoaded, activeLayers, onLayerToggle, layerDensi
 // DESKTOP LEFT SIDEBAR
 // ═══════════════════════════════════════════════════════════════════════════════
 
-function DesktopSidebar({ events, selectedEvent, onSelect, modeHours, onModeChange, topOffset = TOP_BAR_HEIGHT, sortMode = "priority", onSortChange, systemStatus, refreshState, adminUnlocked = false, feedState, onCollapse, topAttentionSignals = [] }) {
+function DesktopSidebar({ events, selectedEvent, onSelect, modeHours, onModeChange, topOffset = TOP_BAR_HEIGHT, sortMode = "priority", onSortChange, systemStatus, refreshState, adminUnlocked = false, feedState, onCollapse, topAttentionSignals = [], selectedWatchlist, onWatchlistChange, morningBrief, alertPreview }) {
   const options = [
     { label: "24h", value: 24 },
     { label: "7d", value: 24 * 7 },
@@ -6380,6 +6391,9 @@ function DesktopSidebar({ events, selectedEvent, onSelect, modeHours, onModeChan
             ? "Best available intelligence signals while live refresh is pending."
             : "Live geopolitical signals prioritized for the current lens."}
         </div>
+        {selectedWatchlist ? (
+          <WatchlistSelector selectedWatchlist={selectedWatchlist} onChange={onWatchlistChange} />
+        ) : null}
         <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 12 }}>
           <TrafficPill level={newsFreshness.tone}>News {newsFreshness.label}</TrafficPill>
           <TrafficPill level={aiFreshness.tone}>{formatAiFreshnessLabel(aiFreshness)}</TrafficPill>
@@ -6431,6 +6445,8 @@ function DesktopSidebar({ events, selectedEvent, onSelect, modeHours, onModeChan
         </div>
       </div>
       <div style={sharedPanelBodyStyle({ flex: 1 })}>
+        <MorningBriefCard brief={morningBrief} onSelect={onSelect} />
+        <AlertPreviewCard preview={alertPreview} onSelect={onSelect} />
         {topAttentionSignals.length > 0 ? (
           <div style={{ padding: "14px 16px", borderBottom: "1px solid rgba(87,216,255,0.08)", display: "grid", gap: 9 }}>
             <div style={{ color: "rgba(103,220,255,0.48)", fontSize: 10, fontFamily: mono, letterSpacing: "0.14em", textTransform: "uppercase" }}>
@@ -6491,7 +6507,7 @@ function DesktopSidebar({ events, selectedEvent, onSelect, modeHours, onModeChan
                 </TrafficPill>
                 <TrafficPill level="neutral">{ev.category ?? "Political"}</TrafficPill>
                 <TrafficPill level={freshnessMeta.tone}>{freshnessMeta.label}</TrafficPill>
-                {ev.watchlistMatch?.matched ? <TrafficPill level="amber">Watchlist</TrafficPill> : null}
+                {ev.analystLensMatch?.matched ? <TrafficPill level="amber">Matches {ev.analystLensMatch.watchlistName}</TrafficPill> : ev.watchlistMatch?.matched ? <TrafficPill level="amber">Watchlist</TrafficPill> : null}
               </div>
               <div style={{ color: sel ? "#c8e8ff" : "rgba(235,244,255,0.9)", fontSize: 17,
                 fontFamily: display, fontWeight: 700, lineHeight: 1.22, marginBottom: 8, letterSpacing: "0.01em" }}>
@@ -6581,6 +6597,127 @@ function ActiveSignalsRail({ count, topOffset = TOP_BAR_HEIGHT, onExpand }) {
   );
 }
 
+function layerLabelForKey(key) {
+  return CONTEXT_LAYER_DEFS[key]?.label ?? LAYER_DEFS[key]?.label ?? key.replace(/^context/, "");
+}
+
+function WatchlistSelector({ selectedWatchlist, onChange }) {
+  return (
+    <div style={{ display: "grid", gap: 7, marginTop: 12 }}>
+      <label style={{ color: "rgba(103,220,255,0.52)", fontSize: 9, fontFamily: mono, letterSpacing: "0.14em", textTransform: "uppercase" }}>
+        Analyst Lens
+      </label>
+      <select
+        value={selectedWatchlist.id}
+        onChange={(event) => onChange?.(event.target.value)}
+        style={{
+          minHeight: 34,
+          borderRadius: 12,
+          background: "rgba(6,15,30,0.84)",
+          border: "1px solid rgba(87,216,255,0.16)",
+          color: "#d6ebff",
+          fontFamily: mono,
+          fontSize: 10,
+          letterSpacing: "0.06em",
+          padding: "0 10px",
+          width: "100%",
+        }}
+      >
+        {WATCHLIST_PRESETS.map((item) => (
+          <option key={item.id} value={item.id}>{item.name}</option>
+        ))}
+      </select>
+      <div style={{ color: "rgba(148,175,198,0.72)", fontSize: 10, lineHeight: 1.5, fontFamily: bodyFont }}>
+        {selectedWatchlist.description}
+      </div>
+      <div style={{ color: "rgba(105,231,255,0.62)", fontSize: 9, lineHeight: 1.5, fontFamily: mono, letterSpacing: "0.06em", textTransform: "uppercase" }}>
+        Suggests {selectedWatchlist.preferredLayers.map(layerLabelForKey).join(", ")}.
+      </div>
+    </div>
+  );
+}
+
+function MorningBriefCard({ brief, onSelect }) {
+  if (!brief) return null;
+  return (
+    <div style={{ padding: "14px 16px", borderBottom: "1px solid rgba(87,216,255,0.08)", display: "grid", gap: 10 }}>
+      <div>
+        <div style={{ color: "rgba(103,220,255,0.48)", fontSize: 10, fontFamily: mono, letterSpacing: "0.14em", textTransform: "uppercase" }}>Morning Brief</div>
+        <div style={{ color: "rgba(148,175,198,0.72)", fontSize: 10, lineHeight: 1.5, fontFamily: mono }}>Based on selected analyst lens.</div>
+      </div>
+      <div style={{ color: "#d6ebff", fontSize: 12, lineHeight: 1.6, fontFamily: bodyFont }}>{brief.bottomLine}</div>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+        <TrafficPill level="neutral">Data as of {formatShortAge(brief.generatedAt)}</TrafficPill>
+        <TrafficPill level={brief.providerCoverage === "limited" || brief.providerCoverage === "degraded" ? "amber" : "neutral"}>Coverage: {brief.providerCoverage}</TrafficPill>
+        <TrafficPill level="neutral">Situation: {brief.strongestSituation}</TrafficPill>
+      </div>
+      {brief.topAttention.length > 0 ? (
+        <div style={{ display: "grid", gap: 6 }}>
+          <div style={{ color: "rgba(120,178,214,0.58)", fontSize: 9, fontFamily: mono, letterSpacing: "0.1em", textTransform: "uppercase" }}>Top attention</div>
+          {brief.topAttention.slice(0, 3).map((event, index) => (
+            <button key={event.id} onClick={() => onSelect?.(event)} style={{
+              border: "1px solid rgba(94,164,195,0.1)",
+              background: "rgba(8,20,36,0.58)",
+              borderRadius: 12,
+              padding: "8px 9px",
+              textAlign: "left",
+              cursor: "pointer",
+              color: "rgba(214,235,255,0.86)",
+              fontSize: 11,
+              lineHeight: 1.4,
+              fontFamily: display,
+              fontWeight: 700,
+            }}>
+              {index + 1}. {event.title}
+            </button>
+          ))}
+        </div>
+      ) : null}
+      <div style={{ display: "grid", gap: 5 }}>
+        <div style={{ color: "rgba(120,178,214,0.58)", fontSize: 9, fontFamily: mono, letterSpacing: "0.1em", textTransform: "uppercase" }}>What changed</div>
+        {brief.whatChanged.slice(0, 4).map((item) => (
+          <div key={item} style={{ color: "rgba(150,205,245,0.68)", fontSize: 10, lineHeight: 1.5, fontFamily: bodyFont }}>• {item}</div>
+        ))}
+      </div>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+        {brief.watchNext.slice(0, 5).map((item) => <TrafficPill key={item} level="neutral">Watch: {item}</TrafficPill>)}
+      </div>
+      <div style={{ color: "rgba(130,185,230,0.58)", fontSize: 10, lineHeight: 1.5, fontFamily: mono }}>{brief.confidenceCaveat}</div>
+    </div>
+  );
+}
+
+function AlertPreviewCard({ preview, onSelect }) {
+  if (!preview) return null;
+  return (
+    <div style={{ padding: "12px 16px", borderBottom: "1px solid rgba(87,216,255,0.08)", display: "grid", gap: 8 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center" }}>
+        <div style={{ color: "rgba(103,220,255,0.48)", fontSize: 10, fontFamily: mono, letterSpacing: "0.14em", textTransform: "uppercase" }}>Alert Preview</div>
+        <TrafficPill level={preview.alerts.length ? "amber" : "neutral"}>{preview.alerts.length ? "Would alert" : "Quiet"}</TrafficPill>
+      </div>
+      <div style={{ color: "rgba(150,205,245,0.68)", fontSize: 10, lineHeight: 1.5, fontFamily: bodyFont }}>{preview.message}</div>
+      {preview.alerts.length ? (
+        <div style={{ display: "grid", gap: 6 }}>
+          {preview.alerts.slice(0, 3).map((alert) => (
+            <button key={`${alert.eventId}-${alert.reason}`} onClick={() => onSelect?.(alert.event)} style={{
+              border: "1px solid rgba(255,191,71,0.12)",
+              background: "rgba(36,24,8,0.22)",
+              borderRadius: 12,
+              padding: "8px 9px",
+              textAlign: "left",
+              cursor: "pointer",
+            }}>
+              <div style={{ color: "#ffd890", fontSize: 10, lineHeight: 1.45, fontFamily: mono }}>Would alert: {alert.reason}</div>
+              <div style={{ color: "rgba(214,235,255,0.78)", fontSize: 11, lineHeight: 1.45, fontFamily: bodyFont }}>{alert.title}</div>
+            </button>
+          ))}
+        </div>
+      ) : null}
+      <div style={{ color: "rgba(130,185,230,0.58)", fontSize: 10, lineHeight: 1.5, fontFamily: mono }}>Email/Slack alerts planned for Reports Preview.</div>
+    </div>
+  );
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // MAIN APP
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -6642,6 +6779,10 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
   const [showPersonalize, setShowPersonalize] = useState(false);
   const [prefs,           setPrefs]           = useState({ region: "all", sectors: [], riskLevel: "all" });
   const [selectedLens,    setSelectedLens]    = useState("global_risk");
+  const [selectedWatchlistId, setSelectedWatchlistId] = useState(() => {
+    if (typeof window === "undefined") return "global_high_impact";
+    return window.localStorage.getItem(SELECTED_WATCHLIST_STORAGE_KEY) || "global_high_impact";
+  });
   const [activeSignalSort, setActiveSignalSort] = useState("priority");
   const [refreshState,    setRefreshState]    = useState({ status: "idle", message: "", detail: null });
   const [briefing,        setBriefing]        = useState(buildBriefing(SCORED_EVENTS));
@@ -6679,6 +6820,7 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
 
   const { isMobile, isTablet } = useViewport();
   const headerHeight = getHeaderHeight(isMobile, isTablet);
+  const selectedWatchlist = useMemo(() => getWatchlistById(selectedWatchlistId), [selectedWatchlistId]);
 
   const refreshData = useCallback(async (forceFresh = false) => {
     if (!DEMO_MODE) {
@@ -6774,6 +6916,11 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
     if (typeof window === "undefined") return;
     window.localStorage.setItem(WATCHLIST_STORAGE_KEY, JSON.stringify(watchlist));
   }, [watchlist]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem(SELECTED_WATCHLIST_STORAGE_KEY, selectedWatchlist.id);
+  }, [selectedWatchlist.id]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -6937,12 +7084,21 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
       watchlistMatch: eventMatchesWatchlist(event, watchlist),
       priorityQueueScore: computeActiveSignalPriority(event),
     }));
-    const lensApplied = distributeContactPositions(applyDecisionLens(filtered, selectedLens));
+    const rankedForWatchlist = rankSignalsForWatchlist(filtered, selectedWatchlist).map((event) => ({
+      ...event,
+      watchlistMatch: {
+        ...(event.watchlistMatch ?? {}),
+        analystLens: event.analystLensMatch,
+        matched: Boolean(event.watchlistMatch?.matched || event.analystLensMatch?.matched),
+      },
+      priorityQueueScore: Number(event.watchlistPriorityScore ?? computeActiveSignalPriority(event)),
+    }));
+    const lensApplied = distributeContactPositions(applyDecisionLens(rankedForWatchlist, selectedLens));
     return applyVisibleSignalDiversity(sortActiveSignals(lensApplied, activeSignalSort), activeSignalSort).map((event) => ({
       ...event,
       priorityQueueScore: computeActiveSignalPriority(event),
     }));
-  }, [timelineEvents, prefs, watchlist, selectedLens, activeSignalSort]);
+  }, [timelineEvents, prefs, watchlist, selectedLens, activeSignalSort, selectedWatchlist]);
 
   const conflictZones = useMemo(
     () => deriveConflictZones(filteredEvents),
@@ -6950,8 +7106,8 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
   );
 
   const topAttentionSignals = useMemo(
-    () => computeTopAttentionSignals(filteredEvents),
-    [filteredEvents]
+    () => computeTopAttentionSignals(filteredEvents, selectedWatchlist),
+    [filteredEvents, selectedWatchlist]
   );
 
   const liveTopEvents = useMemo(
@@ -6979,6 +7135,19 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
       lastRefreshAt: systemStatus?.automation?.lastNewsRefreshAt,
     }),
     [filteredEvents, feedState, refreshState, strategicSituations, systemStatus?.automation?.lastNewsRefreshAt]
+  );
+  const morningBrief = useMemo(
+    () => buildMorningBrief(filteredEvents, selectedWatchlist, {
+      feedState,
+      refreshState,
+      situations: strategicSituations,
+      whatChangedSummary,
+    }),
+    [filteredEvents, selectedWatchlist, feedState, refreshState, strategicSituations, whatChangedSummary]
+  );
+  const alertPreview = useMemo(
+    () => buildAlertPreview(filteredEvents, selectedWatchlist),
+    [filteredEvents, selectedWatchlist]
   );
   const renderedFlights = useMemo(
     () => flights.slice(0, getLayerDensityCap("flights", layerDensity.flights)),
@@ -7150,6 +7319,18 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
 
       const layers = sceneRef.current.liveLayers;
       if (layers && layers[key]) layers[key].visible = next[key];
+      return next;
+    });
+  }, []);
+
+  const handleWatchlistChange = useCallback((id) => {
+    const nextWatchlist = getWatchlistById(id);
+    setSelectedWatchlistId(nextWatchlist.id);
+    setActiveLayers((current) => {
+      const next = { ...current };
+      nextWatchlist.preferredLayers.forEach((key) => {
+        next[key] = true;
+      });
       return next;
     });
   }, []);
@@ -8152,6 +8333,10 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
             adminUnlocked={adminSession.unlocked}
             feedState={feedState}
             topAttentionSignals={topAttentionSignals}
+            selectedWatchlist={selectedWatchlist}
+            onWatchlistChange={handleWatchlistChange}
+            morningBrief={morningBrief}
+            alertPreview={alertPreview}
             onCollapse={() => setPanelVisibility((current) => ({ ...current, events: false }))}
           />
         )}
