@@ -2110,10 +2110,10 @@ function filterEvents(events, prefs) {
 }
 
 // ── Personalization filter panel UI ───────────────────────────────────────────
-function PersonalizationPanel({ prefs, onChange, onClose, watchlist, selectedEvent, onToggleRegion, onToggleTopic }) {
+function PersonalizationPanel({ prefs, onChange, onClose, watchlist, selectedEvent, onToggleRegion, onToggleTopic, leftOffset = 280 }) {
   return (
     <div style={{
-      position: "absolute", top: FLOATING_TOP, left: 280, width: 300, zIndex: 45,
+      position: "absolute", top: FLOATING_TOP, left: leftOffset, width: 300, zIndex: 45,
       background: "linear-gradient(180deg, rgba(5,12,24,0.96) 0%, rgba(7,15,29,0.98) 100%)",
       border: "1px solid rgba(94, 164, 195, 0.16)", borderRadius: 18,
       boxShadow: "0 24px 55px rgba(0,0,0,0.46)",
@@ -3231,8 +3231,42 @@ function sharedPanelBodyStyle(extra = {}) {
     overscrollBehavior: "contain",
     WebkitOverflowScrolling: "touch",
     minHeight: 0,
+    scrollbarGutter: "stable",
     ...extra,
   };
+}
+
+const LEFT_PANEL_WIDTH_STORAGE_KEY = "grigori:left-panel-width";
+const LEFT_PANEL_COLLAPSED_STORAGE_KEY = "grigori:left-panel-collapsed";
+const LEFT_PANEL_SECTIONS_STORAGE_KEY = "grigori:left-panel-sections";
+const LEFT_PANEL_DEFAULT_WIDTH = 420;
+const LEFT_PANEL_MIN_WIDTH = 320;
+
+function getLeftPanelMaxWidth() {
+  if (typeof window === "undefined") return 620;
+  const vw = window.innerWidth || 1440;
+  return Math.max(LEFT_PANEL_MIN_WIDTH, Math.min(vw >= 1800 ? 680 : 620, Math.floor(vw * 0.38)));
+}
+
+function clampLeftPanelWidth(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return LEFT_PANEL_DEFAULT_WIDTH;
+  return Math.max(LEFT_PANEL_MIN_WIDTH, Math.min(getLeftPanelMaxWidth(), Math.round(numeric)));
+}
+
+function readStoredLeftPanelWidth() {
+  if (typeof window === "undefined") return LEFT_PANEL_DEFAULT_WIDTH;
+  return clampLeftPanelWidth(window.localStorage.getItem(LEFT_PANEL_WIDTH_STORAGE_KEY));
+}
+
+function readStoredPanelSections() {
+  if (typeof window === "undefined") return {};
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(LEFT_PANEL_SECTIONS_STORAGE_KEY) ?? "{}");
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
 }
 
 function getDataFreshness(value) {
@@ -5387,7 +5421,7 @@ function MobileBottomSheet({ events, selectedEvent, activeScenario, onScenarioCh
               onScenarioChange={onScenarioChange} allEvents={allEvents} socialSignals={socialSignals} />
           </div>
         ) : sheetState !== "peek" ? (
-          <div style={sharedPanelBodyStyle({ flex: 1, padding: 14 })}>
+          <div style={sharedPanelBodyStyle({ flex: 1, padding: "14px 14px calc(env(safe-area-inset-bottom, 0px) + 96px)" })}>
             {activeTab === "signals" ? (
               <div style={{ display: "grid", gap: 10 }}>
                 <div style={{ display: "grid", gap: 8 }}>
@@ -6334,7 +6368,7 @@ function TopBar({ counts, bordersLoaded, activeLayers, onLayerToggle, layerDensi
 // DESKTOP LEFT SIDEBAR
 // ═══════════════════════════════════════════════════════════════════════════════
 
-function DesktopSidebar({ events, selectedEvent, onSelect, modeHours, onModeChange, topOffset = TOP_BAR_HEIGHT, sortMode = "priority", onSortChange, systemStatus, refreshState, adminUnlocked = false, feedState, onCollapse, topAttentionSignals = [], selectedWatchlist, onWatchlistChange, morningBrief, alertPreview }) {
+function DesktopSidebar({ events, selectedEvent, onSelect, modeHours, onModeChange, topOffset = TOP_BAR_HEIGHT, sortMode = "priority", onSortChange, systemStatus, refreshState, adminUnlocked = false, feedState, onCollapse, topAttentionSignals = [], selectedWatchlist, onWatchlistChange, morningBrief, alertPreview, width = LEFT_PANEL_DEFAULT_WIDTH, onResizeStart, sectionState = {}, onToggleSection }) {
   const options = [
     { label: "24h", value: 24 },
     { label: "7d", value: 24 * 7 },
@@ -6346,14 +6380,30 @@ function DesktopSidebar({ events, selectedEvent, onSelect, modeHours, onModeChan
   const sortOptions = ACTIVE_SIGNAL_SORT_OPTIONS;
   return (
     <div style={{
-      position: "absolute", left: 0, top: topOffset, bottom: 0, width: 284,
+      position: "absolute",
+      left: 0,
+      top: topOffset,
+      bottom: 0,
+      width,
+      maxWidth: "min(680px, 38vw)",
+      height: `calc(100dvh - ${topOffset}px)`,
       background: "rgba(4,10,21,0.78)", backdropFilter: "blur(16px)",
       WebkitBackdropFilter: "blur(14px)",
       borderRight: "1px solid rgba(87,216,255,0.12)",
       display: "flex", flexDirection: "column", zIndex: 30,
+      boxShadow: "18px 0 45px rgba(0,0,0,0.24)",
+      overflow: "hidden",
     }}>
-      <div style={{ padding: "18px 18px 16px", borderBottom: "1px solid rgba(87,216,255,0.08)",
-        flexShrink: 0 }}>
+      <div style={{
+        padding: "16px 18px 14px",
+        borderBottom: "1px solid rgba(87,216,255,0.08)",
+        flexShrink: 0,
+        position: "sticky",
+        top: 0,
+        zIndex: 2,
+        background: "linear-gradient(180deg, rgba(4,10,21,0.96) 0%, rgba(4,10,21,0.84) 100%)",
+        backdropFilter: "blur(16px)",
+      }}>
         <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center" }}>
           <div style={{ color: "rgba(0,200,255,0.38)", fontSize: 10, fontFamily: mono,
             letterSpacing: "0.14em", textTransform: "uppercase" }}>Active Signals</div>
@@ -6444,9 +6494,9 @@ function DesktopSidebar({ events, selectedEvent, onSelect, modeHours, onModeChan
           ))}
         </div>
       </div>
-      <div style={sharedPanelBodyStyle({ flex: 1 })}>
-        <MorningBriefCard brief={morningBrief} onSelect={onSelect} />
-        <AlertPreviewCard preview={alertPreview} onSelect={onSelect} />
+      <div style={sharedPanelBodyStyle({ flex: 1, paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 118px)" })}>
+        <MorningBriefCard brief={morningBrief} onSelect={onSelect} collapsed={!sectionState.morningBrief} onToggle={() => onToggleSection?.("morningBrief")} />
+        <AlertPreviewCard preview={alertPreview} onSelect={onSelect} collapsed={!sectionState.alertPreview} onToggle={() => onToggleSection?.("alertPreview")} />
         {topAttentionSignals.length > 0 ? (
           <div style={{ padding: "14px 16px", borderBottom: "1px solid rgba(87,216,255,0.08)", display: "grid", gap: 9 }}>
             <div style={{ color: "rgba(103,220,255,0.48)", fontSize: 10, fontFamily: mono, letterSpacing: "0.14em", textTransform: "uppercase" }}>
@@ -6560,11 +6610,49 @@ function DesktopSidebar({ events, selectedEvent, onSelect, modeHours, onModeChan
           );
         })}
       </div>
+      <button
+        aria-label="Resize Active Signals panel"
+        onPointerDown={onResizeStart}
+        title="Drag to resize"
+        style={{
+          position: "absolute",
+          top: 0,
+          right: -6,
+          width: 12,
+          height: "100%",
+          border: "none",
+          background: "transparent",
+          cursor: "ew-resize",
+          zIndex: 5,
+          touchAction: "none",
+        }}
+      >
+        <span style={{
+          position: "absolute",
+          top: "50%",
+          right: 4,
+          width: 3,
+          height: 58,
+          transform: "translateY(-50%)",
+          borderRadius: 999,
+          background: "linear-gradient(180deg, rgba(87,216,255,0.08), rgba(87,216,255,0.42), rgba(87,216,255,0.08))",
+          boxShadow: "0 0 12px rgba(87,216,255,0.12)",
+        }} />
+      </button>
     </div>
   );
 }
 
-function ActiveSignalsRail({ count, topOffset = TOP_BAR_HEIGHT, onExpand }) {
+function ActiveSignalsRail({ count, topOffset = TOP_BAR_HEIGHT, onExpand, selectedWatchlist, systemStatus }) {
+  const newsFreshness = getDataFreshness(systemStatus?.automation?.lastNewsRefreshAt);
+  const degraded = newsFreshness.tone === "amber" || newsFreshness.tone === "red";
+  const lensInitials = String(selectedWatchlist?.name ?? "Global")
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part) => part[0])
+    .join("")
+    .toUpperCase();
   return (
     <button
       onClick={onExpand}
@@ -6575,7 +6663,7 @@ function ActiveSignalsRail({ count, topOffset = TOP_BAR_HEIGHT, onExpand }) {
         top: topOffset + 18,
         zIndex: 31,
         width: 46,
-        minHeight: 156,
+        minHeight: 184,
         borderRadius: 14,
         border: "1px solid rgba(87,216,255,0.16)",
         background: "rgba(5,12,24,0.74)",
@@ -6593,6 +6681,17 @@ function ActiveSignalsRail({ count, topOffset = TOP_BAR_HEIGHT, onExpand }) {
         Signals
       </span>
       <span style={{ fontFamily: display, fontSize: 17, fontWeight: 700 }}>{count}</span>
+      <span style={{ fontFamily: mono, fontSize: 9, color: "rgba(214,235,255,0.74)" }}>{lensInitials}</span>
+      <span
+        title={degraded ? "Refresh status needs attention" : "Refresh status OK"}
+        style={{
+          width: 8,
+          height: 8,
+          borderRadius: "50%",
+          background: degraded ? "#ffbf47" : "#58e38f",
+          boxShadow: degraded ? "0 0 10px rgba(255,191,71,0.65)" : "0 0 10px rgba(88,227,143,0.62)",
+        }}
+      />
     </button>
   );
 }
@@ -6637,21 +6736,24 @@ function WatchlistSelector({ selectedWatchlist, onChange }) {
   );
 }
 
-function MorningBriefCard({ brief, onSelect }) {
+function MorningBriefCard({ brief, onSelect, collapsed = false, onToggle }) {
   if (!brief) return null;
   return (
-    <div style={{ padding: "14px 16px", borderBottom: "1px solid rgba(87,216,255,0.08)", display: "grid", gap: 10 }}>
-      <div>
-        <div style={{ color: "rgba(103,220,255,0.48)", fontSize: 10, fontFamily: mono, letterSpacing: "0.14em", textTransform: "uppercase" }}>Morning Brief</div>
-        <div style={{ color: "rgba(148,175,198,0.72)", fontSize: 10, lineHeight: 1.5, fontFamily: mono }}>Based on selected analyst lens.</div>
-      </div>
+    <div style={{ padding: "12px 16px", borderBottom: "1px solid rgba(87,216,255,0.08)", display: "grid", gap: 9 }}>
+      <button onClick={onToggle} style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center", background: "transparent", border: "none", padding: 0, cursor: "pointer", textAlign: "left" }}>
+        <div>
+          <div style={{ color: "rgba(103,220,255,0.48)", fontSize: 10, fontFamily: mono, letterSpacing: "0.14em", textTransform: "uppercase" }}>Morning Brief</div>
+          <div style={{ color: "rgba(148,175,198,0.72)", fontSize: 10, lineHeight: 1.5, fontFamily: mono }}>Based on selected analyst lens.</div>
+        </div>
+        <span style={{ color: "rgba(150,205,245,0.62)", fontSize: 14, fontFamily: mono }}>{collapsed ? "+" : "−"}</span>
+      </button>
       <div style={{ color: "#d6ebff", fontSize: 12, lineHeight: 1.6, fontFamily: bodyFont }}>{brief.bottomLine}</div>
       <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
         <TrafficPill level="neutral">Data as of {formatShortAge(brief.generatedAt)}</TrafficPill>
         <TrafficPill level={brief.providerCoverage === "limited" || brief.providerCoverage === "degraded" ? "amber" : "neutral"}>Coverage: {brief.providerCoverage}</TrafficPill>
         <TrafficPill level="neutral">Situation: {brief.strongestSituation}</TrafficPill>
       </div>
-      {brief.topAttention.length > 0 ? (
+      {!collapsed && brief.topAttention.length > 0 ? (
         <div style={{ display: "grid", gap: 6 }}>
           <div style={{ color: "rgba(120,178,214,0.58)", fontSize: 9, fontFamily: mono, letterSpacing: "0.1em", textTransform: "uppercase" }}>Top attention</div>
           {brief.topAttention.slice(0, 3).map((event, index) => (
@@ -6673,30 +6775,33 @@ function MorningBriefCard({ brief, onSelect }) {
           ))}
         </div>
       ) : null}
-      <div style={{ display: "grid", gap: 5 }}>
+      {!collapsed ? <div style={{ display: "grid", gap: 5 }}>
         <div style={{ color: "rgba(120,178,214,0.58)", fontSize: 9, fontFamily: mono, letterSpacing: "0.1em", textTransform: "uppercase" }}>What changed</div>
         {brief.whatChanged.slice(0, 4).map((item) => (
           <div key={item} style={{ color: "rgba(150,205,245,0.68)", fontSize: 10, lineHeight: 1.5, fontFamily: bodyFont }}>• {item}</div>
         ))}
-      </div>
-      <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+      </div> : null}
+      {!collapsed ? <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
         {brief.watchNext.slice(0, 5).map((item) => <TrafficPill key={item} level="neutral">Watch: {item}</TrafficPill>)}
-      </div>
-      <div style={{ color: "rgba(130,185,230,0.58)", fontSize: 10, lineHeight: 1.5, fontFamily: mono }}>{brief.confidenceCaveat}</div>
+      </div> : null}
+      {!collapsed ? <div style={{ color: "rgba(130,185,230,0.58)", fontSize: 10, lineHeight: 1.5, fontFamily: mono }}>{brief.confidenceCaveat}</div> : null}
     </div>
   );
 }
 
-function AlertPreviewCard({ preview, onSelect }) {
+function AlertPreviewCard({ preview, onSelect, collapsed = true, onToggle }) {
   if (!preview) return null;
   return (
     <div style={{ padding: "12px 16px", borderBottom: "1px solid rgba(87,216,255,0.08)", display: "grid", gap: 8 }}>
-      <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center" }}>
+      <button onClick={onToggle} style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center", background: "transparent", border: "none", padding: 0, cursor: "pointer", textAlign: "left" }}>
         <div style={{ color: "rgba(103,220,255,0.48)", fontSize: 10, fontFamily: mono, letterSpacing: "0.14em", textTransform: "uppercase" }}>Alert Preview</div>
-        <TrafficPill level={preview.alerts.length ? "amber" : "neutral"}>{preview.alerts.length ? "Would alert" : "Quiet"}</TrafficPill>
-      </div>
+        <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+          <TrafficPill level={preview.alerts.length ? "amber" : "neutral"}>{preview.alerts.length ? "Would alert" : "Quiet"}</TrafficPill>
+          <span style={{ color: "rgba(150,205,245,0.62)", fontSize: 14, fontFamily: mono }}>{collapsed ? "+" : "−"}</span>
+        </div>
+      </button>
       <div style={{ color: "rgba(150,205,245,0.68)", fontSize: 10, lineHeight: 1.5, fontFamily: bodyFont }}>{preview.message}</div>
-      {preview.alerts.length ? (
+      {!collapsed && preview.alerts.length ? (
         <div style={{ display: "grid", gap: 6 }}>
           {preview.alerts.slice(0, 3).map((alert) => (
             <button key={`${alert.eventId}-${alert.reason}`} onClick={() => onSelect?.(alert.event)} style={{
@@ -6713,7 +6818,7 @@ function AlertPreviewCard({ preview, onSelect }) {
           ))}
         </div>
       ) : null}
-      <div style={{ color: "rgba(130,185,230,0.58)", fontSize: 10, lineHeight: 1.5, fontFamily: mono }}>Email/Slack alerts planned for Reports Preview.</div>
+      {!collapsed ? <div style={{ color: "rgba(130,185,230,0.58)", fontSize: 10, lineHeight: 1.5, fontFamily: mono }}>Email/Slack alerts planned for Reports Preview.</div> : null}
     </div>
   );
 }
@@ -6762,7 +6867,7 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
     };
   });
   const [panelVisibility, setPanelVisibility] = useState(() => ({
-    events: readStoredBoolean(ACTIVE_SIGNALS_STORAGE_KEY, true),
+    events: readStoredBoolean(ACTIVE_SIGNALS_STORAGE_KEY, !readStoredBoolean(LEFT_PANEL_COLLAPSED_STORAGE_KEY, false)),
     briefing: readStoredBoolean(BRIEFING_PANEL_STORAGE_KEY, false),
     marketImpact: readStoredBoolean(MARKET_PANEL_STORAGE_KEY, false),
     dataConfidence: false,
@@ -6772,6 +6877,12 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
     social: false,
     selectedObjectDetail: true,
     timeline: false,
+  }));
+  const [leftPanelWidth, setLeftPanelWidth] = useState(() => readStoredLeftPanelWidth());
+  const [leftPanelSections, setLeftPanelSections] = useState(() => ({
+    morningBrief: false,
+    alertPreview: false,
+    ...readStoredPanelSections(),
   }));
   const [showWarRoom,     setShowWarRoom]     = useState(false);
   const [liveEvents,      setLiveEvents]      = useState(SCORED_EVENTS);
@@ -6821,6 +6932,8 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
   const { isMobile, isTablet } = useViewport();
   const headerHeight = getHeaderHeight(isMobile, isTablet);
   const selectedWatchlist = useMemo(() => getWatchlistById(selectedWatchlistId), [selectedWatchlistId]);
+  const leftPanelOffset = !isMobile && panelVisibility.events && activeLayers.intelBoard ? leftPanelWidth + 18 : 18;
+  const resizeStateRef = useRef({ active: false, startX: 0, startWidth: LEFT_PANEL_DEFAULT_WIDTH });
 
   const refreshData = useCallback(async (forceFresh = false) => {
     if (!DEMO_MODE) {
@@ -6926,8 +7039,14 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
     if (typeof window === "undefined") return;
     window.localStorage.setItem(BRIEFING_PANEL_STORAGE_KEY, String(Boolean(panelVisibility.briefing)));
     window.localStorage.setItem(ACTIVE_SIGNALS_STORAGE_KEY, String(Boolean(panelVisibility.events)));
+    window.localStorage.setItem(LEFT_PANEL_COLLAPSED_STORAGE_KEY, String(!panelVisibility.events));
     window.localStorage.setItem(MARKET_PANEL_STORAGE_KEY, String(Boolean(panelVisibility.marketImpact)));
   }, [panelVisibility.briefing, panelVisibility.events, panelVisibility.marketImpact]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem(LEFT_PANEL_SECTIONS_STORAGE_KEY, JSON.stringify(leftPanelSections));
+  }, [leftPanelSections]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -7321,6 +7440,51 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
       if (layers && layers[key]) layers[key].visible = next[key];
       return next;
     });
+  }, []);
+
+  const handleLeftPanelResizeStart = useCallback((event) => {
+    if (isMobile) return;
+    event.preventDefault();
+    const startX = event.clientX;
+    const startWidth = leftPanelWidth;
+    resizeStateRef.current = { active: true, startX, startWidth, nextWidth: startWidth };
+    const previousUserSelect = document.body.style.userSelect;
+    const previousCursor = document.body.style.cursor;
+    document.body.style.userSelect = "none";
+    document.body.style.cursor = "ew-resize";
+
+    const handleMove = (moveEvent) => {
+      const nextWidth = clampLeftPanelWidth(startWidth + (moveEvent.clientX - startX));
+      resizeStateRef.current.nextWidth = nextWidth;
+      setLeftPanelWidth(nextWidth);
+    };
+    const handleUp = () => {
+      resizeStateRef.current.active = false;
+      document.body.style.userSelect = previousUserSelect;
+      document.body.style.cursor = previousCursor;
+      if (typeof window !== "undefined") {
+        window.localStorage.setItem(LEFT_PANEL_WIDTH_STORAGE_KEY, String(clampLeftPanelWidth(resizeStateRef.current.nextWidth ?? leftPanelWidth)));
+      }
+      window.removeEventListener("pointermove", handleMove);
+      window.removeEventListener("pointerup", handleUp);
+      window.removeEventListener("pointercancel", handleUp);
+    };
+
+    window.addEventListener("pointermove", handleMove);
+    window.addEventListener("pointerup", handleUp);
+    window.addEventListener("pointercancel", handleUp);
+  }, [isMobile, leftPanelWidth]);
+
+  const handleToggleLeftPanelSection = useCallback((key) => {
+    setLeftPanelSections((current) => ({ ...current, [key]: !current[key] }));
+  }, []);
+
+  useEffect(() => {
+    const handleResize = () => {
+      setLeftPanelWidth((current) => clampLeftPanelWidth(current));
+    };
+    window.addEventListener("resize", handleResize);
+    return () => window.removeEventListener("resize", handleResize);
   }, []);
 
   const handleWatchlistChange = useCallback((id) => {
@@ -8132,7 +8296,7 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
       `}</style>
 
       {/* Root shell: full viewport, flex column so globe fills middle */}
-      <div style={{ width: "100vw", height: "100vh", display: "flex",
+      <div style={{ width: "100vw", height: "100dvh", display: "flex",
         flexDirection: "column", position: "relative", overflow: "hidden" }}>
 
         {/* TOP BAR — fixed height, no flex shrink */}
@@ -8257,7 +8421,7 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
         <div style={{
           position: "absolute",
       top: headerHeight,
-          left: (!isMobile && panelVisibility.events && activeLayers.intelBoard) ? 284 : 0,
+          left: (!isMobile && panelVisibility.events && activeLayers.intelBoard) ? leftPanelWidth : 0,
           right: (!isMobile && selectedDetail && panelVisibility.selectedObjectDetail) ? (selectedDetail.type === "event" ? 420 : 340) : 0,
           bottom: 0,
           transition: "left 0.3s ease, right 0.3s ease",
@@ -8281,11 +8445,11 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
         </div>
 
         {selectedEvent || selectedZone || selectedObject ? (
-          <GlobalViewButton onReset={handleReturnToGlobalView} mobile={isMobile} offsetLeft={panelVisibility.events && activeLayers.intelBoard ? 302 : 18} />
+          <GlobalViewButton onReset={handleReturnToGlobalView} mobile={isMobile} offsetLeft={leftPanelOffset} />
         ) : null}
         {!isMobile && activeLayers.intelBoard && !introDismissed && !selectedDetail && !panelVisibility.briefing ? (
           <IntroTrustCard
-            leftOffset={panelVisibility.events && activeLayers.intelBoard ? 302 : 18}
+            leftOffset={leftPanelOffset}
             topOffset={headerHeight + 16}
             onDismiss={() => setIntroDismissed(true)}
             onMethodology={handleOpenMethodology}
@@ -8304,17 +8468,17 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
             whatChangedSummary={whatChangedSummary}
             onOpen={handleOpenBriefing}
             onDismiss={handleDismissBriefingCompact}
-            leftOffset={panelVisibility.events && activeLayers.intelBoard ? 302 : 18}
+            leftOffset={leftPanelOffset}
           />
         ) : null}
         {!isMobile && activeLayers.intelBoard && introDismissed && !panelVisibility.briefing && !selectedDetail && briefingCompactDismissed ? (
           <BriefingMiniChip
             onOpen={handleRestoreBriefingCompact}
-            leftOffset={panelVisibility.events && activeLayers.intelBoard ? 302 : 18}
+            leftOffset={leftPanelOffset}
           />
         ) : null}
         {!isMobile ? (
-          <LiveSunButton enabled={liveSunEnabled} onToggle={() => setLiveSunEnabled((current) => !current)} mobile={isMobile} offsetLeft={panelVisibility.events && activeLayers.intelBoard ? 302 : 18} />
+          <LiveSunButton enabled={liveSunEnabled} onToggle={() => setLiveSunEnabled((current) => !current)} mobile={isMobile} offsetLeft={leftPanelOffset} />
         ) : null}
 
         {/* DESKTOP: Left sidebar */}
@@ -8337,6 +8501,10 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
             onWatchlistChange={handleWatchlistChange}
             morningBrief={morningBrief}
             alertPreview={alertPreview}
+            width={leftPanelWidth}
+            onResizeStart={handleLeftPanelResizeStart}
+            sectionState={leftPanelSections}
+            onToggleSection={handleToggleLeftPanelSection}
             onCollapse={() => setPanelVisibility((current) => ({ ...current, events: false }))}
           />
         )}
@@ -8344,6 +8512,8 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
           <ActiveSignalsRail
             count={filteredEvents.length}
             topOffset={headerHeight}
+            selectedWatchlist={selectedWatchlist}
+            systemStatus={systemStatus}
             onExpand={() => setPanelVisibility((current) => ({ ...current, events: true }))}
           />
         ) : null}
@@ -8398,6 +8568,7 @@ export default function GlobeApp({ activeView = "globe", onNavigate }) {
             selectedEvent={selectedEvent}
             onToggleRegion={(value) => toggleWatchlistValue("regions", value)}
             onToggleTopic={(value) => toggleWatchlistValue("topics", value)}
+            leftOffset={leftPanelOffset}
           />
         )}
 
